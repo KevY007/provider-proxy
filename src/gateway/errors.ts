@@ -222,7 +222,7 @@ export function toGatewayError(e: unknown): GatewayError {
 }
 
 export function errorFormatFor(inbound: string): ErrorFormat {
-  if (inbound === "anthropic_messages" || inbound === "anthropic_files") return "anthropic";
+  if (inbound === "anthropic_messages" || inbound === "anthropic_files" || inbound === "anthropic_batches") return "anthropic";
   if (inbound === "gemini" || inbound === "gemini_files") return "gemini";
   return "openai";
 }

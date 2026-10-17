@@ -1,7 +1,8 @@
+import { generatedFilesOfAnthropicBlock, generatedFilesOfResponsesOutput, type GeneratedFile } from "./generated-files";
 import { TextAcc, type StreamProcessor } from "./processor";
 import type { SseEvent } from "./sse";
 import type { Json, JsonObject, Usage } from "./types";
-import { mergeUsage, usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponses } from "./usage";
+import { mergeUsage, usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponsesObject } from "./usage";
 import { isObject, safeJsonParse } from "./util";
 import { emptyUsage } from "./types";
 
@@ -54,6 +55,23 @@ abstract class Base implements StreamProcessor {
   protected done = false;
   protected err: { status: number; message: string; type?: string } | null = null;
   protected rid: string | null = null;
+  protected files: GeneratedFile[] = [];
+  onGeneratedFiles?: (files: GeneratedFile[]) => void;
+
+  generatedFiles(): GeneratedFile[] {
+    return this.files;
+  }
+  /** Remember newly seen generated files and tell the pipeline (which registers them right away). */
+  protected addGeneratedFiles(found: GeneratedFile[]): void {
+    const fresh = found.filter((f) => !this.files.some((x) => x.kind === f.kind && x.id === f.id));
+    if (!fresh.length) return;
+    this.files.push(...fresh);
+    try {
+      this.onGeneratedFiles?.(fresh);
+    } catch {
+      /* registration is best effort here; the final pass retries */
+    }
+  }
 
   abstract onEvent(ev: SseEvent): string[];
   onEnd(): string[] {
@@ -195,11 +213,19 @@ export class ResponsesStreamPassthrough extends Base {
         d.response.model = this.publicModel;
         modified = true;
       }
-      if (isObject(d.response.usage)) this.addUsage(usageFromResponses(d.response.usage));
+      // (the terminal events carry the whole response: usage AND the output items, i.e. the server tools that ran)
+      if (isObject(d.response.usage) || Array.isArray(d.response.output)) {
+        const u = usageFromResponsesObject(d.response);
+        if (isObject(d.response.usage)) this.addUsage(u);
+        else if (u.toolUsage && Object.keys(u.toolUsage).length) this.addUsage({ ...emptyUsage(), toolUsage: u.toolUsage });
+      }
     }
     if (type === "response.output_text.delta" && typeof d.delta === "string") this.text.add(d.delta);
     else if (type === "response.function_call_arguments.delta" && typeof d.delta === "string") this.text.add(d.delta);
-    else if (type === "response.completed" || type === "response.incomplete") this.done = true;
+    else if (type === "response.completed" || type === "response.incomplete") {
+      this.done = true;
+      if (isObject(d.response)) this.addGeneratedFiles(generatedFilesOfResponsesOutput(d.response.output));
+    }
     else if (type === "response.failed") {
       this.done = true;
       const e = isObject(d.response) && isObject(d.response.error) ? d.response.error : {};
@@ -215,8 +241,13 @@ export class ResponsesStreamPassthrough extends Base {
 
 /** Anthropic Messages streams. */
 export class AnthropicStreamPassthrough extends Base {
+  private thinking = new TextAcc(500_000);
   constructor(private readonly publicModel: string | null) {
     super();
+  }
+
+  reasoningText(): string {
+    return this.thinking.toString();
   }
 
   onEvent(ev: SseEvent): string[] {
@@ -234,11 +265,18 @@ export class AnthropicStreamPassthrough extends Base {
           }
         }
         break;
+      case "content_block_start":
+        // server-tool result blocks arrive whole here; code execution results name the files they created
+        this.addGeneratedFiles(generatedFilesOfAnthropicBlock(d.content_block));
+        break;
       case "content_block_delta":
         if (isObject(d.delta)) {
           if (typeof d.delta.text === "string") this.text.add(d.delta.text);
           else if (typeof d.delta.partial_json === "string") this.text.add(d.delta.partial_json);
-          else if (typeof d.delta.thinking === "string") this.text.add(d.delta.thinking);
+          else if (typeof d.delta.thinking === "string") {
+            this.text.add(d.delta.thinking);
+            this.thinking.add(d.delta.thinking);
+          }
         }
         break;
       case "message_delta":

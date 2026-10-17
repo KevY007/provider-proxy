@@ -2,11 +2,13 @@ import { randomBytes } from "node:crypto";
 import type { Prisma, UpstreamObject } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import { Decimal } from "@/lib/money";
 import type { ConfigSnapshot, GroupRec, ModelRec, ProviderRec, RouteRec } from "./cache";
 import { inboundBody, requestEncodings } from "./bodyin";
 import { logOutcome, withCommon, type Ctx } from "./context";
 import { GatewayError } from "./errors";
 import { execute, handleBinary, type AttemptResult, type Fail, type Rec } from "./execute";
+import type { GeneratedFile } from "./generated-files";
 import { forwardUpstreamHeaders } from "./headers";
 import { recordKeySuccess } from "./keyhealth";
 import { buildUpstreamHeaders, buildUpstreamUrl } from "./providers/adapters";
@@ -47,6 +49,7 @@ export interface FilesState {
 }
 
 const OWNED_FILE_OPS = new Set<Operation>(["files_get", "files_delete", "files_content", "gfiles_get", "gfiles_delete"]);
+const OWNED_CONTAINER_FILE_OPS = new Set<Operation>(["containers_file_get", "containers_file_content"]);
 const OWNED_UPLOAD_OPS = new Set<Operation>(["uploads_part", "uploads_complete", "uploads_cancel"]);
 const CREATE_OPS = new Set<Operation>(["files_create", "uploads_create", "gfiles_upload"]);
 const MAX_SMALL_BODY = 64 * 1024 * 1024;
@@ -76,6 +79,7 @@ function zeroRoute(p: ProviderRec): RouteRec {
     paramOverrides: {},
     maxOutputTokens: null,
     cost: costTable({ inputCost: 0, outputCost: 0 }),
+    batchCostDiscountPct: new Decimal(50),
   };
 }
 
@@ -111,6 +115,7 @@ export async function handleRaw(ctx: Ctx): Promise<Response> {
   ctx.files = st;
   let row: UpstreamObject | null = null;
   if (OWNED_FILE_OPS.has(path.op)) row = await owned(ctx, "file", path.objectId!);
+  else if (OWNED_CONTAINER_FILE_OPS.has(path.op)) row = await owned(ctx, "container_file", path.objectId!);
   else if (OWNED_UPLOAD_OPS.has(path.op)) row = await owned(ctx, "upload", path.objectId!);
   else if (path.op === "gfiles_upload") {
     const uploadId = ctx.url.searchParams.get("upload_id");
@@ -139,7 +144,7 @@ export async function handleRaw(ctx: Ctx): Promise<Response> {
   return execute(ctx, routes, { pinKeyId: row?.providerKeyId ?? null, preferKeyId: prefer, maxAttempts: st.streamed ? 1 : undefined });
 }
 
-async function owned(ctx: Ctx, kind: "file" | "upload" | "gemini_upload", id: string): Promise<UpstreamObject> {
+async function owned(ctx: Ctx, kind: "file" | "upload" | "gemini_upload" | "container_file", id: string): Promise<UpstreamObject> {
   const row = await db.upstreamObject.findFirst({ where: { kind, upstreamId: id, userId: ctx.auth!.user.id } });
   if (!row) throw notFound(ctx, kind === "upload" ? "upload" : "file", id);
   return row;
@@ -271,12 +276,38 @@ async function unregister(ctx: Ctx, cand: Candidate, kind: string, upstreamId: s
   await db.upstreamObject.deleteMany({ where: { kind, upstreamId, providerId: cand.route.providerId, userId: ctx.auth!.user.id } }).catch(() => undefined);
 }
 
+/**
+ * Files the upstream created while serving a model request (code execution outputs, code-interpreter container files):
+ * record them as owned by the calling customer and pinned to the upstream account that served the request, so
+ * `GET /v1/files/{id}` + `/content` (or `/v1/containers/...`) work through the gateway and nobody else can read them.
+ * Never takes over a row that already exists (a foreign id stays foreign). Never throws.
+ */
+export async function registerGeneratedFiles(ctx: Ctx, cand: Candidate, found: GeneratedFile[]): Promise<void> {
+  if (!found.length || !ctx.auth) return;
+  try {
+    await db.upstreamObject.createMany({
+      data: found.map((f) => ({
+        kind: f.kind,
+        upstreamId: f.id,
+        providerId: cand.route.providerId,
+        providerKeyId: cand.key.id,
+        userId: ctx.auth!.user.id,
+        apiKeyId: ctx.auth!.key.id,
+        meta: { fmt: f.fmt, generated: true, ...(f.filename ? { filename: f.filename } : {}), requestId: ctx.requestId } as Prisma.InputJsonValue,
+      })),
+      skipDuplicates: true,
+    });
+  } catch (err) {
+    logger.error("could not record generated files", { requestId: ctx.requestId, count: found.length, err });
+  }
+}
+
 export async function handleFilesOk(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: number, rec: Rec, fail: Fail): Promise<AttemptResult> {
   const path = ctx.path!;
   const op = path.op;
   const fmt = cand.plan.upstream;
   const settings = ctx.snap!.settings;
-  if (op === "files_content") return handleBinary(ctx, cand, h, t0, rec, true);
+  if (op === "files_content" || op === "containers_file_content") return handleBinary(ctx, cand, h, t0, rec, true);
 
   const timer = setTimeout(() => h.abort(), cand.route.provider.timeoutMs);
   let text: string;
@@ -334,6 +365,14 @@ export async function handleFilesOk(ctx: Ctx, cand: Candidate, h: UpstreamHandle
   return { kind: "response", response: withCommon(ctx, new Response(h.res.status === 204 || h.res.status === 304 ? null : text, { status: h.res.status, headers })) };
 }
 
+/** Minimal listing entry of a generated file (replaced by the upstream's own object once someone fetched its metadata). */
+function generatedFileObject(r: UpstreamObject, fmt: InboundFormat): JsonObject {
+  const filename = typeof metaOf(r).filename === "string" ? (metaOf(r).filename as string) : r.upstreamId;
+  if (fmt === "anthropic_files") return { id: r.upstreamId, type: "file", filename, mime_type: "application/octet-stream", size_bytes: 0, created_at: r.createdAt.toISOString(), downloadable: true };
+  if (fmt === "gemini_files") return { name: r.upstreamId, displayName: filename, createTime: r.createdAt.toISOString() };
+  return { id: r.upstreamId, object: "file", bytes: 0, created_at: Math.floor(r.createdAt.getTime() / 1000), filename, purpose: "assistants_output", status: "processed", status_details: null };
+}
+
 // ------------------------------------------------------------------ listings (served from our records)
 function pageSize(raw: string | null, dflt: number, max: number): number {
   const n = Number(raw);
@@ -346,7 +385,10 @@ async function listFiles(ctx: Ctx): Promise<Response> {
   const rows = await db.upstreamObject.findMany({ where: { userId: ctx.auth!.user.id, kind: "file" }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: MAX_LIST });
   let items = rows.flatMap((r) => {
     const m = metaOf(r);
-    return m.fmt === fmt && isObject(m.object) ? [{ row: r, obj: m.object as JsonObject }] : [];
+    if (m.fmt !== fmt) return [];
+    if (isObject(m.object)) return [{ row: r, obj: m.object as JsonObject }];
+    // a file the upstream created for the customer (code execution output): listed from what we know until its metadata was fetched
+    return m.generated === true ? [{ row: r, obj: generatedFileObject(r, fmt) }] : [];
   });
   let body: Json;
   if (fmt === "gemini_files") {

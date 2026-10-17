@@ -7,6 +7,7 @@ import { Decimal } from "../src/lib/money";
 import { SETTING_KEYS, SETTING_DEFS } from "../src/lib/settings";
 import { lookupKnownPrice } from "../src/gateway/price-catalog";
 import { knownCostFields, knownOfficialFields, knownSellFields, toDec } from "../src/server/pricing/fields";
+import { defaultRuleForKnown, migrateSeededMarkupRules } from "../src/server/pricing/default-policy";
 import { LEGACY_SELL_FACTOR, MODELS, PROVIDERS, SEED_MARKUP_PERCENT, SELL_FACTOR } from "./seed-data";
 
 /**
@@ -123,7 +124,6 @@ async function seedProviders() {
 }
 
 async function seedModels() {
-  const rule = { mode: "MARKUP_OVER_COST" as const, value: SEED_MARKUP_PERCENT };
   let created = 0;
   let ruled = 0;
   let backfilled = 0;
@@ -134,13 +134,19 @@ async function seedModels() {
     if (!known) throw new Error(`seed model ${m.slug}: no known price for ${provider.preset}/${upstream} (src/gateway/price-catalog.ts)`);
     const official = knownOfficialFields(known);
     const cost = knownCostFields(known);
-    const sellNew = knownSellFields(known, rule); // cost x (1 + 30%) for every unit with a cost basis
+    // owner policy: sell at the official price ("match official") where one exists, +30% over cost otherwise
+    const rule = defaultRuleForKnown(known);
+    const sellNew = knownSellFields(known, rule);
+    // what older seeds wrote (cost x 1.3): a row that still carries it was never touched by an admin
+    const sellOldSeed = knownSellFields(known, { mode: "MARKUP_OVER_COST", value: SEED_MARKUP_PERCENT });
+    const aliases = (known.aliases ?? []).filter((a) => a !== m.slug);
 
     let model = await db.model.findUnique({ where: { slug: m.slug } });
     if (!model) {
       model = await db.model.create({
         data: {
           slug: m.slug,
+          aliases,
           displayName: m.displayName,
           vendor: m.vendor,
           description: m.description,
@@ -160,19 +166,39 @@ async function seedModels() {
       created++;
     } else {
       // Backfill for rows created by older seeds. Never overwrites anything an admin may have edited:
-      //  - official prices only where still NULL,
+      //  - official prices (and official tool prices) only where still NULL / empty,
+      //  - catalog aliases are only ADDED,
       //  - the pricing rule only where the sell prices still equal the old seed-derived values (cost x 1.3) - then the
-      //    prices themselves stay exactly as they are.
+      //    prices are re-derived under the default rule.
       const row = model as unknown as Record<string, unknown>;
       const data: Record<string, unknown> = {};
-      for (const [col, v] of Object.entries(official)) if (row[col] === null && v !== null) data[col] = v;
+      for (const [col, v] of Object.entries(official)) {
+        if (typeof v === "object" && v !== null) {
+          const cur = row[col];
+          if ((!cur || Object.keys(cur as object).length === 0) && Object.keys(v).length) data[col] = v;
+        } else if (row[col] === null && v !== null) data[col] = v;
+      }
+      // server-tool sell prices did not exist before: fill them in at the model's own ratio to the official price
+      const knownTools = (official.officialToolPrices ?? {}) as Record<string, string>;
+      const hasTools = row.toolPrices && Object.keys(row.toolPrices as object).length > 0;
+      if (!hasTools && Object.keys(knownTools).length) {
+        const f =
+          model.pricingMode === "PERCENT_OF_OFFICIAL" && model.pricingValue
+            ? new Decimal(model.pricingValue.toString()).div(100)
+            : model.pricingMode === "MARKUP_OVER_COST" && model.pricingValue
+              ? new Decimal(model.pricingValue.toString()).div(100).plus(1)
+              : new Decimal(1);
+        data.toolPrices = Object.fromEntries(Object.entries(knownTools).map(([k, v]) => [k, new Decimal(v).times(f).toFixed(12)]));
+      }
+      const missingAliases = aliases.filter((a) => !model!.aliases.includes(a));
+      if (missingAliases.length) data.aliases = [...model.aliases, ...missingAliases];
       if (model.retiresAt === null && known.retiresAt) data.retiresAt = new Date(known.retiresAt);
       if (model.pricingMode === "FIXED" && model.pricingValue === null) {
-        const untouchedSeedPrices = Object.entries(sellNew).every(([col, v]) => toDec(row[col])?.equals(new Decimal(v)) ?? false);
+        const untouchedSeedPrices = Object.entries(sellOldSeed).every(([col, v]) => typeof v !== "string" || (toDec(row[col])?.equals(new Decimal(v)) ?? false));
         // a dev DB seeded under the old policy (official x 0.5) would sell BELOW cost: re-price rows that still carry it
         const legacy = !!known.official.input && new Decimal(model.inputPrice.toString()).equals(legacySell(String(known.official.input)));
-        if (legacy) Object.assign(data, sellNew);
         if (untouchedSeedPrices || legacy) {
+          Object.assign(data, sellNew);
           data.pricingMode = rule.mode;
           data.pricingValue = String(rule.value);
           ruled++;
@@ -188,9 +214,17 @@ async function seedModels() {
       create: { modelId: model.id, providerId: provider.id, upstreamModel: upstream, label: provider.name, ...cost },
       update: {},
     });
+    // server-tool costs of routes created before tool metering existed
+    const route = await db.modelRoute.findUnique({ where: { modelId_providerId_upstreamModel: { modelId: model.id, providerId: provider.id, upstreamModel: upstream } }, select: { id: true, toolCosts: true } });
+    const toolCosts = cost.toolCosts;
+    if (route && toolCosts && typeof toolCosts === "object" && Object.keys(toolCosts).length && Object.keys((route.toolCosts as object | null) ?? {}).length === 0) {
+      await db.modelRoute.update({ where: { id: route.id }, data: { toolCosts } });
+    }
   }
+  // models seeded under the previous default (+30% over cost) that an admin never touched: "match official"
+  const migration = await migrateSeededMarkupRules();
   console.log(
-    `models: ${MODELS.length} catalog entries with routes (price rule: cost +${SEED_MARKUP_PERCENT}% = cost x ${SELL_FACTOR}; ${created} created, ${ruled} switched to the rule, ${backfilled} backfilled)`,
+    `models: ${MODELS.length} catalog entries with routes (default price rule: match official = 100% of the official price, +${SEED_MARKUP_PERCENT}% over cost where there is none [cost x ${SELL_FACTOR}]; ${created} created, ${ruled} re-ruled, ${backfilled} backfilled, ${migration.migrated.length} moved from the old +${SEED_MARKUP_PERCENT}% default)`,
   );
 }
 

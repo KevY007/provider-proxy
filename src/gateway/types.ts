@@ -51,7 +51,10 @@ export type Operation =
   | "gfiles_upload"
   | "gfiles_list"
   | "gfiles_get"
-  | "gfiles_delete";
+  | "gfiles_delete"
+  // OpenAI code-interpreter container files (created by a Responses request): /v1/containers/{id}/files/{file}[/content]
+  | "containers_file_get"
+  | "containers_file_content";
 
 /** Operations served by the generic raw passthrough (no model, streamed body, stateful objects). */
 export const RAW_OPS: ReadonlySet<Operation> = new Set<Operation>([
@@ -68,6 +71,8 @@ export const RAW_OPS: ReadonlySet<Operation> = new Set<Operation>([
   "gfiles_list",
   "gfiles_get",
   "gfiles_delete",
+  "containers_file_get",
+  "containers_file_content",
 ]);
 
 export interface ParsedPath {
@@ -106,6 +111,8 @@ export interface Usage {
   cacheWriteTokens: number; // total (5m + 1h)
   cacheWrite1hTokens: number; // subset of cacheWriteTokens
   reasoningTokens: number;
+  /** reasoningTokens was estimated from the thinking text (the upstream did not itemize them); billing is unaffected (thinking is inside outputTokens) */
+  reasoningEstimated?: boolean;
   audioInputTokens: number; // subset of inputTokens
   audioOutputTokens: number; // subset of outputTokens
   imageCount: number;
@@ -113,6 +120,12 @@ export interface Usage {
   characters: number;
   /** Generated video seconds (billed per second). */
   videoSeconds: number;
+  /**
+   * Server tools the upstream ran for this request, by price key (`web_search_request`, `code_execution_hour`,
+   * `web_search_call`, `file_search_call`, ...). Units are what the matching `Model.toolPrices` / `ModelRoute.toolCosts`
+   * entry is priced in (USD per search / per container hour / per call).
+   */
+  toolUsage?: Record<string, number>;
   estimated: boolean;
 }
 
@@ -130,6 +143,7 @@ export function emptyUsage(): Usage {
     audioSeconds: 0,
     characters: 0,
     videoSeconds: 0,
+    toolUsage: {},
     estimated: false,
   };
 }

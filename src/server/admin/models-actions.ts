@@ -286,7 +286,7 @@ export async function duplicateRoute(routeId: string) {
     void _id;
     void _c;
     const created = await db.modelRoute.create({
-      data: { ...rest, upstreamModel: name, enabled: false, paramOverrides: (rest.paramOverrides ?? {}) as Prisma.InputJsonValue },
+      data: { ...rest, upstreamModel: name, enabled: false, paramOverrides: (rest.paramOverrides ?? {}) as Prisma.InputJsonValue, toolCosts: (rest.toolCosts ?? {}) as Prisma.InputJsonValue },
       select: { id: true },
     });
     await audit(admin.id, "route.duplicate", { type: "ModelRoute", id: created.id }, { from: routeId, upstreamModel: name }, ip);

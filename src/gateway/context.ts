@@ -52,6 +52,8 @@ export interface Ctx {
   deferRelease: boolean;
   logged: boolean;
   logBodies: boolean;
+  /** Admin-only remarks collected while serving the request (translation decisions, a stream that ended oddly ...): appended to RequestLog.internalError. */
+  notes: string[];
   /** Pre-flight estimates */
   inputEstimate: number;
   /** Credit reservation + output clamp for this request (PLAN 9c); null before reservation / for lookups. */
@@ -89,6 +91,7 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     deferRelease: false,
     logged: false,
     logBodies: false,
+    notes: [],
     inputEstimate: 0,
     funds: null,
   };
@@ -174,7 +177,7 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
       detail: p.internalError ? p.internalError.slice(0, 500) : undefined,
     });
   }
-  const note = ctx.funds?.note ?? null;
+  const note = [ctx.funds?.note, ...ctx.notes].filter(Boolean).join(" | ") || null;
   const patch: OutcomePatch = note ? { ...p, internalError: p.internalError ? `${p.internalError} | ${note}` : note } : p;
   const charge = recordOutcome({
     requestId: ctx.requestId,

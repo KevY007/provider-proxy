@@ -62,11 +62,11 @@ export function officialAsCost(official: PriceTable | undefined | null): Record<
   return tableToFields(official, "cost");
 }
 
-/** Sensible default rule: 30% off official when there is an official price, else 30% over cost, else fixed. */
+/** Default rule (owner policy): match the official price (100%) when there is one, else 30% over cost, else fixed. */
 export function defaultRule(values: Record<string, string>): { mode: "FIXED" | "PERCENT_OF_OFFICIAL" | "MARKUP_OVER_COST"; value: string } {
   const hasOfficial = MODEL_PRICE_PAIRS.some((p) => p.official && (toNum(values[p.official]) ?? 0) > 0);
   const hasCost = MODEL_PRICE_PAIRS.some((p) => (toNum(values[p.cost]) ?? 0) > 0);
-  if (hasOfficial) return { mode: "PERCENT_OF_OFFICIAL", value: "70" };
+  if (hasOfficial) return { mode: "PERCENT_OF_OFFICIAL", value: "100" };
   if (hasCost) return { mode: "MARKUP_OVER_COST", value: "30" };
   return { mode: "FIXED", value: "" };
 }

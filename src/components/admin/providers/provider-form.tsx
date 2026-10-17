@@ -39,8 +39,10 @@ export const FORMAT_OPTIONS = [
   ["openai_moderations", "Moderations"],
   ["openai_videos", "Videos"],
   ["openai_files", "Files + Uploads (/v1/files)"],
+  ["openai_batches", "Batch API (/v1/batches)"],
   ["anthropic_messages", "Messages API"],
   ["anthropic_files", "Files API (/v1/files)"],
+  ["anthropic_batches", "Message Batches (/v1/messages/batches)"],
   ["gemini", "generateContent"],
   ["gemini_files", "Files API (resumable upload)"],
 ].map(([value, hint]) => ({ value, label: value, hint }));

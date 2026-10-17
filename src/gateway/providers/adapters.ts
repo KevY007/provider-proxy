@@ -32,7 +32,7 @@ export interface UpstreamTarget {
 type Surface = "openai" | "anthropic" | "gemini";
 
 export function surfaceOf(format: InboundFormat): Surface {
-  if (format === "anthropic_messages" || format === "anthropic_files") return "anthropic";
+  if (format === "anthropic_messages" || format === "anthropic_files" || format === "anthropic_batches") return "anthropic";
   if (format === "gemini" || format === "gemini_files") return "gemini";
   return "openai";
 }
@@ -102,6 +102,11 @@ function filesUrl(i: UrlInput): string {
   }
   const root = trimSlash(str(s.openaiBaseUrl) ?? p.baseUrl);
   switch (op) {
+    case "containers_file_get":
+    case "containers_file_content": {
+      const [cid, fid] = (id ?? "/").split("/");
+      return `${root}/containers/${encodeURIComponent(cid)}/files/${encodeURIComponent(fid ?? "")}${op === "containers_file_content" ? "/content" : ""}`;
+    }
     case "uploads_create":
       return `${root}/uploads`;
     case "uploads_part":
@@ -128,7 +133,7 @@ export function buildUpstreamUrl(i: UrlInput): string {
   const s = p.settings;
   let url: string;
 
-  if (op.startsWith("files_") || op.startsWith("uploads_") || op.startsWith("gfiles_")) {
+  if (op.startsWith("files_") || op.startsWith("uploads_") || op.startsWith("gfiles_") || op.startsWith("containers_")) {
     url = filesUrl(i);
     if (i.query) url += (url.includes("?") ? "&" : "?") + i.query;
   } else if (format === "anthropic_messages") {
@@ -228,7 +233,7 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
     "user-agent": "ProviderProxy/1.0",
   };
   if (i.hasBody !== false) h["content-type"] = i.contentType || "application/json";
-  if (i.op === "videos_content" || i.op === "files_content") {
+  if (i.op === "videos_content" || i.op === "files_content" || i.op === "containers_file_content") {
     h.accept = "*/*";
     const range = i.inbound?.get("range");
     if (range) h.range = range;

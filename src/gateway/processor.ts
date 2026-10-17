@@ -1,3 +1,4 @@
+import type { GeneratedFile } from "./generated-files";
 import type { SseEvent } from "./sse";
 import type { Usage } from "./types";
 
@@ -16,6 +17,10 @@ export interface StreamProcessor {
   usage(): Usage | null;
   /** Accumulated assistant text (bounded) for the tokenizer fallback. */
   outputText(): string;
+  /** Thinking / reasoning text streamed so far (bounded): lets the pipeline estimate reasoning tokens the upstream did not itemize. */
+  reasoningText?(): string;
+  /** Admin-only remark about how the stream ended that is worth keeping in the request log (e.g. thinking used the whole budget). */
+  note?(): string | null;
   /** True once the upstream signalled a natural end (done sentinel / terminal event). */
   completed(): boolean;
   /** Upstream error event seen in-band (used to fail over before the first byte is sent / to log mid-stream errors). */
@@ -29,6 +34,10 @@ export interface StreamProcessor {
    * normal ending. `errorEvent` is the serialized native error event (already in the inbound format).
    */
   abortEvents?(errorEvent: string): string[];
+  /** Files the upstream created while serving this stream (code execution outputs ...): registered for the customer as soon as they are seen. */
+  generatedFiles?(): GeneratedFile[];
+  /** Set by the pipeline: called with each batch of newly seen generated files. */
+  onGeneratedFiles?: (files: GeneratedFile[]) => void;
   /** Identity scrubber for text the upstream wrote into an error event we forward (provider / host / key / upstream model). */
   setScrub?(fn: (text: string) => string): void;
 }

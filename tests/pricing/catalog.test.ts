@@ -66,10 +66,42 @@ describe("known price catalog", () => {
     expect(lookupKnownPrice("fal", "fal-ai/some-new-model")).toBeNull();
   });
 
-  it("marks the post-2025 seed models as needing review", () => {
-    for (const [v, m] of [["openai", "gpt-6-astra"], ["anthropic", "claude-fable-5-1"], ["google", "gemini-3.8-flash"], ["xai", "grok-4.7"]]) {
+  it("marks the post-2025 seed models it could not verify as needing review", () => {
+    for (const [v, m] of [["openai", "gpt-6-astra"], ["google", "gemini-3.8-flash"], ["xai", "grok-4.7"]]) {
       expect(lookupKnownPrice(v, m)!.needsReview, m).toBe(true);
     }
     expect(lookupKnownPrice("openai", "gpt-4o-mini")!.needsReview).toBeFalsy();
+  });
+
+  it("Claude 5.x entries match the Anthropic pricing page / models overview (checked 2026-10-17)", () => {
+    const get = (m: string) => lookupKnownPrice("anthropic", m)!;
+    // prices per 1M tokens: input, output, cache read, 5m write, 1h write
+    const row = (m: string) => {
+      const k = get(m);
+      return [k.official.input, k.official.output, k.official.cachedInput, k.official.cacheWrite, k.cacheWrite1h];
+    };
+    expect(row("claude-opus-5-5")).toEqual([4, 20, 0.2, 5, 8]);
+    expect(row("claude-sonnet-5-5")).toEqual([2, 10, 0.1, 2.5, 4]); // cache reads are 0.05x input on Opus 5.5 / Sonnet 5.5
+    expect(row("claude-haiku-5-5")).toEqual([0.1, 0.5, 0.01, 0.125, 0.2]);
+    expect(row("claude-fable-5-1")).toEqual([10, 50, 0.25, 12.5, 20]);
+    for (const m of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]) {
+      expect(get(m).contextWindow, m).toBe(1_000_000);
+      expect(get(m).maxOutput, m).toBe(128_000);
+      expect(get(m).needsReview, m).toBeFalsy();
+    }
+    // Haiku 5.5: prompts over 100K tokens pay $0.50 / $2.50 = 5x on every token price
+    expect(get("claude-haiku-5-5").longContext).toEqual({ threshold: 100_000, multiplier: 5 });
+    expect(get("claude-sonnet-5-5").longContext).toBeUndefined();
+  });
+
+  it("dated Claude ids resolve through the catalog aliases (what Claude Code sends)", () => {
+    expect(lookupKnownPrice("anthropic", "claude-haiku-4-5-20251001")!.model).toBe("claude-haiku-4-5");
+    expect(lookupKnownPrice("anthropic", "claude-sonnet-4-5-20250929")!.aliases).toContain("claude-sonnet-4-5-20250929");
+  });
+
+  it("server tools carry their official unit prices", () => {
+    expect(lookupKnownPrice("anthropic", "claude-sonnet-5-5")!.tools).toEqual({ web_search_request: 0.01, code_execution_hour: 0.05 });
+    expect(lookupKnownPrice("openai", "gpt-5-mini")!.tools).toEqual({ web_search_call: 0.01, file_search_call: 0.0025 });
+    expect(lookupKnownPrice("openai", "text-embedding-3-small")!.tools).toBeUndefined();
   });
 });

@@ -28,6 +28,8 @@ export type KnownPrice = {
   aliases?: string[];
   /** ISO date the vendor retires the model (shown as "retiring" in admin). */
   retiresAt?: string;
+  /** Official unit prices of the SERVER TOOLS the vendor bills on top of tokens (USD per search / per container hour / per call). */
+  tools?: Record<string, number>;
 };
 
 const CHAT = ["chat", "responses", "vision", "tools", "reasoning"];
@@ -36,18 +38,26 @@ const CHAT_COMPAT = ["chat", "tools"];
 
 const SEED = "project seed (prisma/seed-data.ts): post-2025 model, confirm against the vendor price list";
 const LIST = "vendor list price";
+const ANTHROPIC_PRICING = "Anthropic pricing page (platform.claude.com/docs/en/about-claude/pricing), checked 2026-10-17";
+
+/** Anthropic server tools: web search $10 / 1,000 searches; code execution $0.05 per container hour (free next to web search / fetch; 5 minute minimum). */
+export const CLAUDE_TOOL_PRICES = { web_search_request: 0.01, code_execution_hour: 0.05 } as const;
+/** OpenAI built-in tools (Responses API): web search $10 / 1,000 calls, file search $2.50 / 1,000 calls. */
+export const OPENAI_TOOL_PRICES = { web_search_call: 0.01, file_search_call: 0.0025 } as const;
 
 type Opts = Partial<Omit<KnownPrice, "vendor" | "model" | "official">>;
 const k = (vendor: string, model: string, official: PriceTable, o: Opts = {}): KnownPrice => ({ vendor, model, official, source: LIST, ...o });
 
 /** token-priced chat model: in / out / cached (+ Anthropic cache-write prices) */
-const chat = (vendor: string, model: string, i: number, o: number, cached: number | null, opts: Opts = {}): KnownPrice =>
-  k(vendor, model, { input: i, output: o, ...(cached !== null ? { cachedInput: cached } : {}) }, { capabilities: CHAT, ...opts });
+const chat = (vendor: string, model: string, i: number, o: number, cached: number | null, opts: Opts = {}): KnownPrice => {
+  const caps = opts.capabilities ?? CHAT;
+  return k(vendor, model, { input: i, output: o, ...(cached !== null ? { cachedInput: cached } : {}) }, { capabilities: CHAT, ...(vendor === "openai" && caps.includes("responses") ? { tools: { ...OPENAI_TOOL_PRICES } } : {}), ...opts });
+};
 
 /** Anthropic: cache read 0.1x, 5m write 1.25x, 1h write 2x of input (unless overridden) */
 const claude = (model: string, i: number, o: number, opts: Opts & { cached?: number; cw?: number; cw1h?: number } = {}): KnownPrice => {
   const { cached, cw, cw1h, ...rest } = opts;
-  return k("anthropic", model, { input: i, output: o, cachedInput: cached ?? round(i * 0.1), cacheWrite: cw ?? round(i * 1.25) }, { capabilities: CHAT, cacheWrite1h: cw1h ?? round(i * 2), ...rest });
+  return k("anthropic", model, { input: i, output: o, cachedInput: cached ?? round(i * 0.1), cacheWrite: cw ?? round(i * 1.25) }, { capabilities: CHAT, cacheWrite1h: cw1h ?? round(i * 2), tools: { ...CLAUDE_TOOL_PRICES }, ...rest });
 };
 
 function round(n: number): number {
@@ -107,13 +117,32 @@ export const KNOWN_PRICES: KnownPrice[] = [
   k("openai", "text-moderation-latest", { input: 0, output: 0 }, { displayName: "Text Moderation", capabilities: ["moderation"] }),
 
   // ======================================================================================================== Anthropic
-  // ---- post-2025 models from the project seed (prices unverified)
-  claude("claude-fable-5-1", 10, 50, { displayName: "Claude Fable 5.1", description: "Anthropic's most capable model.", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.25, cw: 12.5, cw1h: 20, source: SEED, needsReview: true }),
-  claude("claude-opus-5-5", 4, 20, { displayName: "Claude Opus 5.5", description: "Frontier reasoning and coding.", contextWindow: 500_000, maxOutput: 64_000, cached: 0.2, cw: 5, cw1h: 8, source: SEED, needsReview: true }),
-  claude("claude-sonnet-5-5", 2, 10, { displayName: "Claude Sonnet 5.5", description: "Best balance of speed and intelligence.", contextWindow: 500_000, maxOutput: 64_000, cached: 0.1, cw: 2.5, cw1h: 4, source: SEED, needsReview: true }),
-  claude("claude-haiku-5-5", 0.1, 0.5, { displayName: "Claude Haiku 5.5", description: "Fastest, most affordable Claude.", contextWindow: 200_000, maxOutput: 32_000, cached: 0.01, cw: 0.125, cw1h: 0.2, source: SEED, needsReview: true }),
+  // ---- current models: verified against the Anthropic pricing page (cache hits are 0.05x input on Opus 5.5 / Sonnet 5.5 and
+  //      0.025x on Fable 5.1; Haiku 5.5 costs 5x for prompts over 100K tokens) and the models overview (1M context, 128K output)
+  claude("claude-fable-5-1", 10, 50, { displayName: "Claude Fable 5.1", description: "Anthropic's most capable model.", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.25, cw: 12.5, cw1h: 20, source: ANTHROPIC_PRICING }),
+  claude("claude-fable-5", 10, 50, { displayName: "Claude Fable 5", description: "Anthropic's most capable model (previous release).", contextWindow: 1_000_000, maxOutput: 128_000, cached: 1, cw: 12.5, cw1h: 20, source: ANTHROPIC_PRICING }),
+  claude("claude-opus-5-5", 4, 20, { displayName: "Claude Opus 5.5", description: "Frontier reasoning and coding.", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.2, cw: 5, cw1h: 8, source: ANTHROPIC_PRICING }),
+  claude("claude-opus-5", 5, 25, { displayName: "Claude Opus 5", contextWindow: 1_000_000, maxOutput: 128_000, source: ANTHROPIC_PRICING }),
+  claude("claude-opus-4-8", 5, 25, { displayName: "Claude Opus 4.8", contextWindow: 1_000_000, maxOutput: 128_000, source: ANTHROPIC_PRICING }),
+  claude("claude-opus-4-7", 5, 25, { displayName: "Claude Opus 4.7", contextWindow: 1_000_000, maxOutput: 128_000, source: ANTHROPIC_PRICING }),
+  claude("claude-opus-4-6", 5, 25, { displayName: "Claude Opus 4.6", contextWindow: 1_000_000, maxOutput: 128_000, source: ANTHROPIC_PRICING }),
+  claude("claude-sonnet-5-5", 2, 10, { displayName: "Claude Sonnet 5.5", description: "Best balance of speed and intelligence.", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.1, cw: 2.5, cw1h: 4, source: ANTHROPIC_PRICING }),
+  claude("claude-sonnet-5", 2, 10, { displayName: "Claude Sonnet 5", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.2, cw: 2.5, cw1h: 4, source: ANTHROPIC_PRICING }),
+  claude("claude-sonnet-4-6", 3, 15, { displayName: "Claude Sonnet 4.6", contextWindow: 1_000_000, maxOutput: 128_000, source: ANTHROPIC_PRICING }),
+  claude("claude-haiku-5-5", 0.1, 0.5, {
+    displayName: "Claude Haiku 5.5",
+    description: "Fastest, most affordable Claude.",
+    contextWindow: 1_000_000,
+    maxOutput: 128_000,
+    cached: 0.01,
+    cw: 0.125,
+    cw1h: 0.2,
+    // prompts over 100,000 tokens (cache reads and writes included) pay 5x on every token price: $0.50 / $2.50 per MTok
+    longContext: { threshold: 100_000, multiplier: 5 },
+    source: ANTHROPIC_PRICING,
+  }),
   // ---- Claude 4.x
-  claude("claude-opus-4-5", 5, 25, { displayName: "Claude Opus 4.5", contextWindow: 200_000, maxOutput: 64_000, needsReview: true }),
+  claude("claude-opus-4-5", 5, 25, { displayName: "Claude Opus 4.5", contextWindow: 200_000, maxOutput: 64_000, aliases: ["claude-opus-4-5-20251101"], source: ANTHROPIC_PRICING }),
   claude("claude-opus-4-1", 15, 75, { displayName: "Claude Opus 4.1", contextWindow: 200_000, maxOutput: 32_000, aliases: ["claude-opus-4-1-20250805"] }),
   claude("claude-opus-4", 15, 75, { displayName: "Claude Opus 4", contextWindow: 200_000, maxOutput: 32_000, aliases: ["claude-opus-4-20250514"] }),
   claude("claude-sonnet-4-5", 3, 15, { displayName: "Claude Sonnet 4.5", contextWindow: 200_000, maxOutput: 64_000, aliases: ["claude-sonnet-4-5-20250929"] }),

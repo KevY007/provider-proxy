@@ -45,6 +45,10 @@ export interface Outcome {
   responseBody?: Json;
   /** Charge the usage even though the status is not a normally billable one (e.g. a stream cut off by the funds guard). */
   billable?: boolean;
+  /** Batch API result: the upstream batch id. Token prices are discounted by Model.batchDiscountPct / ModelRoute.batchCostDiscountPct. */
+  batchId?: string | null;
+  /** Who the row belongs to when there is no request (cron sweep of ended batches). */
+  owner?: { userId: string; apiKeyId: string | null };
 }
 
 export interface Charge {
@@ -72,15 +76,18 @@ export function recordOutcome(o: Outcome): Charge {
   const usage = o.usage;
   let charge: Charge = { price: ZERO, cost: ZERO, profit: ZERO, official: ZERO };
   if (usage && o.model && (o.billable || o.status === "SUCCESS" || o.status === "CANCELLED" || o.status === "UPSTREAM_ERROR")) {
-    const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official);
+    const batch = o.batchId ? { sellPct: o.model.batchDiscountPct ?? null, costPct: o.route?.batchCostDiscountPct ?? null } : null;
+    const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official, batch);
     charge = { price: b.price, cost: b.cost, profit: b.profit, official: b.official };
   }
 
   const u = usage;
+  const userId = o.auth?.user.id ?? o.owner?.userId ?? null;
+  const apiKeyId = o.auth?.key.id ?? o.owner?.apiKeyId ?? null;
   const log: Prisma.RequestLogCreateManyInput = {
     id: o.requestId,
-    userId: o.auth?.user.id ?? null,
-    apiKeyId: o.auth?.key.id ?? null,
+    userId,
+    apiKeyId,
     groupSlug: o.groupSlug,
     modelSlug: o.model?.slug ?? null,
     endpoint: o.endpoint,
@@ -92,7 +99,11 @@ export function recordOutcome(o: Outcome): Charge {
     httpStatus: o.httpStatus,
     errorCode: o.errorCode,
     errorMessage: o.errorMessage ? truncate(o.errorMessage, 1000) : null,
-    internalError: o.internalError ? truncate(o.internalError, 8000) : null,
+    internalError: (() => {
+      const note = u?.reasoningEstimated ? "reasoning tokens estimated from the streamed thinking text (the upstream did not itemize them)" : null;
+      const all = [o.internalError, note].filter(Boolean).join(" | ");
+      return all ? truncate(all, 8000) : null;
+    })(),
     stream: o.stream,
     inputTokens: u?.inputTokens ?? 0,
     outputTokens: u?.outputTokens ?? 0,
@@ -103,6 +114,8 @@ export function recordOutcome(o: Outcome): Charge {
     audioSeconds: u?.audioSeconds ?? 0,
     characters: u?.characters ?? 0,
     videoSeconds: u?.videoSeconds ?? 0,
+    toolUsage: (u?.toolUsage ?? {}) as Prisma.InputJsonValue,
+    batchId: o.batchId ?? null,
     usageEstimated: u?.estimated ?? false,
     price: toDbString(charge.price),
     cost: toDbString(charge.cost),
@@ -122,8 +135,8 @@ export function recordOutcome(o: Outcome): Charge {
   const countForKey = !!o.providerKeyId && (o.billable === true || o.status === "SUCCESS" || o.status === "CANCELLED" || (o.status === "UPSTREAM_ERROR" && !!usage));
   enqueueMeter({
     log,
-    userId: o.auth?.user.id ?? null,
-    apiKeyId: o.auth?.key.id ?? null,
+    userId,
+    apiKeyId,
     providerKeyId: o.providerKeyId,
     price: charge.price,
     cost: charge.cost,

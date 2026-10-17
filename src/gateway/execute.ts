@@ -4,7 +4,8 @@ import type { ConfigSnapshot } from "./cache";
 import { getKeySecret } from "./cache";
 import { logOutcome, releaseAll, releaseUpstream, withCommon, type Ctx } from "./context";
 import { GatewayError, streamErrorEvent } from "./errors";
-import { handleFilesOk, prepareRawUpstream } from "./files";
+import { handleFilesOk, prepareRawUpstream, registerGeneratedFiles } from "./files";
+import { generatedFilesOfAnthropicMessage, generatedFilesOfResponsesOutput } from "./generated-files";
 import { finalError, type Failure } from "./failure";
 import { forwardUpstreamHeaders } from "./headers";
 import { classifyStatus, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
@@ -37,7 +38,7 @@ import { StreamSession, type FinishInfo } from "./stream";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
 import { countRequestTokens, countTokens } from "./tokenizer";
-import { AnthropicToChatStream, ChatToAnthropicStream, chatResponseToMessages, messagesResponseToChat } from "./translate";
+import { AnthropicToChatStream, ChatToAnthropicStream, THINKING_BURN_NOTE, chatResponseToMessages, chatUsageFromNormalized, messagesResponseToChat } from "./translate";
 import { emptyUsage, type Json, type JsonObject, type Operation, type Usage } from "./types";
 import { ClientAbortError, UpstreamTimeoutError, readErrorBody, readTextLimited, sendUpstream, wantsHttp2, type UpstreamHandle } from "./upstream";
 import { finishVideoCreate, handleVideoCreateOk } from "./video";
@@ -231,6 +232,7 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
         fillOutput: ctx.funds?.fillOutput ?? null,
       });
     }
+    for (const n of prepared.notes ?? []) if (!ctx.notes.includes(n)) ctx.notes.push(n);
     if (opts.externalUrl) {
       const range = ctx.req.headers.get("range");
       prepared = { ...prepared, url: opts.externalUrl, headers: { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) } };
@@ -401,16 +403,40 @@ const jsonHeaders = (ctx: Ctx, extra: Record<string, string> = {}): Headers => {
   return h;
 };
 
-async function completeUsage(ctx: Ctx, usage: Usage | null, outputText: string, op: Operation): Promise<Usage> {
+/**
+ * Fill what the upstream did not report: prompt / completion tokens (tokenizer estimate, `estimated`), reasoning tokens of
+ * a model that thought without itemizing them (estimated from the thinking text: informational only, thinking is
+ * already inside the output tokens), and the server-tool policy.
+ */
+async function completeUsage(ctx: Ctx, usage: Usage | null, outputText: string, op: Operation, thinkingText = ""): Promise<Usage> {
   if (!TOKEN_OPS.has(op)) return usage ?? emptyUsage();
   const needInput = !usage || usage.inputTokens === 0;
   const needOutput = op !== "embeddings" && op !== "gemini_embed" && op !== "gemini_batch_embed" && (!usage || usage.outputTokens === 0) && outputText.length > 0;
-  if (!needInput && !needOutput) return usage!;
+  const needReasoning = !!usage && usage.reasoningTokens === 0 && thinkingText.length > 0;
+  if (!needInput && !needOutput && !needReasoning) return applyToolPolicy(ctx, usage!);
   const u: Usage = usage ? { ...usage } : emptyUsage();
-  u.estimated = true;
+  if (needInput || needOutput) u.estimated = true;
   if (needInput) u.inputTokens = await countRequestTokens(ctx.body ?? {});
   if (needOutput) u.outputTokens = await countTokens(outputText);
-  return u;
+  if (needReasoning) {
+    u.reasoningTokens = Math.min(await countTokens(thinkingText), u.outputTokens || Number.MAX_SAFE_INTEGER);
+    u.reasoningEstimated = true;
+  }
+  return applyToolPolicy(ctx, u);
+}
+
+/** web_search_2026* / web_fetch_2026* in the request: Anthropic runs code execution for free next to them (dynamic filtering). */
+function declaresFreeCodeExecution(body: JsonObject | null): boolean {
+  const tools = body && Array.isArray(body.tools) ? body.tools : [];
+  return tools.some((t: Json) => isObject(t) && typeof t.type === "string" && /^web_(search|fetch)_20(2[6-9]|[3-9]\d)/.test(t.type));
+}
+
+/** Server-tool billing rules that depend on the request (not just the usage the upstream reported). */
+function applyToolPolicy(ctx: Ctx, usage: Usage): Usage {
+  if (!usage.toolUsage?.code_execution_hour || !declaresFreeCodeExecution(ctx.body)) return usage;
+  const toolUsage = { ...usage.toolUsage };
+  delete toolUsage.code_execution_hour;
+  return { ...usage, toolUsage };
 }
 
 async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, rec: Rec, fail: Fail): Promise<AttemptResult> {
@@ -463,11 +489,13 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
 
   let out: Json = parsed;
   let usage: Usage | null;
+  let burned = false;
   if (cand.plan.mode === "chat_to_messages") {
     if (!isObject(parsed)) return fail("server", 200, "unexpected upstream response shape");
     const t = messagesResponseToChat(parsed, publicName);
     out = t.body;
     usage = t.usage;
+    burned = t.burned;
   } else if (cand.plan.mode === "messages_to_chat") {
     if (!isObject(parsed)) return fail("server", 200, "unexpected upstream response shape");
     const t = chatResponseToMessages(parsed, publicName);
@@ -479,10 +507,20 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
   }
 
   const outText = TOKEN_OPS.has(path.op) && (!usage || usage.outputTokens === 0) ? collectOutputText(parsed) : "";
-  const finalUsage = await completeUsage(ctx, usage, outText, path.op);
+  const finalUsage = await completeUsage(ctx, usage, outText, path.op, usage && usage.reasoningTokens === 0 ? collectThinkingText(parsed) : "");
   if (ctx.form && (path.op === "audio_transcriptions" || path.op === "audio_translations") && finalUsage.audioSeconds === 0 && finalUsage.inputTokens === 0) {
     finalUsage.audioSeconds = Math.max(1, Math.round(fileBytes(ctx.form) / 16_000));
     finalUsage.estimated = true;
+  }
+
+  // translated Claude answer: the reasoning tokens (itemized or estimated from the thinking text) belong in the chat usage too
+  if (cand.plan.mode === "chat_to_messages" && isObject(out) && finalUsage.reasoningTokens > 0) out.usage = chatUsageFromNormalized(finalUsage);
+  if (burned) ctx.notes.push(THINKING_BURN_NOTE);
+
+  // files the upstream created for this request (code execution outputs ...): owned by the caller, pinned to the account that served it
+  if (cand.plan.mode === "native" && isObject(parsed)) {
+    const generated = path.op === "messages" ? generatedFilesOfAnthropicMessage(parsed) : path.op === "responses" ? generatedFilesOfResponsesOutput(parsed.output) : [];
+    if (generated.length) await registerGeneratedFiles(ctx, cand, generated);
   }
 
   // Responses: remember which account owns the response id (GET/DELETE/previous_response_id stickiness)
@@ -493,7 +531,15 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
   rec(200);
   recordKeySuccess(cand.key);
   logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage: finalUsage, ttftMs: Date.now() - t0, responseBody: ctx.logBodies ? out : undefined });
-  return { kind: "response", response: withCommon(ctx, new Response(JSON.stringify(out), { status: 200, headers: fwd(jsonHeaders(ctx)) })) };
+  const outHeaders = fwd(jsonHeaders(ctx));
+  if (burned) outHeaders.set("x-reasoning-budget-exhausted", "true");
+  return { kind: "response", response: withCommon(ctx, new Response(JSON.stringify(out), { status: 200, headers: outHeaders })) };
+}
+
+/** Thinking text of an Anthropic Messages response (the `thinking` content blocks). */
+function collectThinkingText(json: Json): string {
+  if (!isObject(json) || !Array.isArray(json.content)) return "";
+  return json.content.map((b: Json) => (isObject(b) && b.type === "thinking" && typeof b.thinking === "string" ? b.thinking : "")).filter(Boolean).join("\n");
 }
 
 function collectOutputText(json: Json): string {
@@ -544,6 +590,7 @@ export async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle,
     signal: h.signal,
     idleTimeoutMs: idleMsFor(cand, settings),
     startedAt: t0,
+    expectedBytes: knownLength(h),
     onFinish: (info) => {
       h.dispose();
       releaseAll(ctx);
@@ -561,6 +608,13 @@ export async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle,
     if (len && !encoded) hdr.set("content-length", len);
   }
   return { kind: "response", response: withCommon(ctx, new Response(session.toReadable(), { status: passthrough ? h.res.status : 200, headers: hdr })) };
+}
+
+/** Announced body length of an upstream response that is passed on as it is (undefined when unknown or content-encoded). */
+function knownLength(h: UpstreamHandle): number | undefined {
+  if (h.res.headers.get("content-encoding")) return undefined;
+  const len = Number(h.res.headers.get("content-length"));
+  return Number.isFinite(len) && len >= 0 && h.res.headers.get("content-length") !== null ? len : undefined;
 }
 
 /** RequestLog for a finished non-SSE body stream (binary downloads). */
@@ -626,6 +680,8 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   const processor = makeProcessor(ctx, cand);
   const sc = scrubCtx(ctx, cand, secret);
   processor.setScrub?.((t) => scrubText(t, sc));
+  // files the upstream creates while streaming (code execution outputs) become downloadable the moment the client sees their id
+  processor.onGeneratedFiles = (files) => void registerGeneratedFiles(ctx, cand, files);
   const sse = !geminiJsonArray(ctx);
   const heartbeatMs = sse ? Math.max(0, settings.streamHeartbeatSec) * 1000 : 0;
   const session = new StreamSession({
@@ -715,7 +771,12 @@ function budgetCutEvent(ctx: Ctx): string {
 async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProcessor, info: FinishInfo, settings: SettingValues): Promise<void> {
   const path = ctx.path!;
   const reported = processor.usage();
-  const usage = await completeUsage(ctx, reported, processor.outputText(), path.op);
+  const usage = await completeUsage(ctx, reported, processor.outputText(), path.op, processor.reasoningText?.() ?? "");
+
+  const streamNote = processor.note?.();
+  if (streamNote) ctx.notes.push(streamNote);
+  const generated = processor.generatedFiles?.() ?? [];
+  if (generated.length) await registerGeneratedFiles(ctx, cand, generated); // (idempotent final pass)
 
   const rid = processor.responseId?.();
   if (rid && ctx.auth && ctx.model) {

@@ -310,7 +310,7 @@ describe("provider presets", () => {
       expect(ids).toContain(id);
     }
     expect(new Set(ids).size).toBe(ids.length);
-    expect(getPreset("anthropic")).toMatchObject({ authStyle: "X_API_KEY", baseUrl: "https://api.anthropic.com", formats: ["anthropic_messages", "anthropic_files"] });
+    expect(getPreset("anthropic")).toMatchObject({ authStyle: "X_API_KEY", baseUrl: "https://api.anthropic.com", formats: ["anthropic_messages", "anthropic_files", "anthropic_batches"] });
     expect(getPreset("google")).toMatchObject({ authStyle: "X_GOOG_API_KEY" });
     expect(getPreset("azure")?.authStyle).toBe("AZURE_API_KEY");
     expect(getPreset("codex-everywhere")?.settings).toMatchObject({ anthropicBaseUrl: "https://codex-everywhere.com", geminiBaseUrl: "https://codex-everywhere.com/v1beta" });

@@ -1,11 +1,13 @@
 /**
- * Live provider setup (idempotent):  pnpm setup:live [--markup 1.30]
+ * Live provider setup (idempotent):  pnpm setup:live [--markup 1.30 | --percent-of-official 100]
  *
  * Reads LIVE_OPENAI_API_KEY / LIVE_ANTHROPIC_API_KEY / LIVE_FAL_KEY / LIVE_REPLICATE_API_TOKEN from .env, then
  *   1. enables + configures the OpenAI and Anthropic providers (seeded presets) and creates fal.ai + Replicate,
  *   2. stores ONE encrypted upstream key per provider (label "live-1", 20 concurrent slots) - re-runs update it in place,
  *   3. upserts the public models with real upstream routes: route cost = upstream list price, official prices filled,
- *      pricing rule MARKUP_OVER_COST (default +30%, i.e. `--markup 1.30`) so the sell price follows the cost,
+ *      model aliases (dated ids such as claude-haiku-4-5-20251001) and server-tool prices stored, pricing rule
+ *      DEFAULT "match official" (PERCENT_OF_OFFICIAL 100; MARKUP_OVER_COST +30% for a model without an official price).
+ *      `--markup 1.30` sells everything at cost x 1.30 instead, `--percent-of-official 70` at 70% of the official price,
  *   4. creates the cross-provider demo model `smart-fast` (Anthropic haiku first, OpenAI gpt-5-nano as failover).
  * Secrets only ever reach the database through encrypt(); nothing secret is printed.
  *
@@ -23,9 +25,11 @@ import { decrypt, encrypt, secretHint } from "../src/lib/crypto";
 import { Decimal } from "../src/lib/money";
 import { getRedis, publishConfigInvalidate } from "../src/lib/redis";
 import { lookupKnownPrice, type KnownPrice } from "../src/gateway/price-catalog";
+import { getPreset } from "../src/gateway/providers/presets";
+import { defaultRuleForKnown, MARKUP_FALLBACK_RULE, migrateSeededMarkupRules } from "../src/server/pricing/default-policy";
 import { listUpstreamModels } from "../src/gateway/upstream-models";
 import { knownCostFields, knownOfficialFields, knownSellFields } from "../src/server/pricing/fields";
-import type { PriceTable } from "../src/server/pricing/preview";
+import type { PriceTable, PricingRule } from "../src/server/pricing/preview";
 
 type ProviderId = "openai" | "anthropic" | "fal" | "replicate";
 
@@ -113,7 +117,7 @@ const PROVIDERS: ProviderSpec[] = [
     preset: "openai",
     baseUrl: "https://api.openai.com/v1",
     authStyle: "BEARER",
-    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos", "openai_files"],
+    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos", "openai_files", "openai_batches"],
     tags: ["official"],
     settings: {},
     timeoutMs: 300_000,
@@ -126,7 +130,7 @@ const PROVIDERS: ProviderSpec[] = [
     preset: "anthropic",
     baseUrl: "https://api.anthropic.com",
     authStyle: "X_API_KEY",
-    formats: ["anthropic_messages", "anthropic_files"],
+    formats: ["anthropic_messages", "anthropic_files", "anthropic_batches"],
     tags: ["official"],
     settings: { anthropicVersion: "2023-06-01" },
     timeoutMs: 300_000,
@@ -163,18 +167,43 @@ const PROVIDERS: ProviderSpec[] = [
 // ------------------------------------------------------------------ helpers
 const money = (v: Decimal.Value) => new Decimal(v).toFixed(12);
 
-function parseMarkup(): Decimal {
+/** The pricing policy of this run. Default: match official; `--markup N` (cost x N) or `--percent-of-official N` force one rule on every model. */
+interface Policy {
+  /** the rule of a model: forced, or the default (match official; +30% over cost when the model has no official price) */
+  ruleFor(k: KnownPrice): PricingRule;
+  /** cost x factor for the summary table (null = depends on the model) */
+  describe: string;
+  /** set when a markup over cost is forced (also used for models without an official price) */
+  markupRule?: PricingRule;
+}
+
+function flag(name: string): string | undefined {
   const argv = process.argv.slice(2);
-  let raw: string | undefined;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--markup") raw = argv[i + 1];
-    else if (argv[i].startsWith("--markup=")) raw = argv[i].slice("--markup=".length);
+    if (argv[i] === name) return argv[i + 1];
+    if (argv[i].startsWith(`${name}=`)) return argv[i].slice(name.length + 1);
   }
-  if (raw === undefined) return new Decimal("1.30");
-  const d = new Decimal(raw);
-  if (!d.isFinite() || d.lte(0)) throw new Error(`invalid --markup '${raw}' (expected a number like 1.30)`);
-  if (d.lt(1)) console.warn(`WARNING: --markup ${raw} is below 1.0 - models will be sold BELOW cost.`);
-  return d;
+  return undefined;
+}
+
+function parsePolicy(): Policy {
+  const markup = flag("--markup");
+  const percent = flag("--percent-of-official");
+  if (markup !== undefined && percent !== undefined) throw new Error("use either --markup or --percent-of-official, not both");
+  if (markup !== undefined) {
+    const d = new Decimal(markup);
+    if (!d.isFinite() || d.lte(0)) throw new Error(`invalid --markup '${markup}' (expected a number like 1.30)`);
+    if (d.lt(1)) console.warn(`WARNING: --markup ${markup} is below 1.0 - models will be sold BELOW cost.`);
+    const rule: PricingRule = { mode: "MARKUP_OVER_COST", value: Number(d.minus(1).times(100).toDecimalPlaces(4).toString()) };
+    return { ruleFor: () => rule, markupRule: rule, describe: `sell = cost x ${d.toString()} (+${d.minus(1).times(100).toFixed(0)}% over cost)` };
+  }
+  if (percent !== undefined) {
+    const d = new Decimal(percent);
+    if (!d.isFinite() || d.lte(0) || d.gt(1000)) throw new Error(`invalid --percent-of-official '${percent}' (expected a number like 100)`);
+    const rule: PricingRule = { mode: "PERCENT_OF_OFFICIAL", value: Number(d.toString()) };
+    return { ruleFor: (k) => (defaultRuleForKnown(k).mode === "PERCENT_OF_OFFICIAL" ? rule : MARKUP_FALLBACK_RULE), describe: `sell = ${d.toString()}% of the official price (+30% over cost where there is none)` };
+  }
+  return { ruleFor: defaultRuleForKnown, describe: "sell = the official price (match official); +30% over cost for models without an official price" };
 }
 
 interface SummaryRow {
@@ -204,12 +233,16 @@ function describeUnits(t: PriceTable, mult: Decimal): string {
   return parts.length ? parts.join(" + ") : "free";
 }
 
-/** "+30% / 23.1%": markup over cost and the resulting margin on the sell price, (sell - cost) / sell. */
-function marginOf(t: PriceTable, markup: Decimal): string {
+/** "0% / 0.0%": markup over cost and the resulting margin on the sell price, (sell - cost) / sell, of a rule on a model priced at its list price. */
+function marginOf(t: PriceTable, rule: PricingRule): string {
   const hasCost = [t.input, t.output, t.image, t.perSecond, t.perMinute, t.perMillionChars].some((v) => v != null && v > 0);
   if (!hasCost) return "n/a";
-  return `+${markup.minus(1).times(100).toFixed(0)}% / ${new Decimal(1).minus(new Decimal(1).div(markup)).times(100).toFixed(1)}%`;
+  const factor = ruleFactor(rule);
+  return `${factor.minus(1).times(100).toFixed(0)}% / ${new Decimal(1).minus(new Decimal(1).div(factor)).times(100).toFixed(1)}%`;
 }
+
+/** sell / cost for a model bought at the official price. */
+const ruleFactor = (rule: PricingRule): Decimal => (rule.mode === "PERCENT_OF_OFFICIAL" ? new Decimal(rule.value ?? 100).div(100) : new Decimal(rule.value ?? 0).div(100).plus(1));
 
 function printTable(rows: SummaryRow[]): void {
   const head = ["model", "provider", "upstream model", "cost", "sell", "markup / margin", "notes"];
@@ -254,7 +287,12 @@ async function setupProvider(spec: ProviderSpec): Promise<{ id: string; index: M
     return null;
   }
   const existing = await db.provider.findUnique({ where: { slug: spec.slug } });
-  const formats = [...new Set([...(existing?.formats ?? []), ...spec.formats])];
+  // the formats are REFRESHED to the preset's current list (a provider set up by an older run lacks the newer ones: files, batches ...)
+  const formats = [...new Set([...(getPreset(spec.preset)?.formats ?? []), ...spec.formats])];
+  const dropped = (existing?.formats ?? []).filter((f) => !formats.includes(f));
+  if (dropped.length) console.log(`  (formats no longer in the ${spec.name} preset removed: ${dropped.join(", ")})`);
+  const added = formats.filter((f) => !(existing?.formats ?? []).includes(f));
+  if (existing && added.length) console.log(`  (formats added to ${spec.name}: ${added.join(", ")})`);
   const settings = { ...((existing?.settings as Record<string, unknown> | null) ?? {}), ...spec.settings };
   const tags = [...new Set([...(existing?.tags ?? []), ...spec.tags])];
   const provider = await db.provider.upsert({
@@ -297,10 +335,13 @@ interface ModelInput {
   retiresAt: string | null;
 }
 
-async function upsertModel(m: ModelInput, providerDbId: string, upstream: string, markup: Decimal, status: "ACTIVE" | "DISABLED" = "ACTIVE") {
-  const rule = { mode: "MARKUP_OVER_COST" as const, value: Number(markup.minus(1).times(100).toDecimalPlaces(4).toString()) };
+async function upsertModel(m: ModelInput, providerDbId: string, upstream: string, rule: PricingRule, status: "ACTIVE" | "DISABLED" = "ACTIVE") {
   const k = m.known;
+  // catalog aliases (dated ids such as claude-haiku-4-5-20251001) resolve to this model; aliases an admin added are kept
+  const existing = await db.model.findUnique({ where: { slug: m.slug }, select: { aliases: true } });
+  const aliases = [...new Set([...(existing?.aliases ?? []), ...(k.aliases ?? []).filter((a) => a !== m.slug)])];
   const base = {
+    aliases,
     displayName: m.displayName,
     vendor: m.vendor,
     description: m.description,
@@ -328,8 +369,8 @@ async function upsertModel(m: ModelInput, providerDbId: string, upstream: string
 }
 
 async function main() {
-  const markup = parseMarkup();
-  console.log(`ProviderProxy live setup (sell = cost x ${markup.toString()}: +${markup.minus(1).times(100).toFixed(0)}% over cost = ${new Decimal(1).minus(new Decimal(1).div(markup)).times(100).toFixed(1)}% margin on the sell price)\n`);
+  const policy = parsePolicy();
+  console.log(`ProviderProxy live setup (${policy.describe})\n`);
 
   const provIds = new Map<ProviderId, string>();
   const indexes = new Map<ProviderId, ModelIndex | null>();
@@ -367,6 +408,7 @@ async function main() {
     const pid = provIds.get(m.provider);
     if (!pid) continue;
     const known = knownFor(m.provider, m.upstream);
+    const rule = policy.ruleFor(known);
     let avail = availability(m.provider, m.upstream);
     if (m.startDisabled) {
       const existing = await db.model.findUnique({ where: { slug: m.slug }, select: { status: true } });
@@ -377,7 +419,7 @@ async function main() {
       { slug: m.slug, displayName: m.displayName ?? known.displayName ?? m.slug, description: m.description ?? known.description ?? "", vendor: m.vendor, sort: m.sort, known, retiresAt: avail.shutdown ?? known.retiresAt ?? null },
       pid,
       m.upstream,
-      markup,
+      rule,
       avail.status,
     );
     rows.push({
@@ -386,8 +428,8 @@ async function main() {
       provider: pName(m.provider),
       upstream: m.upstream,
       cost: describeUnits(known.official, new Decimal(1)),
-      sell: describeUnits(known.official, markup),
-      margin: marginOf(known.official, markup),
+      sell: describeUnits(known.official, ruleFactor(rule)),
+      margin: marginOf(known.official, rule),
       review: !!known.needsReview,
     });
   }
@@ -402,17 +444,20 @@ async function main() {
     // one public price per model: it follows the PRIMARY route (priority 10 = Claude Haiku) and covers the most
     // expensive route so BOTH routes keep their margin
     const costFor = (key: "input" | "output" | "cachedInput") => Math.max(num(haiku, key), num(nano, key));
+    // no maker price to match: cost-plus (the forced markup of this run, else the +30% fallback)
+    const smartRule = policy.markupRule ?? MARKUP_FALLBACK_RULE;
+    const smartFactor = ruleFactor(smartRule);
     const top: KnownPrice = { ...haiku, model: "smart-fast", official: { input: costFor("input"), output: costFor("output"), cachedInput: costFor("cachedInput") }, cacheWrite1h: undefined, longContext: undefined };
     const model = await upsertModel(
       { slug: "smart-fast", displayName: "Smart Fast", vendor: "providerproxy", sort: 5, known: top, retiresAt: null, description: "Fast, cheap chat model. Served by the best available provider (Claude Haiku, with GPT-5 nano as automatic failover)." },
       anth,
       "claude-haiku-5-5",
-      markup,
+      smartRule,
     );
     // smart-fast is our own product: there is no maker price to compare with
     await db.model.update({
       where: { id: model.id },
-      data: { officialInputPrice: null, officialOutputPrice: null, officialCachedPrice: null, capabilities: ["chat", "responses", "vision", "tools", "reasoning"], contextWindow: haiku.contextWindow ?? null, maxOutput: haiku.maxOutput ?? null },
+      data: { officialInputPrice: null, officialOutputPrice: null, officialCachedPrice: null, officialToolPrices: {}, capabilities: ["chat", "responses", "vision", "tools", "reasoning"], contextWindow: haiku.contextWindow ?? null, maxOutput: haiku.maxOutput ?? null },
     });
     // route 1 (priority 10): Anthropic haiku, its own cost; route 2 (priority 5): OpenAI gpt-5-nano, its own cost
     await db.modelRoute.updateMany({ where: { modelId: model.id, providerId: anth, upstreamModel: "claude-haiku-5-5" }, data: { priority: 10, label: "primary: Claude Haiku", inputCost: money(num(haiku, "input")), outputCost: money(num(haiku, "output")), cachedInputCost: money(num(haiku, "cachedInput")) } });
@@ -422,21 +467,28 @@ async function main() {
       create: { modelId: model.id, providerId: oai, upstreamModel: "gpt-5-nano", priority: 5, label: "failover: GPT-5 nano", enabled: true, ...nanoCost },
       update: { priority: 5, label: "failover: GPT-5 nano", enabled: true, ...nanoCost },
     });
-    const sellOut = new Decimal(top.official.output ?? 0).times(markup);
+    const sellOut = new Decimal(top.official.output ?? 0).times(smartFactor);
     rows.push({
       model: "smart-fast",
       provider: "Anthropic (10) -> OpenAI (5)",
       upstream: "claude-haiku-5-5 | gpt-5-nano",
       cost: `${describeUnits(haiku.official, new Decimal(1))} | ${describeUnits(nano.official, new Decimal(1))}`,
-      sell: describeUnits(top.official, markup),
+      sell: describeUnits(top.official, smartFactor),
       note: [availability("anthropic", "claude-haiku-5-5").note, availability("openai", "gpt-5-nano").note].filter(Boolean).join("; "),
-      margin: `+${markup.minus(1).times(100).toFixed(0)}%..+${nano.official.output ? markup.times(top.official.output ?? 0).div(nano.official.output).minus(1).times(100).toFixed(0) : "?"}% / ${new Decimal(1).minus(new Decimal(1).div(markup)).times(100).toFixed(1)}%..${nano.official.output && !sellOut.isZero() ? new Decimal(1).minus(new Decimal(nano.official.output).div(sellOut)).times(100).toFixed(1) : "?"}%`,
+      margin: `+${smartFactor.minus(1).times(100).toFixed(0)}%..+${nano.official.output ? smartFactor.times(top.official.output ?? 0).div(nano.official.output).minus(1).times(100).toFixed(0) : "?"}% / ${new Decimal(1).minus(new Decimal(1).div(smartFactor)).times(100).toFixed(1)}%..${nano.official.output && !sellOut.isZero() ? new Decimal(1).minus(new Decimal(nano.official.output).div(sellOut)).times(100).toFixed(1) : "?"}%`,
       review: true,
     });
   }
 
   console.log(`\nModels upserted: ${rows.length}\n`);
   printTable(rows);
+
+  // other models still carrying the OLD seeded default (+30% over cost, never edited by an admin) -> "match official"
+  if (!process.argv.includes("--keep-old-rules")) {
+    const m = await migrateSeededMarkupRules();
+    if (m.migrated.length) console.log(`\nMoved to "match official" (were on the old +30% default): ${m.migrated.join(", ")}`);
+    if (m.kept.length) console.log(`Kept on +30% over cost (edited by an admin or no official price): ${m.kept.join(", ")}`);
+  }
 
   if (await waitRedis()) {
     await publishConfigInvalidate("all");

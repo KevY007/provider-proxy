@@ -270,7 +270,7 @@ export function RuleSelector({
                 value={value}
                 onChange={(e) => onValue(e.target.value)}
                 aria-invalid={!!valueError}
-                placeholder={mode === "PERCENT_OF_OFFICIAL" ? "70" : "30"}
+                placeholder={mode === "PERCENT_OF_OFFICIAL" ? "100" : "30"}
                 className="h-9 w-28 tabular-nums"
               />
               <span className="text-sm text-muted-foreground">%</span>

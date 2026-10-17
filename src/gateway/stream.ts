@@ -45,6 +45,11 @@ export interface StreamOptions {
   /** Send `: keep-alive` comments while the upstream is silent (SSE only; 0 / undefined = off). */
   heartbeatMs?: number;
   /**
+   * Raw passthrough (no processor) with a known body length: a client that leaves once it has received this many bytes
+   * got the complete body, which is a normal end (not a cancellation).
+   */
+  expectedBytes?: number;
+  /**
    * Funds guard: checked after every upstream chunk. When `exceeded()` turns true the upstream is aborted, `events()`
    * (native error ending) is sent to the client and the stream finishes with reason "budget".
    */
@@ -351,7 +356,8 @@ export class StreamSession {
         const timedOut = reason instanceof UpstreamTimeoutError || err instanceof UpstreamTimeoutError;
         const clientGone = reason instanceof ClientAbortError || err instanceof ClientAbortError || (this.o.signal.aborted && !timedOut && !(reason instanceof BudgetCutError));
         if (clientGone && !timedOut) {
-          this.finish("cancelled", { error: err });
+          // (same rule as cancel(): the client may leave first, and the abort then lands on the idle read of the NEXT pull)
+          this.finish(this.deliveredEverything() ? "completed" : "cancelled", { error: err });
           try {
             c.close();
           } catch {
@@ -365,12 +371,28 @@ export class StreamSession {
       }
     };
     const cancel = (reason: unknown): void => {
-      // client went away: stop everything now - the upstream connection is destroyed
-      this.finish("cancelled", { error: reason });
+      // The client went away: stop everything now - the upstream connection is destroyed. But a client that leaves AFTER
+      // the upstream's terminal event was handed to it (the OpenAI SDK stops reading at `[DONE]` and closes at once, long
+      // before the next pull would have noticed the upstream's own end) received the complete response: that is a normal
+      // end, not a cancellation. Only a close BEFORE the upstream completed is CANCELLED.
+      this.finish(this.deliveredEverything() ? "completed" : "cancelled", { error: reason });
       this.o.abort(new ClientAbortError());
       this.reader.cancel().catch(() => undefined);
     };
     return new ReadableStream<Uint8Array>({ start, pull, cancel }, new CountQueuingStrategy({ highWaterMark: 4 }));
+  }
+
+  /**
+   * True when the upstream finished (its terminal event was seen / all announced bytes were passed on) and nothing is
+   * left to hand to the client: every byte of the response has been enqueued.
+   */
+  private deliveredEverything(): boolean {
+    if (this.finished || this.cutDone || this.pending.length > 0) return false;
+    const p = this.o.processor;
+    if (p) return p.completed() && !p.error();
+    if (this.upstreamDone) return true;
+    const want = this.o.expectedBytes;
+    return want !== undefined && want >= 0 && this.bytesOut >= want;
   }
 
   /** After prime(): upstream ended without producing any output. */
