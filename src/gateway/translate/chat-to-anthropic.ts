@@ -427,6 +427,13 @@ export class AnthropicToChatStream implements StreamProcessor {
   outputText(): string {
     return this.text.toString();
   }
+  outputChars(): number {
+    return this.text.length;
+  }
+  /** Funds exhausted: final chunk (finish_reason "length") + the native error event + [DONE]. */
+  abortEvents(errorEvent: string): string[] {
+    return [this.chunk({}, "length"), errorEvent, "data: [DONE]\n\n"];
+  }
   completed(): boolean {
     return this.done;
   }

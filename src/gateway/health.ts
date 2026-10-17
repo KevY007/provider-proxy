@@ -2,9 +2,10 @@ import type { HealthStatus } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
 import { logger } from "@/lib/logger";
-import { invalidateGatewayConfig } from "./cache";
+import { getSettings } from "@/lib/settings";
+import { broadcastKeyState, invalidateGatewayConfig } from "./cache";
 import { buildUpstreamHeaders, type AdapterProvider } from "./providers/adapters";
-import { maxTokensParamFor } from "./shape";
+import { maxTokensParamFor, parseRetryAfter } from "./shape";
 import type { InboundFormat, JsonObject } from "./types";
 import { ClientAbortError, UpstreamTimeoutError, readErrorBody, sendUpstream } from "./upstream";
 import { isObject } from "./util";
@@ -20,7 +21,7 @@ async function loadKey(id: string) {
   return db.providerKey.findUnique({ where: { id }, include: { provider: true } });
 }
 
-function toAdapter(p: ProviderRow): AdapterProvider {
+export function toAdapter(p: ProviderRow): AdapterProvider {
   const headers: Record<string, string> = {};
   if (isObject(p.extraHeaders)) for (const [k, v] of Object.entries(p.extraHeaders)) if (typeof v === "string") headers[k.toLowerCase()] = v;
   return {
@@ -103,14 +104,29 @@ async function runProbe(adapter: AdapterProvider, probe: Probe, secret: string, 
   try {
     const h = await sendUpstream({ url, method: probe.method, headers, body: probe.body ? JSON.stringify(probe.body) : null, timeoutMs });
     const text = await readErrorBody(h.res, 4096);
+    const retryAfterSec = parseRetryAfter(h.res.headers);
     h.dispose();
-    return { status: h.res.status, latencyMs: Date.now() - t0, text };
+    return { status: h.res.status, latencyMs: Date.now() - t0, text, retryAfterSec };
   } catch (err) {
-    if (err instanceof UpstreamTimeoutError) return { status: 0, latencyMs: Date.now() - t0, text: `timeout after ${timeoutMs}ms` };
-    if (err instanceof ClientAbortError) return { status: 0, latencyMs: Date.now() - t0, text: "aborted" };
+    if (err instanceof UpstreamTimeoutError) return { status: 0, latencyMs: Date.now() - t0, text: `timeout after ${timeoutMs}ms`, retryAfterSec: undefined };
+    if (err instanceof ClientAbortError) return { status: 0, latencyMs: Date.now() - t0, text: "aborted", retryAfterSec: undefined };
     const cause = (err as { cause?: { code?: string } }).cause;
-    return { status: 0, latencyMs: Date.now() - t0, text: `${err instanceof Error ? err.message : String(err)}${cause?.code ? ` (${cause.code})` : ""}` };
+    return { status: 0, latencyMs: Date.now() - t0, text: `${err instanceof Error ? err.message : String(err)}${cause?.code ? ` (${cause.code})` : ""}`, retryAfterSec: undefined };
   }
+}
+
+type ProbeResult = Awaited<ReturnType<typeof runProbe>>;
+
+/** What a failed probe says about the credential. */
+export type ProbeVerdict = { kind: "invalid" } | { kind: "cooldown"; seconds: number; why: string } | { kind: "none" };
+
+/** 401/403 = bad credential (INVALID), 429 = rate limited (COOLDOWN with retry-after), 402 / "balance exhausted" = COOLDOWN 10 min. */
+export function judgeProbe(preset: string, r: Pick<ProbeResult, "status" | "text" | "retryAfterSec">, keyCooldownSeconds: number): ProbeVerdict {
+  const paymentLike = /locked|exhaust|balance|insufficient|quota|billing|payment/i.test(r.text);
+  if (r.status === 429) return { kind: "cooldown", seconds: Math.min(3600, Math.max(1, r.retryAfterSec ?? keyCooldownSeconds)), why: "rate limited" };
+  if (r.status === 402 || (r.status === 403 && preset === "fal" && paymentLike)) return { kind: "cooldown", seconds: 600, why: "account out of credit" };
+  if (r.status === 401 || r.status === 403) return { kind: "invalid" };
+  return { kind: "none" };
 }
 
 /** Check one upstream key: records a HealthCheck row, refreshes key state and the provider's aggregate health. */
@@ -138,6 +154,12 @@ export async function checkProviderKey(providerKeyId: string): Promise<HealthRes
     const route = await db.modelRoute.findFirst({ where: { providerId: provider.id, enabled: true }, orderBy: { priority: "desc" } });
     if (route) r = await runProbe(adapter, completionProbe(adapter, provider.formats, route.upstreamModel), secret, keyExtra, timeout);
   }
+  // 401 / 403 on the models list: a key restricted to specific scopes may still be able to call the model, so confirm
+  // with a 1-token completion before declaring it invalid
+  if (!accepted && hasChatProbe && (r.status === 401 || r.status === 403)) {
+    const route = await db.modelRoute.findFirst({ where: { providerId: provider.id, enabled: true }, orderBy: { priority: "desc" } });
+    if (route) r = await runProbe(adapter, completionProbe(adapter, provider.formats, route.upstreamModel), secret, keyExtra, timeout);
+  }
   const ok = (r.status >= 200 && r.status < 300) || accepted;
   const result: HealthResult = ok ? { ok, latencyMs: r.latencyMs } : { ok, latencyMs: r.latencyMs, error: `${r.status || "network"}: ${r.text.replace(/\s+/g, " ").slice(0, 200)}` };
   await record(provider.id, row.id, result);
@@ -154,7 +176,25 @@ export async function checkProviderKey(providerKeyId: string): Promise<HealthRes
         void invalidateGatewayConfig("providers", row.id);
       }
     } else if (result.error) {
-      await db.providerKey.update({ where: { id: row.id }, data: { lastError: `health: ${result.error}`.slice(0, 500) } });
+      const data: { lastError: string; status?: "INVALID" | "COOLDOWN"; cooldownUntil?: Date | null } = { lastError: `health: ${result.error}`.slice(0, 500) };
+      let cooldownUntil: number | null = null;
+      if (row.status !== "DISABLED") {
+        const verdict = judgeProbe(provider.preset, r, (await getSettings()).keyCooldownSeconds);
+        if (verdict.kind === "invalid") {
+          data.status = "INVALID";
+          data.cooldownUntil = null;
+        } else if (verdict.kind === "cooldown") {
+          cooldownUntil = Date.now() + verdict.seconds * 1000;
+          data.status = "COOLDOWN";
+          data.cooldownUntil = new Date(cooldownUntil);
+        }
+      }
+      await db.providerKey.update({ where: { id: row.id }, data });
+      if (data.status) {
+        logger.warn("health check changed an upstream key state", { providerKeyId: row.id, status: data.status, httpStatus: r.status });
+        await invalidateGatewayConfig("providers", row.id);
+        void broadcastKeyState(row.id, data.status, cooldownUntil, row.consecutiveFailures).catch(() => undefined);
+      }
     }
   } catch (err) {
     logger.warn("health: key update failed", { providerKeyId: row.id, err });

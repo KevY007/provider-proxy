@@ -16,7 +16,8 @@ import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
 import { rangeToParams, type DateRangeValue } from "@/lib/date-range";
 import { formatDuration, formatNumber } from "@/lib/utils";
-import { describeErrorCode } from "@/server/customer/error-codes";
+import { explainError, logStatusInfo } from "@/server/customer/log-status";
+import { requestSaving } from "@/server/customer/savings";
 import type { LogRow } from "@/server/customer/logs";
 import { LocalTime } from "./local-time";
 
@@ -63,6 +64,18 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
   const columns = useMemo<ColumnDef<LogRow>[]>(
     () => [
       { id: "time", header: "Time", accessorFn: (r) => r.createdAt, cell: ({ row }) => <LocalTime iso={row.original.createdAt} className="whitespace-nowrap" />, enableSorting: false },
+      {
+        id: "requestId",
+        header: "Request id",
+        accessorFn: (r) => r.id,
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+            <code className="font-mono text-xs text-muted-foreground">{row.original.id.slice(0, 10)}…</code>
+            <CopyButton value={row.original.id} size="icon-xs" toastMessage="Request id copied" />
+          </span>
+        ),
+        enableSorting: false,
+      },
       { id: "key", header: "Key", accessorFn: (r) => r.keyName ?? "", cell: ({ row }) => <span className="whitespace-nowrap">{row.original.keyName ?? <span className="text-muted-foreground">-</span>}</span>, enableSorting: false },
       { id: "model", header: "Model", accessorFn: (r) => r.modelSlug ?? "", cell: ({ row }) => <span className="font-mono text-xs">{row.original.modelSlug ?? "-"}</span>, enableSorting: false },
       {
@@ -85,18 +98,42 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
         id: "status",
         header: "Status",
         accessorFn: (r) => `${r.status} ${r.httpStatus}`,
-        cell: ({ row }) => (
-          <div className="flex items-center gap-2 whitespace-nowrap">
-            <StatusBadge status={row.original.status} dot={false} />
-            <span className="font-mono text-xs text-muted-foreground">{row.original.httpStatus}</span>
-          </div>
-        ),
+        cell: ({ row }) => {
+          const st = logStatusInfo(row.original.status, row.original.httpStatus);
+          return (
+            <div className="flex items-center gap-2 whitespace-nowrap" title={st.hint}>
+              <StatusBadge status={row.original.status} label={st.label} tone={st.tone} dot={false} />
+              <span className="font-mono text-xs text-muted-foreground">{row.original.httpStatus}</span>
+              {row.original.errorCode && (
+                <Link href={`/docs/errors#${row.original.errorCode}`} target="_blank" onClick={(e) => e.stopPropagation()} className="font-mono text-xs text-muted-foreground hover:text-foreground hover:underline">
+                  {row.original.errorCode}
+                </Link>
+              )}
+            </div>
+          );
+        },
         enableSorting: false,
       },
       { id: "in", header: "In", accessorFn: (r) => r.inputTokens, cell: ({ row }) => formatNumber(row.original.inputTokens), meta: { className: "text-right" }, enableSorting: false },
       { id: "out", header: "Out", accessorFn: (r) => r.outputTokens, cell: ({ row }) => formatNumber(row.original.outputTokens), meta: { className: "text-right" }, enableSorting: false },
       { id: "cached", header: "Cached", accessorFn: (r) => r.cachedTokens, cell: ({ row }) => formatNumber(row.original.cachedTokens), meta: { className: "text-right" }, enableSorting: false },
-      { id: "cost", header: "Cost", accessorFn: (r) => r.price, cell: ({ row }) => <MoneyText value={row.original.price} />, meta: { className: "text-right" }, enableSorting: false },
+      {
+        id: "official",
+        header: "Official",
+        accessorFn: (r) => r.officialPrice,
+        cell: ({ row }) => (Number(row.original.officialPrice) > 0 ? <MoneyText value={row.original.officialPrice} className="text-muted-foreground" /> : <span className="text-muted-foreground">-</span>),
+        meta: { className: "text-right" },
+        enableSorting: false,
+      },
+      { id: "cost", header: "Charged", accessorFn: (r) => r.price, cell: ({ row }) => <MoneyText value={row.original.price} />, meta: { className: "text-right" }, enableSorting: false },
+      {
+        id: "saved",
+        header: "Saved",
+        accessorFn: (r) => requestSaving(r.officialPrice, r.price),
+        cell: ({ row }) => <SavedCell official={row.original.officialPrice} price={row.original.price} />,
+        meta: { className: "text-right" },
+        enableSorting: false,
+      },
       { id: "latency", header: "Latency", accessorFn: (r) => r.latencyMs, cell: ({ row }) => formatDuration(row.original.latencyMs), meta: { className: "text-right" }, enableSorting: false },
       { id: "ttft", header: "TTFT", accessorFn: (r) => r.ttftMs ?? "", cell: ({ row }) => (row.original.ttftMs != null ? formatDuration(row.original.ttftMs) : <span className="text-muted-foreground">-</span>), meta: { className: "text-right" }, enableSorting: false },
     ],
@@ -193,6 +230,12 @@ function FilterSelect({ label, value, onChange, items, allLabel }: { label: stri
   );
 }
 
+function SavedCell({ official, price }: { official: string; price: string }) {
+  if (!(Number(official) > 0)) return <span className="text-muted-foreground">-</span>;
+  const v = requestSaving(official, price);
+  return <MoneyText value={v} signed colorize className={Number(v) < 0 ? "!text-amber-600 dark:!text-amber-400" : undefined} />;
+}
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 border-b py-2 text-sm last:border-0">
@@ -203,7 +246,8 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 }
 
 function LogSheet({ row, onClose }: { row: LogRow | null; onClose: () => void }) {
-  const info = describeErrorCode(row?.errorCode);
+  const info = explainError(row?.errorCode, row?.errorMessage);
+  const st = logStatusInfo(row?.status, row?.httpStatus);
   return (
     <Sheet open={!!row} onOpenChange={(o) => !o && onClose()}>
       <SheetContent className="w-full overflow-y-auto sm:max-w-md">
@@ -211,9 +255,9 @@ function LogSheet({ row, onClose }: { row: LogRow | null; onClose: () => void })
           <>
             <SheetHeader>
               <SheetTitle className="flex items-center gap-2">
-                Request details <StatusBadge status={row.status} />
+                Request details <StatusBadge status={row.status} label={st.label} tone={st.tone} />
               </SheetTitle>
-              <SheetDescription>Share the request id with support if something looks wrong.</SheetDescription>
+              <SheetDescription>{st.hint} Share the request id with support if something looks wrong.</SheetDescription>
             </SheetHeader>
             <div className="space-y-5 px-4 pb-6">
               <div className="flex items-center gap-1 rounded-lg border bg-muted/40 py-1.5 pl-3 pr-1">
@@ -231,12 +275,16 @@ function LogSheet({ row, onClose }: { row: LogRow | null; onClose: () => void })
                   {info && (
                     <p className="text-muted-foreground">
                       <span className="font-medium text-foreground">What it means:</span> {info.meaning}
-                      <br />
-                      <span className="font-medium text-foreground">How to fix:</span> {info.fix.replace(/`/g, "")}
+                      {info.fix && (
+                        <>
+                          <br />
+                          <span className="font-medium text-foreground">How to fix:</span> {info.fix.replace(/`/g, "")}
+                        </>
+                      )}
                     </p>
                   )}
-                  {row.errorCode && (
-                    <Link href={`/docs/errors#${row.errorCode}`} target="_blank" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                  {info && (
+                    <Link href={info.docsHref} target="_blank" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
                       Error reference <ExternalLink className="size-3" />
                     </Link>
                   )}
@@ -255,8 +303,11 @@ function LogSheet({ row, onClose }: { row: LogRow | null; onClose: () => void })
                 <Row label="Cached tokens">{formatNumber(row.cachedTokens)}</Row>
                 {row.reasoningTokens > 0 && <Row label="Reasoning tokens">{formatNumber(row.reasoningTokens)}</Row>}
                 {row.imageCount > 0 && <Row label="Images">{formatNumber(row.imageCount)}</Row>}
+                {row.videoSeconds > 0 && <Row label="Video seconds">{formatNumber(row.videoSeconds)}</Row>}
                 {row.usageEstimated && <Row label="Usage">Estimated</Row>}
-                <Row label="Cost"><MoneyText value={row.price} /></Row>
+                <Row label="Official price">{Number(row.officialPrice) > 0 ? <MoneyText value={row.officialPrice} /> : <span className="text-muted-foreground">not recorded</span>}</Row>
+                <Row label="Charged"><MoneyText value={row.price} /></Row>
+                <Row label="Saved"><SavedCell official={row.officialPrice} price={row.price} /></Row>
                 <Row label="Latency">{formatDuration(row.latencyMs)}</Row>
                 <Row label="Time to first token">{row.ttftMs != null ? formatDuration(row.ttftMs) : "-"}</Row>
                 <Row label="Attempts">{row.attempts}</Row>

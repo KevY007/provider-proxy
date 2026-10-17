@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ConfigSnapshot, GroupRec, KeyRec, ModelRec, ProviderRec, RouteRec } from "@/gateway/cache";
 import { __resetCacheForTests, effectiveKeyState, isKeyUsable, setKeyRuntime } from "@/gateway/cache";
 import { recordKeyFailure, recordKeySuccess } from "@/gateway/keyhealth";
-import { sellTable, costTable } from "@/gateway/pricing";
+import { sellTable, costTable, officialTable } from "@/gateway/pricing";
 import { buildCandidates, eligibleRoutes, orderKeys, orderRoutes } from "@/gateway/select";
 import { Decimal } from "@/lib/money";
 
@@ -56,6 +56,8 @@ const model: ModelRec = {
   sortOrder: 0,
   maskUpstreamModel: true,
   sell: sellTable({ inputPrice: 1, outputPrice: 1 }),
+  official: officialTable({}),
+  retiresAt: null,
   longContext: { threshold: null, multiplier: null },
   createdAt: 0,
 };
@@ -84,6 +86,7 @@ const group = (over: Partial<GroupRec> = {}): GroupRec => ({
   providerTags: [],
   allowedModels: null,
   isDefault: true,
+  isPublic: true,
   rpmLimit: null,
   maxConcurrency: null,
   ...over,

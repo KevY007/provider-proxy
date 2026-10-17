@@ -102,6 +102,11 @@ export function parsePath(pathname: string, method: string): ParsedPath {
     if (m !== "GET") throw methodNotAllowed(m, "GET");
     return base({ endpoint: "/v1/models", format: "catalog", op: "models_list" });
   }
+  if (p === "/v1/model/info" || p === "/v1/model_info") {
+    // LiteLLM-compatible price / capability sheet at the caller's effective price
+    if (m !== "GET") throw methodNotAllowed(m, "GET");
+    return base({ endpoint: "/v1/model/info", format: "catalog", op: "model_info" });
+  }
   if (p.startsWith("/v1/models/")) {
     if (m !== "GET") throw methodNotAllowed(m, "GET");
     return base({ endpoint: "/v1/models/{model}", format: "catalog", op: "model_get", model: decode(p.slice("/v1/models/".length)) });

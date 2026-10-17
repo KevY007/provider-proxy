@@ -1,9 +1,9 @@
 import type { Candidate } from "./select";
-import { GatewayError, type GatewayErrorCode } from "./errors";
+import { GatewayError, errorFormatFor, geminiStatusFor, type GatewayErrorCode } from "./errors";
 import { encodeMultipart, type ParsedForm } from "./multipart";
 import { buildUpstreamHeaders, buildUpstreamUrl, providerSettings, upstreamOp } from "./providers/adapters";
 import { chatRequestToMessages, messagesRequestToChat } from "./translate";
-import type { InboundFormat, Json, JsonObject, Operation, ParsedPath, Usage } from "./types";
+import type { ErrorFormat, InboundFormat, Json, JsonObject, Operation, ParsedPath, Usage } from "./types";
 import { emptyUsage } from "./types";
 import { usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponses } from "./usage";
 import { deepMerge, isObject, safeJsonParse } from "./util";
@@ -27,6 +27,10 @@ export interface PrepareInput {
   /** Video lookups: UPSTREAM video id + raw query (e.g. "variant=thumbnail"). */
   videoId?: string;
   query?: string;
+  /** Funds guard (PLAN 9c): hard output cap to write into the request (the client set none and little is affordable). */
+  outputCap?: number | null;
+  /** Funds guard: output tokens reserved; used when the upstream REQUIRES a cap (Anthropic) and the client sent none. */
+  fillOutput?: number | null;
 }
 
 export interface Prepared {
@@ -45,8 +49,11 @@ function applyOutputClamp(obj: JsonObject, format: InboundFormat, op: Operation,
     obj.max_tokens = typeof obj.max_tokens === "number" ? Math.min(obj.max_tokens, limit) : limit;
   } else if (format === "gemini") {
     if (op === "gemini_generate" || op === "gemini_stream") {
-      const gc = isObject(obj.generationConfig) ? obj.generationConfig : (obj.generationConfig = {});
-      gc.maxOutputTokens = typeof gc.maxOutputTokens === "number" ? Math.min(gc.maxOutputTokens, limit) : limit;
+      const snake = !isObject(obj.generationConfig) && isObject(obj.generation_config);
+      const gc = snake ? (obj.generation_config as JsonObject) : isObject(obj.generationConfig) ? obj.generationConfig : (obj.generationConfig = {});
+      const field = snake ? "max_output_tokens" : "maxOutputTokens";
+      const cur = gc[field];
+      gc[field] = typeof cur === "number" ? Math.min(cur, limit) : limit;
     }
   } else if (format === "openai_responses") {
     obj.max_output_tokens = typeof obj.max_output_tokens === "number" ? Math.min(obj.max_output_tokens, limit) : limit;
@@ -115,6 +122,12 @@ export function prepareUpstream(i: PrepareInput): Prepared {
     for (const f of ps.stripFields) delete obj[f];
     if (Object.keys(route.paramOverrides).length) deepMerge(obj, route.paramOverrides);
     if (route.maxOutputTokens && route.maxOutputTokens > 0) applyOutputClamp(obj, upFormat, op, route.maxOutputTokens, tokensParam);
+    if (i.outputCap && i.outputCap > 0) applyOutputClamp(obj, upFormat, op, i.outputCap, tokensParam);
+    // Anthropic requires max_tokens: when the client sent none, use what the funds guard reserved
+    if (upFormat === "anthropic_messages" && op === "messages" && typeof obj.max_tokens !== "number") {
+      const known = route.maxOutputTokens ?? model.maxOutput;
+      obj.max_tokens = known ? Math.min(i.fillOutput ?? known, known) : Math.min(i.fillOutput ?? 4096, 4096);
+    }
     body = JSON.stringify(obj);
   }
 
@@ -217,38 +230,57 @@ export function scrubText(text: string, c: ScrubContext): string {
   return t;
 }
 
-function scrubJson(v: Json, c: ScrubContext): Json {
-  if (typeof v === "string") return scrubText(v, c);
-  if (Array.isArray(v)) return v.map((x) => scrubJson(x, c));
-  if (isObject(v)) {
-    const out: JsonObject = {};
-    for (const [k, x] of Object.entries(v)) out[k] = scrubJson(x, c);
-    return out;
+/** Best-effort human message out of an upstream error JSON document (OpenAI / Anthropic / Gemini / FastAPI shapes). */
+function messageFromJson(j: Json, depth = 0): string | undefined {
+  if (depth > 3) return undefined;
+  if (Array.isArray(j)) {
+    for (const item of j) {
+      const m = messageFromJson(item, depth + 1);
+      if (m) return m;
+    }
+    return undefined;
   }
-  return v;
+  if (!isObject(j)) return undefined;
+  if (isObject(j.error) && typeof j.error.message === "string") return j.error.message;
+  if (typeof j.error === "string") return j.error;
+  if (typeof j.message === "string") return j.message;
+  if (typeof j.detail === "string") return j.detail;
+  if (Array.isArray(j.detail)) {
+    const msgs = j.detail.map((d: Json) => (isObject(d) && typeof d.msg === "string" ? d.msg : typeof d === "string" ? d : "")).filter(Boolean);
+    if (msgs.length) return msgs.join("; ");
+  }
+  return undefined;
 }
 
-/** Best-effort human message out of an upstream error body (OpenAI / Anthropic / Gemini / plain text). */
+/** Best-effort human message out of an upstream error body (JSON in any vendor shape, HTML or plain text). Never the raw body. */
 export function extractErrorMessage(body: string): string {
   const j = safeJsonParse<Json>(body);
-  if (isObject(j)) {
-    if (isObject(j.error) && typeof j.error.message === "string") return j.error.message;
-    if (typeof j.error === "string") return j.error;
-    if (typeof j.message === "string") return j.message;
-    if (typeof j.detail === "string") return j.detail;
-    if (Array.isArray(j.detail)) {
-      const msgs = j.detail.map((d: Json) => (isObject(d) && typeof d.msg === "string" ? d.msg : typeof d === "string" ? d : "")).filter(Boolean);
-      if (msgs.length) return msgs.join("; ");
-    }
-    if (Array.isArray(j) && isObject(j[0]) && isObject(j[0].error)) return String(j[0].error.message ?? "");
+  if (j !== undefined && typeof j === "object" && j !== null) {
+    // JSON without a recognisable message: the caller substitutes a generic one, the raw document is never echoed
+    return messageFromJson(j) ?? "";
   }
   return body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
 }
 
+/** Identifier-like strings (error type / code / param) that are safe to pass on. */
+const safeId = (v: unknown): string | null => (typeof v === "string" && /^[\w.\-[\]]{1,100}$/.test(v) ? v : null);
+
+const genericClientMessage = (status: number): string =>
+  status === 404 ? "The requested resource was not found." : status === 413 ? "The request is too large." : status === 429 ? "Rate limit exceeded." : "The request was rejected as invalid.";
+
+/** Rebuild an upstream error JSON in the inbound format from whitelisted, scrubbed fields only. */
+function sanitizedErrorBody(parsed: JsonObject, format: ErrorFormat, status: number, message: string): string {
+  const e = isObject(parsed.error) ? parsed.error : parsed;
+  if (format === "anthropic") return JSON.stringify({ type: "error", error: { type: safeId(e.type) ?? "invalid_request_error", message } });
+  if (format === "gemini") return JSON.stringify({ error: { code: status, message, status: safeId(e.status) ?? geminiStatusFor(status) } });
+  return JSON.stringify({ error: { message, type: safeId(e.type) ?? "invalid_request_error", code: safeId(e.code), param: safeId(e.param) } });
+}
+
 /**
- * Build the customer-facing error for a NON-retryable upstream 4xx (400/404/413/422...). When inbound and
- * upstream speak the same wire format the (scrubbed) body is passed through unchanged; otherwise it is re-wrapped
- * in the inbound shape.
+ * Build the customer-facing error for a NON-retryable upstream 4xx (400/404/413/422...). The upstream body is NEVER
+ * returned as-is: when inbound and upstream speak the same wire format and the body is a JSON error document, it is
+ * rebuilt from its whitelisted fields (message scrubbed, type / code / param kept so SDK error handling keeps working);
+ * anything else (plain text, HTML, odd JSON, cross-format) becomes a native error whose message is the scrubbed text.
  */
 export function clientErrorFromUpstream(
   status: number,
@@ -258,14 +290,16 @@ export function clientErrorFromUpstream(
   scrub: ScrubContext,
 ): GatewayError {
   const parsed = safeJsonParse<Json>(bodyText);
-  const sameShape = (inboundFormat === upstreamFormat || (inboundFormat.startsWith("openai_") && upstreamFormat.startsWith("openai_"))) && isObject(parsed) && (isObject(parsed.error) || parsed.type === "error");
-  const msg = scrubText(extractErrorMessage(bodyText) || "The upstream provider rejected the request.", scrub);
+  const doc = Array.isArray(parsed) && isObject(parsed[0]) ? parsed[0] : parsed;
+  const sameShape = (inboundFormat === upstreamFormat || (inboundFormat.startsWith("openai_") && upstreamFormat.startsWith("openai_"))) && isObject(doc) && (isObject(doc.error) || doc.type === "error");
+  const raw = extractErrorMessage(bodyText).replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  const msg = scrubText(raw || genericClientMessage(status), scrub).slice(0, 1000);
   const code: GatewayErrorCode = status === 413 ? "payload_too_large" : "invalid_request";
   return new GatewayError(code, msg, {
     status,
     internal: `upstream ${status}: ${bodyText.slice(0, 2000)}`,
     kind: "client",
-    ...(sameShape ? { passthroughBody: JSON.stringify(scrubJson(parsed, scrub)) } : {}),
+    ...(sameShape ? { passthroughBody: sanitizedErrorBody(doc as JsonObject, errorFormatFor(inboundFormat), status, msg) } : {}),
     upstreamStatus: status,
   });
 }

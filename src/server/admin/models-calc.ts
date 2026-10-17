@@ -10,6 +10,8 @@
  *   MODEL_PRICE_PAIRS, MODEL_CAPABILITIES, ...
  */
 import { z } from "zod";
+import { Decimal } from "@/lib/money";
+import type { PriceTable, PriceUnitKey } from "@/server/pricing/preview";
 
 export const MODEL_CAPABILITIES = [
   "chat",
@@ -23,6 +25,7 @@ export const MODEL_CAPABILITIES = [
   "vision",
   "tools",
   "reasoning",
+  "video",
 ] as const;
 
 export const MODEL_STATUSES = ["ACTIVE", "HIDDEN", "DISABLED"] as const;
@@ -31,29 +34,54 @@ export const MODEL_STATUSES = ["ACTIVE", "HIDDEN", "DISABLED"] as const;
 export interface PricePair {
   sell: string;
   cost: string;
+  /** Model field holding the Official price for this unit (none for cache write 1h). */
+  official: string | null;
+  /** Matches PriceUnitKey in @/server/pricing/preview (null = not part of the live preview). */
+  unitKey: PriceUnitKey | null;
   label: string;
   unit: string;
 }
 
 export const MODEL_PRICE_PAIRS: PricePair[] = [
-  { sell: "inputPrice", cost: "inputCost", label: "Input", unit: "USD / 1M tokens" },
-  { sell: "outputPrice", cost: "outputCost", label: "Output", unit: "USD / 1M tokens" },
-  { sell: "cachedInputPrice", cost: "cachedInputCost", label: "Cached input", unit: "USD / 1M tokens (blank = input price)" },
-  { sell: "cacheWritePrice", cost: "cacheWriteCost", label: "Cache write (5m)", unit: "USD / 1M tokens (blank = input price)" },
-  { sell: "cacheWrite1hPrice", cost: "cacheWrite1hCost", label: "Cache write (1h)", unit: "USD / 1M tokens" },
-  { sell: "imagePrice", cost: "imageCost", label: "Per image", unit: "USD / image (flat; blank = bill image tokens)" },
-  { sell: "requestPrice", cost: "requestCost", label: "Per request", unit: "USD flat per request" },
-  { sell: "audioInputPrice", cost: "audioInputCost", label: "Audio input", unit: "USD / 1M audio tokens" },
-  { sell: "audioOutputPrice", cost: "audioOutputCost", label: "Audio output", unit: "USD / 1M audio tokens" },
-  { sell: "perMinutePrice", cost: "perMinuteCost", label: "Per minute (transcription)", unit: "USD / minute" },
-  { sell: "perMillionChars", cost: "perMillionCharsCost", label: "Per 1M characters (TTS)", unit: "USD / 1M chars" },
+  { sell: "inputPrice", cost: "inputCost", official: "officialInputPrice", unitKey: "input", label: "Input", unit: "USD / 1M tokens" },
+  { sell: "outputPrice", cost: "outputCost", official: "officialOutputPrice", unitKey: "output", label: "Output", unit: "USD / 1M tokens" },
+  { sell: "cachedInputPrice", cost: "cachedInputCost", official: "officialCachedPrice", unitKey: "cachedInput", label: "Cached input", unit: "USD / 1M tokens (blank = input price)" },
+  { sell: "cacheWritePrice", cost: "cacheWriteCost", official: "officialCacheWritePrice", unitKey: "cacheWrite", label: "Cache write (5m)", unit: "USD / 1M tokens (blank = input price)" },
+  { sell: "cacheWrite1hPrice", cost: "cacheWrite1hCost", official: null, unitKey: null, label: "Cache write (1h)", unit: "USD / 1M tokens" },
+  { sell: "imagePrice", cost: "imageCost", official: "officialImagePrice", unitKey: "image", label: "Per image", unit: "USD / image (flat; blank = bill image tokens)" },
+  { sell: "perSecondPrice", cost: "perSecondCost", official: "officialPerSecondPrice", unitKey: "perSecond", label: "Per second (video)", unit: "USD / second of generated video" },
+  { sell: "requestPrice", cost: "requestCost", official: "officialRequestPrice", unitKey: "request", label: "Per request", unit: "USD flat per request" },
+  { sell: "audioInputPrice", cost: "audioInputCost", official: "officialAudioInputPrice", unitKey: "audioInput", label: "Audio input", unit: "USD / 1M audio tokens" },
+  { sell: "audioOutputPrice", cost: "audioOutputCost", official: "officialAudioOutputPrice", unitKey: "audioOutput", label: "Audio output", unit: "USD / 1M audio tokens" },
+  { sell: "perMinutePrice", cost: "perMinuteCost", official: "officialPerMinutePrice", unitKey: "perMinute", label: "Per minute (transcription)", unit: "USD / minute" },
+  { sell: "perMillionChars", cost: "perMillionCharsCost", official: "officialPerMillionChars", unitKey: "perMillionChars", label: "Per 1M characters (speech)", unit: "USD / 1M chars" },
 ];
 
-export const OFFICIAL_PRICE_FIELDS = [
-  { key: "officialInputPrice", label: "Official input", unit: "USD / 1M tokens" },
-  { key: "officialOutputPrice", label: "Official output", unit: "USD / 1M tokens" },
-  { key: "officialCachedPrice", label: "Official cached input", unit: "USD / 1M tokens" },
-] as const;
+/** Every Official price field (one per billable unit), for forms and schemas. */
+export const OFFICIAL_PRICE_FIELDS = MODEL_PRICE_PAIRS.filter((p) => p.official).map((p) => ({
+  key: p.official as string,
+  label: `Official ${p.label.toLowerCase()}`,
+  unit: p.unit,
+}));
+
+export const PRICING_MODES = ["FIXED", "PERCENT_OF_OFFICIAL", "MARKUP_OVER_COST"] as const;
+export type PricingModeId = (typeof PRICING_MODES)[number];
+
+export const PRICING_MODE_LABELS: Record<PricingModeId, { label: string; hint: string; valueLabel: string; valueHint: string }> = {
+  FIXED: { label: "Fixed prices", hint: "You type the customer price for every unit.", valueLabel: "", valueHint: "" },
+  PERCENT_OF_OFFICIAL: {
+    label: "% of official price",
+    hint: "Customer price = Official price × value%. 70 means 30% cheaper than the provider's own list price.",
+    valueLabel: "Percent of official",
+    valueHint: "70 = customers pay 70% of the official price (30% off). 100 = same as official.",
+  },
+  MARKUP_OVER_COST: {
+    label: "Markup over our cost",
+    hint: "Customer price = Our cost × (1 + value%). Follows your cost automatically when it changes.",
+    valueLabel: "Markup over our cost",
+    valueHint: "30 = we charge 30% more than we pay our supplier.",
+  },
+};
 
 // ---------------------------------------------------------------------------
 // numbers
@@ -154,7 +182,13 @@ export function bestRouteCost(routes: Array<{ enabled: boolean; inputCost: Num; 
 // ---------------------------------------------------------------------------
 // zod schemas (forms send strings; JSON import sends numbers or strings)
 
-const decOpt = z.unknown().transform((v, ctx): string | null => {
+/** Numbers (e.g. 1e-7 from JSON) -> plain decimal strings; everything else untouched. */
+function plainDecimal(v: unknown): unknown {
+  return typeof v === "number" && Number.isFinite(v) ? new Decimal(v).toFixed() : v;
+}
+
+const decOpt = z.unknown().transform((raw, ctx): string | null => {
+  const v = plainDecimal(raw);
   if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return null;
   const s = String(v).trim();
   if (!/^\d+(\.\d+)?$/.test(s)) {
@@ -164,7 +198,8 @@ const decOpt = z.unknown().transform((v, ctx): string | null => {
   return s;
 }).default(null);
 
-const decReq = z.unknown().transform((v, ctx) => {
+const decReq = z.unknown().transform((raw, ctx) => {
+  const v = plainDecimal(raw);
   if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return "0";
   const s = String(v).trim();
   if (!/^\d+(\.\d+)?$/.test(s)) {
@@ -232,7 +267,18 @@ const optText = z
   .nullish()
   .transform((v) => (v === null || v === undefined || v.trim() === "" ? null : v.trim()));
 
-export const modelFieldsSchema = z.object({
+/** "YYYY-MM-DD" (or full ISO) from a date input -> Date; blank -> null. */
+const dateOpt = z.unknown().transform((v, ctx): Date | null => {
+  if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return null;
+  const d = v instanceof Date ? v : new Date(String(v).trim());
+  if (Number.isNaN(d.getTime())) {
+    ctx.addIssue({ code: "custom", message: "Enter a valid date" });
+    return z.NEVER;
+  }
+  return d;
+}).default(null);
+
+const modelFieldsBase = z.object({
   slug: modelSlugSchema,
   aliases: strList,
   displayName: z.string().trim().min(1, "Required").max(120),
@@ -255,12 +301,34 @@ export const modelFieldsSchema = z.object({
   audioOutputPrice: decOpt,
   perMinutePrice: decOpt,
   perMillionChars: decOpt,
+  perSecondPrice: decOpt,
   longContextThreshold: intOpt(1),
   longContextMultiplier: decOpt,
   officialInputPrice: decOpt,
   officialOutputPrice: decOpt,
   officialCachedPrice: decOpt,
+  officialCacheWritePrice: decOpt,
+  officialImagePrice: decOpt,
+  officialRequestPrice: decOpt,
+  officialAudioInputPrice: decOpt,
+  officialAudioOutputPrice: decOpt,
+  officialPerMinutePrice: decOpt,
+  officialPerMillionChars: decOpt,
+  officialPerSecondPrice: decOpt,
+  pricingMode: z.enum(PRICING_MODES).default("FIXED"),
+  pricingValue: decOpt,
+  retiresAt: dateOpt,
 });
+function refinePricingRule(m: { pricingMode: string; pricingValue: string | null }, ctx: z.RefinementCtx) {
+  if (m.pricingMode !== "FIXED" && (m.pricingValue === null || Number(m.pricingValue) <= 0)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["pricingValue"],
+      message: m.pricingMode === "PERCENT_OF_OFFICIAL" ? "Enter a percent of the official price, e.g. 70" : "Enter a markup percent, e.g. 30",
+    });
+  }
+}
+export const modelFieldsSchema = modelFieldsBase.superRefine(refinePricingRule);
 export type ModelFields = z.output<typeof modelFieldsSchema>;
 
 export const routeFieldsSchema = z.object({
@@ -283,13 +351,14 @@ export const routeFieldsSchema = z.object({
   audioOutputCost: decOpt,
   perMinuteCost: decOpt,
   perMillionCharsCost: decOpt,
+  perSecondCost: decOpt,
 });
 export type RouteFields = z.output<typeof routeFieldsSchema>;
 
 export const routeFormSchema = routeFieldsSchema.extend({ providerId: z.string().min(1, "Choose a provider") });
 
 export const routeImportSchema = routeFieldsSchema.extend({ provider: z.string().trim().min(1, "provider (slug) required") });
-export const modelImportSchema = modelFieldsSchema.extend({ routes: z.array(routeImportSchema).optional() });
+export const modelImportSchema = modelFieldsBase.extend({ routes: z.array(routeImportSchema).optional() }).superRefine(refinePricingRule);
 export type ModelImportItem = z.output<typeof modelImportSchema>;
 
 export type ImportParseResult =
@@ -363,4 +432,117 @@ export function pairMargin(pair: PricePair, sell: Record<string, Num>, cost: Rec
   const s = fb && toNum(sell[pair.sell]) === null ? sell.inputPrice : sell[pair.sell];
   const c = fb && toNum(cost[pair.cost]) === null ? cost.inputCost : cost[pair.cost];
   return marginPctOf(s, c);
+}
+
+// ---------------------------------------------------------------------------
+// pricing summaries (Official / Our cost / Customer price / Savings / Margin) - PLAN 9c
+
+type Rec2 = Record<string, Num>;
+
+/** Pick `field(pair)` from a string/number record into a PriceTable keyed by unit (blank -> null). */
+export function toPriceTable(rec: Rec2, field: (p: PricePair) => string | null): PriceTable {
+  const out: PriceTable = {};
+  for (const p of MODEL_PRICE_PAIRS) {
+    if (!p.unitKey) continue;
+    const f = field(p);
+    out[p.unitKey] = f ? toNum(rec[f]) : null;
+  }
+  return out;
+}
+export const officialTable = (model: Rec2) => toPriceTable(model, (p) => p.official);
+export const sellTable = (model: Rec2) => toPriceTable(model, (p) => p.sell);
+export const costTable = (route: Rec2) => toPriceTable(route, (p) => p.cost);
+
+/**
+ * The route whose cost prices are based on (same rule as the server's rules.ts): the highest-priority ENABLED route;
+ * ties go to the higher weight, then the first in list order (oldest). This is "Our cost" everywhere in the admin UI.
+ */
+export function primaryEnabledRoute<T extends { enabled: boolean; priority: number; weight: number }>(routes: T[]): T | null {
+  let best: T | null = null;
+  for (const r of routes) {
+    if (!r.enabled) continue;
+    if (!best || r.priority > best.priority || (r.priority === best.priority && r.weight > best.weight)) best = r;
+  }
+  return best;
+}
+
+export interface RowUnit {
+  key: PriceUnitKey;
+  label: string;
+  per: string;
+  price: number | null;
+  official: number | null;
+  cost: number | null;
+}
+
+const PER: Record<string, string> = { image: "/img", perSecond: "/sec", perMinute: "/min", perMillionChars: "/1M chars", request: "/req" };
+
+/** Units worth listing for a model row: any with a customer price, official price or cost (input/output first). */
+export function rowUnits(model: Rec2, route: Rec2 | null): RowUnit[] {
+  const out: RowUnit[] = [];
+  for (const p of MODEL_PRICE_PAIRS) {
+    if (!p.unitKey) continue;
+    const price = toNum(model[p.sell]);
+    const official = p.official ? toNum(model[p.official]) : null;
+    const cost = route ? toNum(route[p.cost]) : null;
+    const always = p.unitKey === "input" || p.unitKey === "output";
+    if (!always && !(price ?? 0) && !(official ?? 0) && !(cost ?? 0)) continue;
+    out.push({ key: p.unitKey, label: p.label, per: PER[p.unitKey] ?? "/1M", price, official, cost });
+  }
+  // models billed per image / second / minute / chars with no token prices: hide the empty token rows
+  const hasOther = out.some((u) => !["input", "output", "cachedInput", "cacheWrite"].includes(u.key) && ((u.price ?? 0) > 0 || (u.official ?? 0) > 0));
+  return hasOther ? out.filter((u) => (u.price ?? 0) > 0 || (u.official ?? 0) > 0 || (u.cost ?? 0) > 0) : out;
+}
+
+export interface RowSummary {
+  /** Worst (lowest) margin % across units that have both a price and a cost; null when unknown. */
+  marginPct: number | null;
+  /** Savings % vs official: blended 3:1 input:output when both exist, else the first unit with an official price. */
+  savingsPct: number | null;
+  /** Any unit where the customer price is below our cost. */
+  loss: boolean;
+}
+
+export function summarizeRow(units: RowUnit[]): RowSummary {
+  let marginPct: number | null = null;
+  let loss = false;
+  for (const u of units) {
+    if (u.price === null || u.cost === null || u.price === 0) {
+      if (u.price !== null && u.price === 0 && (u.cost ?? 0) > 0) loss = true;
+      continue;
+    }
+    const m = ((u.price - u.cost) / u.price) * 100;
+    if (marginPct === null || m < marginPct) marginPct = m;
+    if (u.price < u.cost) loss = true;
+  }
+  const byKey = new Map(units.map((u) => [u.key, u]));
+  const i = byKey.get("input");
+  const o = byKey.get("output");
+  let savingsPct: number | null = null;
+  if (i && o && i.official && o.official && i.price !== null && o.price !== null) {
+    const off = i.official * 3 + o.official;
+    savingsPct = off > 0 ? (1 - (i.price * 3 + o.price) / off) * 100 : null;
+  } else {
+    const u = units.find((x) => x.official && x.price !== null);
+    savingsPct = u && u.official ? ((u.official - (u.price as number)) / u.official) * 100 : null;
+  }
+  return { marginPct, savingsPct, loss };
+}
+
+/** "$2.50 / $10.00" for token models, "$0.04 /img" otherwise: compact one-liner of the headline units. */
+export function compactUnits(units: RowUnit[], pick: "price" | "official" | "cost"): { text: string; any: boolean } {
+  const fmt = (n: number) => (n >= 1 ? `$${n.toFixed(2)}` : `$${Number(n.toPrecision(3))}`);
+  const val = (u: RowUnit | undefined) => (u ? u[pick] : null);
+  const i = units.find((u) => u.key === "input");
+  const o = units.find((u) => u.key === "output");
+  if (i && o && (val(i) !== null || val(o) !== null)) {
+    return { text: `${val(i) === null ? "-" : fmt(val(i) as number)} / ${val(o) === null ? "-" : fmt(val(o) as number)}`, any: true };
+  }
+  const u = units.find((x) => val(x) !== null);
+  return u ? { text: `${fmt(val(u) as number)} ${u.per}`, any: true } : { text: "-", any: false };
+}
+
+/** Format a % (margin/savings) for badges: "62%" / "-5%". */
+export function fmtPct(p: number | null, digits = 0): string {
+  return p === null || Number.isNaN(p) ? "-" : `${p.toFixed(digits)}%`;
 }

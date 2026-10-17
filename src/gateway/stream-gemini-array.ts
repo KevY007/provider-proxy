@@ -38,6 +38,15 @@ export class GeminiJsonArrayStream implements StreamProcessor {
   outputText(): string {
     return this.inner.outputText();
   }
+  outputChars(): number {
+    return this.inner.outputChars?.() ?? 0;
+  }
+  /** Funds exhausted: the error object becomes the last array element and the array is closed. */
+  abortEvents(errorEvent: string): string[] {
+    const tail = this.wrap(this.inner.abortEvents ? this.inner.abortEvents(errorEvent) : [errorEvent]);
+    tail.push(this.count === 0 ? "[]" : "]");
+    return tail;
+  }
   completed(): boolean {
     return this.inner.completed();
   }

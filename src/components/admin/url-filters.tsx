@@ -11,6 +11,19 @@ import { parseRangeParams, rangeToParams, type DateRangeValue } from "@/lib/date
 import { cn } from "@/lib/utils";
 
 /**
+ * Query string of the newest push that may not have committed yet. Several debounced inputs push independently; each one
+ * must build on the latest intended URL (not on the stale `searchParams` it rendered with), otherwise a cleared filter
+ * can reappear or a freshly chosen one is dropped. Cleared as soon as the URL catches up (or after a few seconds).
+ */
+let pendingQs: { qs: string; at: number } | null = null;
+const PENDING_TTL_MS = 3000;
+
+function baseParams(): URLSearchParams {
+  if (pendingQs && Date.now() - pendingQs.at < PENDING_TTL_MS) return new URLSearchParams(pendingQs.qs);
+  return new URLSearchParams(typeof window === "undefined" ? "" : window.location.search);
+}
+
+/**
  * Filters live in the URL so server components can read them (`searchParams`) and links are shareable.
  *   const { get, set, setMany, clear, pending } = useUrlFilters();
  * Changing any filter other than `cursor`/`page` resets pagination.
@@ -23,7 +36,7 @@ export function useUrlFilters() {
 
   const setMany = useCallback(
     (patch: Record<string, string | null | undefined>, opts: { keepPage?: boolean } = {}) => {
-      const next = new URLSearchParams(sp.toString());
+      const next = baseParams();
       for (const [k, v] of Object.entries(patch)) {
         if (v === null || v === undefined || v === "") next.delete(k);
         else next.set(k, v);
@@ -33,10 +46,17 @@ export function useUrlFilters() {
         next.delete("page");
       }
       const qs = next.toString();
+      pendingQs = { qs, at: Date.now() };
       start(() => router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false }));
     },
-    [router, pathname, sp],
+    [router, pathname],
   );
+
+  // the URL caught up with the newest push: stop overriding the base
+  const spKey = sp.toString();
+  useEffect(() => {
+    if (pendingQs && pendingQs.qs === spKey) pendingQs = null;
+  }, [spKey]);
 
   return {
     get: (k: string) => sp.get(k) ?? "",
@@ -102,6 +122,8 @@ export function FilterInput({
   const urlValue = get(param);
   // draft remembers which URL value it was typed on top of; once the URL changes (debounced push or reset) it is ignored
   const [draft, setDraft] = useState<{ base: string; text: string } | null>(null);
+  // the URL moved on (our debounced push landed, or Reset / back / another filter changed it): drop the stale draft so it can never be revived later
+  if (draft && draft.base !== urlValue) setDraft(null);
   const value = draft && draft.base === urlValue ? draft.text : urlValue;
   useEffect(() => {
     if (!draft || draft.base !== urlValue || draft.text.trim() === urlValue) return;

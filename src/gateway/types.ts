@@ -35,6 +35,7 @@ export type Operation =
   | "gemini_batch_embed"
   | "models_list"
   | "model_get"
+  | "model_info"
   | "gemini_models_list"
   | "gemini_model_get";
 

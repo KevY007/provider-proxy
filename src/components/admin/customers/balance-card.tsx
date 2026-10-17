@@ -13,6 +13,7 @@ import { useAction } from "@/components/admin/use-action";
 import { parseAdjustmentAmount } from "@/server/admin/customers-calc";
 import { adjustCustomerBalance } from "@/server/admin/customers-actions";
 import type { CustomerDetail } from "@/server/admin/customers-queries";
+import { AddCreditDialog } from "./credit-dialogs";
 
 export function BalanceCard({ user, isAdmin, spend30d }: { user: CustomerDetail["user"]; isAdmin: boolean; spend30d: number }) {
   const { run, pending, fieldErrors } = useAction();
@@ -45,6 +46,7 @@ export function BalanceCard({ user, isAdmin, spend30d }: { user: CustomerDetail[
           <KV label="Auto-recharge">{user.autoRechargeEnabled ? "on" : "off"}</KV>
           <KV label="Stripe customer">{user.stripeCustomerId ? <code className="text-xs">{user.stripeCustomerId}</code> : "-"}</KV>
         </div>
+        <AddCreditDialog userId={user.id} email={user.email} balance={user.balance} disabled={!isAdmin} />
         <FormDialog
           open={open}
           onOpenChange={(o) => {

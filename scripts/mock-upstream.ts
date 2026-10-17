@@ -14,6 +14,10 @@
  * Delay knobs: header `x-mock-delay-ms`, body field `mock_delay_ms`, or marker `[[delay:N]]` in the last user
  * text. Non-stream: wait N ms before responding. Stream: wait N ms before EVERY SSE chunk (holds slots open).
  * Usage override marker (in the last user text / prompt / input): `[[usage:in=1000,out=500,cached=200,cw=50]]`.
+ * Long-output markers (funds-guard tests): `[[words:N]]` replies with N words (1 token each) and OBEYS the request's
+ * output cap (max_tokens / max_completion_tokens / max_output_tokens / maxOutputTokens), `[[runaway:N]]` replies with
+ * N words and IGNORES the cap (a misbehaving upstream). `[[http400]]` anywhere in the request body makes the mock
+ * answer a 400 invalid_request.
  * `[[notool]]` suppresses the automatic tool call. Introspection (no auth): /__mock/stats, /__mock/reset,
  * /__mock/last?path=/v1/messages, /healthz.
  */
@@ -347,6 +351,10 @@ interface Markers {
   cw?: number;
   delay?: number;
   notool: boolean;
+  /** long reply: N words */
+  words?: number;
+  /** ignore the request's output cap */
+  runaway?: boolean;
 }
 
 function parseMarkers(src: string): Markers {
@@ -365,6 +373,13 @@ function parseMarkers(src: string): Markers {
   }
   const d = /\[\[delay:(\d+)\]\]/.exec(src);
   if (d) mk.delay = Number(d[1]);
+  const w = /\[\[words:(\d+)\]\]/.exec(src);
+  if (w) mk.words = Number(w[1]);
+  const r = /\[\[runaway:(\d+)\]\]/.exec(src);
+  if (r) {
+    mk.words = Number(r[1]);
+    mk.runaway = true;
+  }
   return mk;
 }
 
@@ -559,8 +574,19 @@ interface Plan {
   tool: { name: string; args: string } | null;
 }
 
-function plan(ex: Extracted, surface: Surface, prefix = "Mock reply to:"): Plan {
+/** The output cap the client asked for, in any API's spelling. */
+function outputCap(b: Obj): number | undefined {
+  const gc = isObj(b.generationConfig) ? b.generationConfig : isObj(b.generation_config) ? b.generation_config : {};
+  return asNum(b.max_completion_tokens) ?? asNum(b.max_tokens) ?? asNum(b.max_output_tokens) ?? asNum(gc.maxOutputTokens) ?? asNum(gc.max_output_tokens);
+}
+
+function plan(ex: Extracted, surface: Surface, prefix = "Mock reply to:", cap?: number): Plan {
   const markers = parseMarkers(markerSource(ex));
+  if (markers.words !== undefined) {
+    const n = markers.runaway || cap === undefined ? markers.words : Math.min(markers.words, Math.max(1, Math.floor(cap)));
+    const text = Array.from({ length: n }, () => "word").join(" ");
+    return { markers, usage: computeUsage(ex, markers, n, surface), text, tool: null };
+  }
   const useTool = !!ex.toolName && !ex.toolChoiceNone && !ex.lastIsToolResult && !markers.notool;
   if (useTool) {
     const args = JSON.stringify({ city: "Paris" });
@@ -605,7 +631,7 @@ async function handleChat(ctx: Ctx, b: Obj): Promise<void> {
     return sendError(ctx, "invalid_request", "[] is too short - 'messages'");
   }
   const ex = extractOpenAIChat(b);
-  const p = plan(ex, "openai");
+  const p = plan(ex, "openai", undefined, outputCap(b));
   const delay = resolveDelay(ctx.req, b, p.markers);
   const id = `chatcmpl-mock-${rid()}`;
   const created = nowSec();
@@ -664,7 +690,7 @@ async function handleCompletions(ctx: Ctx, b: Obj): Promise<void> {
   if (!model) return sendError(ctx, "invalid_request", "you must provide a model parameter");
   if (b.prompt === undefined) return sendError(ctx, "invalid_request", "'prompt' is a required property");
   const ex = extractCompletions(b);
-  const p = plan(ex, "openai");
+  const p = plan(ex, "openai", undefined, outputCap(b));
   const delay = resolveDelay(ctx.req, b, p.markers);
   const id = `cmpl-mock-${rid()}`;
   const created = nowSec();
@@ -723,7 +749,7 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
   if (!model) return sendError(ctx, "invalid_request", "Missing required parameter: 'model'.");
   if (b.input === undefined) return sendError(ctx, "invalid_request", "Missing required parameter: 'input'.");
   const ex = extractResponses(b);
-  const p = plan(ex, "openai");
+  const p = plan(ex, "openai", undefined, outputCap(b));
   const delay = resolveDelay(ctx.req, b, p.markers);
   const id = `resp_mock_${rid()}`;
   const msgId = `msg_mock_${rid()}`;
@@ -925,7 +951,11 @@ function handleModels(ctx: Ctx, id?: string): void {
   }
   sendJson(ctx, 200, {
     object: "list",
-    data: MOCK_MODELS.map((m) => ({ id: m, object: "model", created, owned_by: "mock" })),
+    data: [
+      ...MOCK_MODELS.map((m) => ({ id: m, object: "model", created, owned_by: "mock" })),
+      // announced retirement, like OpenAI's `shutdown_date`
+      { id: "sunset-mock", object: "model", created, owned_by: "mock", shutdown_date: "2026-12-31" },
+    ],
   });
 }
 
@@ -952,7 +982,7 @@ async function handleAnthropicMessages(ctx: Ctx, b: Obj): Promise<void> {
     return sendError(ctx, "invalid_request", "max_tokens: Field required");
   }
   const ex = extractAnthropic(b);
-  const p = plan(ex, "anthropic");
+  const p = plan(ex, "anthropic", undefined, outputCap(b));
   const delay = resolveDelay(ctx.req, b, p.markers);
   const id = `msg_mock_${rid()}`;
   const stopReason = p.tool ? "tool_use" : "end_turn";
@@ -1080,7 +1110,7 @@ async function handleGemini(ctx: Ctx, model: string, method: string, b: Obj): Pr
   // generateContent / streamGenerateContent
   if (asArr(b.contents).length === 0) return sendError(ctx, "invalid_request", "contents is not specified");
   const ex = extractGemini(b);
-  const p = plan(ex, "gemini");
+  const p = plan(ex, "gemini", undefined, outputCap(b));
   const delay = resolveDelay(ctx.req, b, p.markers);
   const responseId = `mockresp${rid()}`;
   const part: Obj = p.tool ? { functionCall: { name: p.tool.name, args: JSON.parse(p.tool.args) as Obj } } : { text: p.text };
@@ -1574,6 +1604,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
     return sendError(ctx, "invalid_request", e instanceof BadBody ? e.message : "Invalid request body");
   }
   const b = parsed.json ?? {};
+  if (raw.includes("[[http400]]")) return sendError(ctx, "invalid_request", "mock: request rejected ([[http400]])");
 
   if (gem) return handleGemini(ctx, decodeURIComponent(gem[1]), gem[2], b);
   switch (path) {

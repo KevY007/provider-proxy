@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { cn } from "@/lib/utils"
+import { useReturnFocus } from "@/components/common/use-return-focus"
 import { Dialog as SheetPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
@@ -55,6 +56,7 @@ function SheetContent({
   side?: "top" | "right" | "bottom" | "left"
   showCloseButton?: boolean
 }) {
+  const returnFocus = useReturnFocus({ onOpenAutoFocus: props.onOpenAutoFocus, onCloseAutoFocus: props.onCloseAutoFocus })
   return (
     <SheetPortal>
       <SheetOverlay />
@@ -66,6 +68,7 @@ function SheetContent({
           className
         )}
         {...props}
+        {...returnFocus}
       >
         {children}
         {showCloseButton && (

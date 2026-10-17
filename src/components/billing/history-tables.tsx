@@ -59,7 +59,7 @@ export function LedgerTable({
       {
         accessorKey: "type",
         header: "Type",
-        cell: ({ row }) => <LedgerTypeBadge type={row.original.type} />,
+        cell: ({ row }) => <LedgerTypeBadge type={row.original.type} description={row.original.description} />,
         meta: { label: "Type" },
       },
       {

@@ -1,6 +1,7 @@
 "use client";
 
 import { StatusBadge, type StatusTone } from "@/components/common/status-badge";
+import { creditLabelFromDescription } from "@/server/admin/credits";
 
 /** Renders an ISO timestamp in the viewer's locale/timezone (suppresses the SSR/CSR text difference). */
 export function DateTime({ iso, className }: { iso: string | null | undefined; className?: string }) {
@@ -37,8 +38,10 @@ const LEDGER_TONES: Record<string, StatusTone> = {
   USAGE_CORRECTION: "neutral",
 };
 
-export function LedgerTypeBadge({ type }: { type: string }) {
-  return <StatusBadge status={type} label={LEDGER_LABELS[type] ?? type} tone={LEDGER_TONES[type] ?? "neutral"} dot={false} />;
+export function LedgerTypeBadge({ type, description }: { type: string; description?: string | null }) {
+  // Admin credits (Promotional credit / Refund credit / Correction) get a clear label of their own.
+  const credit = creditLabelFromDescription(type, description);
+  return <StatusBadge status={type} label={credit ?? LEDGER_LABELS[type] ?? type} tone={credit ? (credit === "Correction" ? "neutral" : "info") : (LEDGER_TONES[type] ?? "neutral")} dot={false} />;
 }
 
 export const KIND_LABELS: Record<string, string> = {

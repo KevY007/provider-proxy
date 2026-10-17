@@ -6,6 +6,7 @@ import { GatewayError, errorResponse } from "./errors";
 import { logger } from "@/lib/logger";
 import { allowAnonymousLog } from "./limits";
 import { recordOutcome, type Charge, type Outcome } from "./metering";
+import { settleFunds, type FundsState } from "./reserve";
 import type { ParsedForm } from "./multipart";
 import type { Candidate } from "./select";
 import type { SlotLease } from "./slots";
@@ -42,6 +43,8 @@ export interface Ctx {
   logBodies: boolean;
   /** Pre-flight estimates */
   inputEstimate: number;
+  /** Credit reservation + output clamp for this request (PLAN 9c); null before reservation / for lookups. */
+  funds: FundsState | null;
 }
 
 export function newCtx(req: Request, requestId: string, ip: string): Ctx {
@@ -72,6 +75,7 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     logged: false,
     logBodies: false,
     inputEstimate: 0,
+    funds: null,
   };
 }
 
@@ -146,7 +150,9 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
       detail: p.internalError ? p.internalError.slice(0, 500) : undefined,
     });
   }
-  return recordOutcome({
+  const note = ctx.funds?.note ?? null;
+  const patch: OutcomePatch = note ? { ...p, internalError: p.internalError ? `${p.internalError} | ${note}` : note } : p;
+  const charge = recordOutcome({
     requestId: ctx.requestId,
     startedAt: ctx.startedAt,
     ip: ctx.ip === "unknown" ? null : ctx.ip,
@@ -170,8 +176,10 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
     attempts: ctx.attempts,
     logBodies: ctx.logBodies,
     requestBody: ctx.logBodies ? (ctx.body as Json) : undefined,
-    ...p,
+    ...patch,
   });
+  settleFunds(ctx, charge.price);
+  return charge;
 }
 
 /** Release everything, log the failure and render the error in the inbound format. */

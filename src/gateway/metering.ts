@@ -1,6 +1,5 @@
 import type { Prisma, RequestStatus } from "@/generated/prisma/client";
 import { Decimal, ZERO, toDbString } from "@/lib/money";
-import { debitLocal } from "./balance";
 import type { AuthRecord, ModelRec, RouteRec } from "./cache";
 import { addProviderKeyCost, addUserSpend, tpmAdd } from "./limits";
 import { enqueueMeter } from "./meter-writer";
@@ -44,12 +43,16 @@ export interface Outcome {
   logBodies: boolean;
   requestBody?: Json;
   responseBody?: Json;
+  /** Charge the usage even though the status is not a normally billable one (e.g. a stream cut off by the funds guard). */
+  billable?: boolean;
 }
 
 export interface Charge {
   price: Decimal;
   cost: Decimal;
   profit: Decimal;
+  /** what the same usage would have cost at official prices */
+  official: Decimal;
 }
 
 const MAX_BODY_LOG = 100_000;
@@ -67,10 +70,10 @@ function shrinkForLog(v: Json): Json {
 export function recordOutcome(o: Outcome): Charge {
   const now = new Date();
   const usage = o.usage;
-  let charge: Charge = { price: ZERO, cost: ZERO, profit: ZERO };
-  if (usage && o.model && (o.status === "SUCCESS" || o.status === "CANCELLED" || o.status === "UPSTREAM_ERROR")) {
-    const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS");
-    charge = { price: b.price, cost: b.cost, profit: b.profit };
+  let charge: Charge = { price: ZERO, cost: ZERO, profit: ZERO, official: ZERO };
+  if (usage && o.model && (o.billable || o.status === "SUCCESS" || o.status === "CANCELLED" || o.status === "UPSTREAM_ERROR")) {
+    const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official);
+    charge = { price: b.price, cost: b.cost, profit: b.profit, official: b.official };
   }
 
   const u = usage;
@@ -104,6 +107,7 @@ export function recordOutcome(o: Outcome): Charge {
     price: toDbString(charge.price),
     cost: toDbString(charge.cost),
     profit: toDbString(charge.profit),
+    officialPrice: toDbString(charge.official),
     latencyMs: Math.max(0, now.getTime() - o.startedAt),
     ttftMs: o.ttftMs,
     queueMs: Math.max(0, Math.round(o.queueMs)),
@@ -115,7 +119,7 @@ export function recordOutcome(o: Outcome): Charge {
     ...(o.logBodies && o.responseBody !== undefined ? { responseBody: shrinkForLog(o.responseBody) as Prisma.InputJsonValue } : {}),
   };
 
-  const countForKey = !!o.providerKeyId && (o.status === "SUCCESS" || o.status === "CANCELLED" || (o.status === "UPSTREAM_ERROR" && !!usage));
+  const countForKey = !!o.providerKeyId && (o.billable === true || o.status === "SUCCESS" || o.status === "CANCELLED" || (o.status === "UPSTREAM_ERROR" && !!usage));
   enqueueMeter({
     log,
     userId: o.auth?.user.id ?? null,
@@ -130,7 +134,7 @@ export function recordOutcome(o: Outcome): Charge {
 
   // ---- immediate local effects
   if (o.auth && !charge.price.isZero()) {
-    debitLocal(o.auth.user.id, charge.price);
+    // the cached balance is not touched: the debit is made visible by the funds hold being settled (logOutcome)
     o.auth.spentDelta = o.auth.spentDelta.plus(charge.price);
     addUserSpend(o.auth.user.id, charge.price);
   }

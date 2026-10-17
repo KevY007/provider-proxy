@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import { cn } from "@/lib/utils"
+import { useReturnFocus } from "@/components/common/use-return-focus"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { Button } from "@/components/ui/button"
@@ -55,6 +56,7 @@ function DialogContent({
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
 }) {
+  const returnFocus = useReturnFocus({ onOpenAutoFocus: props.onOpenAutoFocus, onCloseAutoFocus: props.onCloseAutoFocus })
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -65,6 +67,7 @@ function DialogContent({
           className
         )}
         {...props}
+        {...returnFocus}
       >
         {children}
         {showCloseButton && (

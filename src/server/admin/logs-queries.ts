@@ -19,6 +19,7 @@ const rowSelect = {
   price: true,
   cost: true,
   profit: true,
+  officialPrice: true,
   latencyMs: true,
   queueMs: true,
   user: { select: { id: true, email: true } },
@@ -48,6 +49,8 @@ export interface LogRow {
   price: string;
   cost: string;
   profit: string;
+  /** What the same usage would cost at the model's official prices. */
+  officialPrice: string;
   latencyMs: number;
   queueMs: number;
 }
@@ -74,6 +77,7 @@ function toRow(r: Awaited<ReturnType<typeof fetchRows>>[number]): LogRow {
     price: dstr0(r.price),
     cost: dstr0(r.cost),
     profit: dstr0(r.profit),
+    officialPrice: dstr0(r.officialPrice),
     latencyMs: r.latencyMs,
     queueMs: r.queueMs,
   };
@@ -141,10 +145,13 @@ export async function getLogDetailData(id: string) {
   const attempts = Array.isArray(r.attempts) ? (r.attempts as Array<Record<string, unknown>>) : [];
   const pIds = [...new Set(attempts.map((a) => a.providerId).filter((x): x is string => typeof x === "string"))];
   const kIds = [...new Set(attempts.map((a) => a.providerKeyId).filter((x): x is string => typeof x === "string"))];
-  const [ps, ks] = await Promise.all([
+  const rIds = [...new Set(attempts.map((a) => a.routeId).filter((x): x is string => typeof x === "string"))];
+  const [ps, ks, rs] = await Promise.all([
     pIds.length ? db.provider.findMany({ where: { id: { in: pIds } }, select: { id: true, name: true } }) : [],
     kIds.length ? db.providerKey.findMany({ where: { id: { in: kIds } }, select: { id: true, label: true } }) : [],
+    rIds.length ? db.modelRoute.findMany({ where: { id: { in: rIds } }, select: { id: true, upstreamModel: true } }) : [],
   ]);
+  const rModel = Object.fromEntries(rs.map((x) => [x.id, x.upstreamModel]));
   const pName = Object.fromEntries(ps.map((p) => [p.id, p.name]));
   const kLabel = Object.fromEntries(ks.map((k) => [k.id, k.label]));
   return {
@@ -172,11 +179,13 @@ export async function getLogDetailData(id: string) {
     reasoningTokens: r.reasoningTokens,
     imageCount: r.imageCount,
     audioSeconds: r.audioSeconds,
+    videoSeconds: r.videoSeconds,
     characters: r.characters,
     usageEstimated: r.usageEstimated,
     price: dstr0(r.price),
     cost: dstr0(r.cost),
     profit: dstr0(r.profit),
+    officialPrice: dstr0(r.officialPrice),
     latencyMs: r.latencyMs,
     ttftMs: r.ttftMs,
     queueMs: r.queueMs,
@@ -186,6 +195,7 @@ export async function getLogDetailData(id: string) {
       ...a,
       providerName: typeof a.providerId === "string" ? (pName[a.providerId] ?? null) : null,
       providerKeyLabel: typeof a.providerKeyId === "string" ? (kLabel[a.providerKeyId] ?? null) : null,
+      upstreamModel: typeof a.routeId === "string" ? (rModel[a.routeId] ?? null) : null,
     })),
     requestBody: r.requestBody,
     responseBody: r.responseBody,

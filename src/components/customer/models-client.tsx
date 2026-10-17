@@ -1,14 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { ColumnDef } from "@tanstack/react-table";
+import { Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CopyButton } from "@/components/common/copy-button";
-import { DataTable } from "@/components/common/data-table";
-import { formatPricePerMillion, formatUSD } from "@/lib/money";
-import { formatCompact } from "@/lib/utils";
+import { buildPriceRows, PriceTable, type PriceModel } from "@/components/marketing/price-table";
 import { CAPABILITY_LABELS, vendorLabel } from "@/server/customer/labels";
 import { formatMultiplier } from "@/server/customer/pricing";
 import type { PoolOption, UserModel } from "@/server/customer/portal-data";
@@ -19,87 +17,34 @@ export function ModelsClient({ models, pools, currentPoolSlug }: { models: UserM
   const [pool, setPool] = useState(currentPoolSlug ?? pools[0]?.slug ?? "");
   const [vendor, setVendor] = useState(ALL);
   const [cap, setCap] = useState(ALL);
+  const [q, setQ] = useState("");
   const poolInfo = pools.find((p) => p.slug === pool);
 
   const vendors = useMemo(() => [...new Set(models.map((m) => m.vendor))], [models]);
   const caps = useMemo(() => [...new Set(models.flatMap((m) => m.capabilities))], [models]);
-  const data = useMemo(
-    () => models.filter((m) => m.prices[pool] && (vendor === ALL || m.vendor === vendor) && (cap === ALL || m.capabilities.includes(cap))),
-    [models, pool, vendor, cap],
-  );
-
-  const columns = useMemo<ColumnDef<UserModel>[]>(
-    () => [
-      {
-        id: "model",
-        header: "Model",
-        accessorFn: (m) => `${m.displayName} ${m.slug}`,
-        cell: ({ row }) => (
-          <div className="min-w-0">
-            <p className="font-medium">{row.original.displayName}</p>
-            <div className="flex items-center gap-0.5">
-              <code className="font-mono text-xs text-muted-foreground">{row.original.slug}</code>
-              <CopyButton value={row.original.slug} size="icon-xs" toastMessage="Model id copied" />
-            </div>
-          </div>
-        ),
-      },
-      { id: "vendor", header: "Vendor", accessorFn: (m) => vendorLabel(m.vendor), cell: ({ row }) => <Badge variant="outline">{vendorLabel(row.original.vendor)}</Badge> },
-      {
-        id: "capabilities",
-        header: "Capabilities",
-        enableSorting: false,
-        accessorFn: (m) => m.capabilities.join(" "),
-        cell: ({ row }) => (
-          <div className="flex min-w-44 flex-wrap gap-1" title={row.original.capabilities.map((c) => CAPABILITY_LABELS[c] ?? c).join(", ")}>
-            {row.original.capabilities.slice(0, 3).map((c) => (
-              <Badge key={c} variant="secondary" className="font-normal">
-                {CAPABILITY_LABELS[c] ?? c}
-              </Badge>
-            ))}
-            {row.original.capabilities.length > 3 && (
-              <Badge variant="outline" className="font-normal">
-                +{row.original.capabilities.length - 3}
-              </Badge>
-            )}
-          </div>
-        ),
-      },
-      { id: "context", header: "Context", accessorFn: (m) => m.contextWindow ?? 0, cell: ({ row }) => (row.original.contextWindow ? formatCompact(row.original.contextWindow) : "-"), meta: { className: "text-right" } },
-      {
-        id: "input",
-        header: "Input / 1M",
-        accessorFn: (m) => Number(m.prices[pool]?.input ?? 0),
-        cell: ({ row }) => <Price model={row.original} pool={pool} field="input" />,
-        meta: { className: "text-right" },
-      },
-      {
-        id: "output",
-        header: "Output / 1M",
-        accessorFn: (m) => Number(m.prices[pool]?.output ?? 0),
-        cell: ({ row }) => <Price model={row.original} pool={pool} field="output" />,
-        meta: { className: "text-right" },
-      },
-      {
-        id: "cached",
-        header: "Cached / 1M",
-        accessorFn: (m) => Number(m.prices[pool]?.cachedInput ?? 0),
-        cell: ({ row }) => <Price model={row.original} pool={pool} field="cachedInput" />,
-        meta: { className: "text-right" },
-      },
-      {
-        id: "image",
-        header: "Per image",
-        accessorFn: (m) => Number(m.prices[pool]?.image ?? 0),
-        cell: ({ row }) => {
-          const v = row.original.prices[pool]?.image;
-          return v ? <span className="tabular-nums">{formatUSD(v)}</span> : <span className="text-muted-foreground">-</span>;
-        },
-        meta: { className: "text-right" },
-      },
-    ],
-    [pool],
-  );
+  const rows = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    const list: PriceModel[] = models
+      .filter(
+        (m) =>
+          m.prices[pool] &&
+          (vendor === ALL || m.vendor === vendor) &&
+          (cap === ALL || m.capabilities.includes(cap)) &&
+          (!needle || m.slug.toLowerCase().includes(needle) || m.displayName.toLowerCase().includes(needle)),
+      )
+      // prices[pool] already includes the pool + account multiplier, so rows are built with multiplier 1
+      .map((m) => ({
+        slug: m.slug,
+        displayName: m.displayName,
+        vendor: m.vendor,
+        capabilities: m.capabilities,
+        contextWindow: m.contextWindow,
+        retiresAt: m.retiresAt,
+        sell: m.prices[pool],
+        official: m.official,
+      }));
+    return buildPriceRows(list, "1");
+  }, [models, pool, vendor, cap, q]);
 
   return (
     <div className="space-y-4">
@@ -118,56 +63,42 @@ export function ModelsClient({ models, pools, currentPoolSlug }: { models: UserM
           {poolInfo?.description && <p className="text-sm text-muted-foreground">{poolInfo.description}</p>}
         </div>
       )}
-      <DataTable
-        columns={columns}
-        data={data}
-        searchKey="model"
-        searchPlaceholder="Search models..."
-        pageSize={50}
-        exportFilename={`model-prices-${pool}`}
-        hideColumnToggle
-        getRowId={(m) => m.slug}
-        emptyTitle="No models match"
-        toolbar={
-          <>
-            <Select value={vendor} onValueChange={setVendor}>
-              <SelectTrigger size="sm" className="w-auto min-w-28" aria-label="Vendor">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All vendors</SelectItem>
-                {vendors.map((v) => (
-                  <SelectItem key={v} value={v}>
-                    {vendorLabel(v)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={cap} onValueChange={setCap}>
-              <SelectTrigger size="sm" className="w-auto min-w-28" aria-label="Capability">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL}>All capabilities</SelectItem>
-                {caps.map((c) => (
-                  <SelectItem key={c} value={c}>
-                    {CAPABILITY_LABELS[c] ?? c}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </>
-        }
-      />
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input aria-label="Search models" placeholder="Search models..." className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <Select value={vendor} onValueChange={setVendor}>
+          <SelectTrigger size="sm" className="w-auto min-w-28" aria-label="Vendor">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All vendors</SelectItem>
+            {vendors.map((v) => (
+              <SelectItem key={v} value={v}>
+                {vendorLabel(v)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={cap} onValueChange={setCap}>
+          <SelectTrigger size="sm" className="w-auto min-w-28" aria-label="Capability">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All capabilities</SelectItem>
+            {caps.map((c) => (
+              <SelectItem key={c} value={c}>
+                {CAPABILITY_LABELS[c] ?? c}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <PriceTable rows={rows} showCapabilities />
       <p className="text-xs text-muted-foreground">
-        Prices are in USD per 1M tokens (images per image) and already include your pool multiplier{poolInfo ? ` (${formatMultiplier(poolInfo.multiplier)})` : ""}. Cached input is billed at the cached rate when a prompt prefix is reused.
+        Your price already includes your pool multiplier{poolInfo ? ` (${formatMultiplier(poolInfo.multiplier)})` : ""}.
       </p>
     </div>
   );
-}
-
-function Price({ model, pool, field }: { model: UserModel; pool: string; field: "input" | "output" | "cachedInput" }) {
-  const v = model.prices[pool]?.[field];
-  if (v === null || v === undefined) return <span className="text-muted-foreground">-</span>;
-  return <span className="tabular-nums">{formatPricePerMillion(v)}</span>;
 }

@@ -1,6 +1,15 @@
-// STUB created by lead — Backend (Phase 4) agent implements, keeping this signature.
 // Lists the models a provider's first healthy key can see upstream (cached ~5 min), enriched with known prices.
-import type { KnownPrice } from "./price-catalog";
+// Powers the admin "Add model" flow ("choose the real model from the provider's live list") and `pnpm setup:live`.
+// Never returns or logs secrets; errors carry a short, secret-free message.
+import { decrypt } from "@/lib/crypto";
+import { db } from "@/lib/db";
+import { logger } from "@/lib/logger";
+import { buildUpstreamHeaders } from "./providers/adapters";
+import { toAdapter } from "./health";
+import { KNOWN_PRICES, lookupKnownPrice, type KnownPrice } from "./price-catalog";
+import type { JsonObject } from "./types";
+import { ClientAbortError, UpstreamTimeoutError, readTextLimited, sendUpstream } from "./upstream";
+import { isObject, safeJsonParse } from "./util";
 
 export type UpstreamModel = {
   id: string;
@@ -10,7 +19,163 @@ export type UpstreamModel = {
   alreadyRouted?: boolean; // a ModelRoute for this provider + upstream model already exists
 };
 
+const CACHE_MS = 5 * 60_000;
+const LIST_TIMEOUT_MS = 20_000;
+const MAX_PAGES = 12;
+const MAX_BODY = 8 * 1024 * 1024;
+
+const g = globalThis as unknown as { __ppUpstreamModels?: Map<string, { at: number; items: UpstreamModel[] }> };
+const cache = (g.__ppUpstreamModels ??= new Map<string, { at: number; items: UpstreamModel[] }>());
+
+const trimSlash = (s: string) => s.replace(/\/+$/, "");
+const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+
+/** ISO date (YYYY-MM-DD or full timestamp) from an upstream value: ISO string or unix seconds. */
+function isoDate(v: unknown): string | null {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) return new Date(v * 1000).toISOString().slice(0, 10);
+  if (typeof v === "string" && v.trim()) {
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? (/^\d{4}-\d{2}-\d{2}$/.test(v.trim()) ? v.trim() : new Date(t).toISOString()) : null;
+  }
+  return null;
+}
+
+class ListError extends Error {}
+
+async function getJson(url: string, headers: Record<string, string>): Promise<JsonObject> {
+  let h;
+  try {
+    h = await sendUpstream({ url, method: "GET", headers, timeoutMs: LIST_TIMEOUT_MS });
+  } catch (err) {
+    if (err instanceof UpstreamTimeoutError) throw new ListError("The provider did not answer in time.");
+    if (err instanceof ClientAbortError) throw new ListError("The request was aborted.");
+    throw new ListError("The provider could not be reached.");
+  }
+  try {
+    if (h.res.status < 200 || h.res.status >= 300) {
+      const s = h.res.status;
+      throw new ListError(
+        s === 401 || s === 403
+          ? `The provider rejected the key (HTTP ${s}). Test the key and fix it first.`
+          : s === 404 || s === 405
+            ? "This provider does not offer a model list; type the model id instead."
+            : `The provider answered HTTP ${s}.`,
+      );
+    }
+    const text = await readTextLimited(h.res, MAX_BODY);
+    const j = safeJsonParse<unknown>(text);
+    if (!isObject(j)) throw new ListError("The provider's model list was not understood.");
+    return j;
+  } finally {
+    h.dispose();
+  }
+}
+
+/** The vendor's catalog entries (fal.ai / Replicate have no cheap list endpoint). */
+function catalogFor(vendor: string): UpstreamModel[] {
+  return KNOWN_PRICES.filter((k) => k.vendor === vendor).map((k) => ({ id: k.model, ownedBy: vendor, shutdownDate: k.retiresAt ?? null }));
+}
+
+async function fetchList(provider: NonNullable<Awaited<ReturnType<typeof loadProvider>>>, secret: string, keyExtra: JsonObject): Promise<UpstreamModel[]> {
+  const adapter = toAdapter(provider);
+  const s = adapter.settings;
+  const formats = provider.formats;
+  const hdr = (format: Parameters<typeof buildUpstreamHeaders>[0]["format"]) => buildUpstreamHeaders({ provider: adapter, format, secret, stream: false, keyExtra, hasBody: false });
+  const withKey = (url: string) => (adapter.authStyle === "QUERY_KEY" ? `${url}${url.includes("?") ? "&" : "?"}key=${encodeURIComponent(secret)}` : url);
+
+  if (adapter.preset === "fal" || adapter.preset === "replicate") return catalogFor(adapter.preset);
+
+  const out: UpstreamModel[] = [];
+  const hasOpenAI = formats.some((f) => f.startsWith("openai_"));
+
+  if (adapter.preset === "google" || (!hasOpenAI && !formats.includes("anthropic_messages") && formats.includes("gemini"))) {
+    const root = trimSlash(str(s.geminiBaseUrl) ?? adapter.baseUrl).replace(/\/v1(beta)?$/, "");
+    let token: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const url = withKey(`${root}/v1beta/models?pageSize=1000${token ? `&pageToken=${encodeURIComponent(token)}` : ""}`);
+      const j = await getJson(url, hdr("gemini"));
+      for (const m of Array.isArray(j.models) ? j.models : []) {
+        if (!isObject(m) || typeof m.name !== "string") continue;
+        out.push({ id: m.name.replace(/^models\//, ""), ownedBy: "google" });
+      }
+      token = str(j.nextPageToken);
+      if (!token) break;
+    }
+    return out;
+  }
+
+  if (!hasOpenAI && formats.includes("anthropic_messages")) {
+    const root = trimSlash(str(s.anthropicBaseUrl) ?? adapter.baseUrl).replace(/\/v1$/, "");
+    let after: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const j = await getJson(withKey(`${root}/v1/models?limit=1000${after ? `&after_id=${encodeURIComponent(after)}` : ""}`), hdr("anthropic_messages"));
+      const data = Array.isArray(j.data) ? j.data : [];
+      for (const m of data) if (isObject(m) && typeof m.id === "string") out.push({ id: m.id, ownedBy: "anthropic" });
+      after = j.has_more === true ? str(j.last_id) : undefined;
+      if (!after) break;
+    }
+    return out;
+  }
+
+  const root = adapter.authStyle === "AZURE_API_KEY" || adapter.preset === "azure" ? `${adapter.baseUrl}/openai` : (str(s.openaiBaseUrl) ?? adapter.baseUrl);
+  const url = withKey(adapter.preset === "azure" ? `${root}/models?api-version=${encodeURIComponent(str(s.azureApiVersion) ?? "2025-04-01-preview")}` : `${trimSlash(root)}/models`);
+  const j = await getJson(url, hdr("openai_chat"));
+  for (const m of Array.isArray(j.data) ? j.data : []) {
+    if (!isObject(m) || typeof m.id !== "string") continue;
+    out.push({ id: m.id, ownedBy: str(m.owned_by), shutdownDate: isoDate(m.shutdown_date) });
+  }
+  return out;
+}
+
+async function loadProvider(providerId: string) {
+  return db.provider.findUnique({ where: { id: providerId }, include: { keys: true } });
+}
+
+/** The first healthy key: ACTIVE (best priority first), else a cooled-down key whose cooldown elapsed. */
+function pickKey<T extends { status: string; priority: number; cooldownUntil: Date | null; lastUsedAt: Date | null }>(keys: T[]): T | null {
+  const now = Date.now();
+  const usable = keys.filter((k) => k.status === "ACTIVE" || (k.status === "COOLDOWN" && (!k.cooldownUntil || k.cooldownUntil.getTime() <= now)));
+  usable.sort((a, b) => b.priority - a.priority || (a.status === "ACTIVE" ? 0 : 1) - (b.status === "ACTIVE" ? 0 : 1));
+  return usable[0] ?? null;
+}
+
 export async function listUpstreamModels(providerId: string): Promise<UpstreamModel[]> {
-  void providerId;
-  return [];
+  const provider = await loadProvider(providerId);
+  if (!provider) throw new Error("Provider not found.");
+
+  let raw = cache.get(providerId);
+  if (!raw || Date.now() - raw.at > CACHE_MS) {
+    const key = pickKey(provider.keys);
+    let items: UpstreamModel[];
+    if (provider.preset === "fal" || provider.preset === "replicate") items = catalogFor(provider.preset);
+    else {
+      if (!key) throw new Error("This provider has no usable key. Add a key (and test it) to list its models.");
+      let secret: string;
+      try {
+        secret = decrypt(key.secretEncrypted);
+      } catch {
+        throw new Error("The provider key could not be decrypted (ENCRYPTION_KEY changed?).");
+      }
+      try {
+        items = await fetchList(provider, secret, (isObject(key.extra) ? key.extra : {}) as JsonObject);
+      } catch (err) {
+        if (err instanceof ListError) throw new Error(err.message);
+        logger.warn("listing upstream models failed", { providerId, err: err instanceof Error ? err.message : "unknown" });
+        throw new Error("The provider's model list could not be fetched.");
+      }
+    }
+    items.sort((a, b) => a.id.localeCompare(b.id));
+    raw = { at: Date.now(), items };
+    cache.set(providerId, raw);
+  }
+
+  const routed = new Set((await db.modelRoute.findMany({ where: { providerId }, select: { upstreamModel: true } })).map((r) => r.upstreamModel));
+  return raw.items.map((m) => {
+    const known = lookupKnownPrice(provider.preset, m.id);
+    return { ...m, shutdownDate: m.shutdownDate ?? known?.retiresAt ?? null, known, alreadyRouted: routed.has(m.id) };
+  });
+}
+
+export function __resetUpstreamModelsCacheForTests(): void {
+  cache.clear();
 }

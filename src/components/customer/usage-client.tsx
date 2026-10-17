@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { format } from "date-fns";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Activity, AlertCircle, Clock, Coins, Download, Hash, Layers } from "lucide-react";
+import { Activity, AlertCircle, Clock, Coins, Download, Hash, Layers, PiggyBank } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { AreaChart, BarChart, ChartCard } from "@/components/common/chart-card";
@@ -14,6 +14,7 @@ import { MoneyText } from "@/components/common/money-text";
 import { StatCard } from "@/components/common/stat-card";
 import { rangeToParams, type DateRangeValue } from "@/lib/date-range";
 import { formatUSD } from "@/lib/money";
+import { summarizeSavings } from "@/server/customer/savings";
 import { formatCompact, formatDuration, formatNumber, formatPercent } from "@/lib/utils";
 
 export interface UsageSeriesPoint {
@@ -24,6 +25,8 @@ export interface UsageSeriesPoint {
   outputTokens: number;
   cachedTokens: number;
   errors: number;
+  official: number;
+  comparable: number;
 }
 export interface UsageBreakdownRow {
   name: string;
@@ -34,12 +37,14 @@ export interface UsageBreakdownRow {
   cachedTokens: number;
   errors: number;
   avgLatencyMs: number;
+  official: number;
+  comparable: number;
 }
 export interface UsageClientProps {
   range: { preset: DateRangeValue["preset"]; from: string; to: string };
   granularity: "hour" | "day";
   hourAllowed: boolean;
-  totals: { requests: number; spend: number; inputTokens: number; outputTokens: number; cachedTokens: number; errors: number; avgLatencyMs: number };
+  totals: { requests: number; spend: number; inputTokens: number; outputTokens: number; cachedTokens: number; errors: number; avgLatencyMs: number; official: number; comparable: number };
   series: UsageSeriesPoint[];
   byModel: UsageBreakdownRow[];
   byKey: UsageBreakdownRow[];
@@ -62,6 +67,9 @@ export function UsageClient(props: UsageClientProps) {
   const exportHref = `${pathname}/export?${new URLSearchParams({ ...rangeToParams(range), gran: granularity }).toString()}`;
 
   const empty = totals.requests === 0;
+  const savings = summarizeSavings(totals.official, totals.comparable);
+  const savingsRows = series.map((p) => ({ x: p.bucket, saved: p.official - p.comparable }));
+  const hasSavingsData = totals.official > 0;
   const valueFmt = metric === "cost" ? (v: number) => formatUSD(v) : (v: number) => formatCompact(v);
   const timeRows = series.map((p) => ({ x: p.bucket, cost: p.spend, input: p.inputTokens, output: p.outputTokens }));
   const tokens = (r: UsageBreakdownRow) => r.inputTokens + r.outputTokens;
@@ -81,6 +89,13 @@ export function UsageClient(props: UsageClientProps) {
       { accessorKey: "outputTokens", header: "Output tokens", cell: ({ row }) => formatNumber(row.original.outputTokens), meta: { className: "text-right" } },
       { accessorKey: "cachedTokens", header: "Cached tokens", cell: ({ row }) => formatNumber(row.original.cachedTokens), meta: { className: "text-right" } },
       { accessorKey: "spend", header: "Cost", cell: ({ row }) => <MoneyText value={row.original.spend} />, meta: { className: "text-right" } },
+      {
+        id: "saved",
+        header: "Saved vs official",
+        accessorFn: (r) => r.official - r.comparable,
+        cell: ({ row }) => (row.original.official > 0 ? <MoneyText value={row.original.official - row.original.comparable} colorize signed /> : <span className="text-muted-foreground">-</span>),
+        meta: { className: "text-right" },
+      },
       { accessorKey: "avgLatencyMs", header: "Avg latency", cell: ({ row }) => formatDuration(row.original.avgLatencyMs), meta: { className: "text-right" } },
       {
         accessorKey: "errors",
@@ -118,6 +133,12 @@ export function UsageClient(props: UsageClientProps) {
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Spend" icon={Coins} value={<MoneyText value={totals.spend} />} />
+        <StatCard
+          label={savings.kind === "paid_more" ? "Paid more than official" : "Saved vs official prices"}
+          icon={PiggyBank}
+          value={hasSavingsData ? <span className={savings.kind === "saved" ? "text-emerald-600 dark:text-emerald-400" : savings.kind === "paid_more" ? "text-amber-600 dark:text-amber-400" : undefined}>{savings.value}</span> : "-"}
+          hint={hasSavingsData ? (savings.pct === null ? undefined : `${savings.pct >= 0 ? "" : "+"}${Math.abs(savings.pct).toFixed(0)}% ${savings.pct >= 0 ? "below" : "above"} official`) : "No priced requests yet"}
+        />
         <StatCard label="Requests" icon={Activity} value={formatCompact(totals.requests)} hint={`${formatNumber(totals.requests)} total`} />
         <StatCard label="Tokens" icon={Hash} value={formatCompact(totals.inputTokens + totals.outputTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
         <StatCard label="Cached tokens" icon={Layers} value={formatCompact(totals.cachedTokens)} hint={totals.inputTokens ? `${formatPercent(totals.cachedTokens / totals.inputTokens)} of input` : undefined} />
@@ -142,6 +163,15 @@ export function UsageClient(props: UsageClientProps) {
             xFormatter={xFmt}
           />
         )}
+      </ChartCard>
+
+      <ChartCard
+        title={savings.kind === "paid_more" ? "Difference vs official prices over time" : "Savings vs official prices over time"}
+        description="Official price minus what you paid, per period. Negative means we cost more than the official price."
+        empty={empty || !hasSavingsData}
+        emptyText="No priced requests in this period"
+      >
+        <AreaChart data={savingsRows} xKey="x" series={[{ key: "saved", label: "Saved" }]} valueFormatter={(v) => formatUSD(v)} xFormatter={xFmt} />
       </ChartCard>
 
       <div className="grid gap-4 lg:grid-cols-3">

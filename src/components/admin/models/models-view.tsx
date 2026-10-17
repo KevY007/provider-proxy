@@ -4,26 +4,27 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Copy, Download, MoreHorizontal, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, Copy, Download, MoreHorizontal, Pencil, Percent, Plus, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DataTable } from "@/components/common/data-table";
 import { MoneyText } from "@/components/common/money-text";
 import { PageHeader } from "@/components/common/page-header";
+import { PriceExplainer, SavingsBadge } from "@/components/common/savings-badge";
 import { StatusBadge } from "@/components/common/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { FormDialog } from "@/components/admin/misc";
-import { MultiSelectField, NumberField, SelectField } from "@/components/admin/fields";
 import { useAction } from "@/components/admin/use-action";
 import { TextField } from "@/components/common/form-fields";
-import { createModel, deleteModel, duplicateModel, exportModels } from "@/server/admin/models-actions";
-import { formatMargin, marginTone, MODEL_CAPABILITIES, MODEL_STATUSES } from "@/server/admin/models-calc";
+import { bulkApplyPricingRule, deleteModel, duplicateModel, exportModels } from "@/server/admin/models-actions";
+import { compactUnits, fmtPct, marginTone, MODEL_CAPABILITIES, MODEL_STATUSES, PRICING_MODE_LABELS, type PricingModeId } from "@/server/admin/models-calc";
 import type { ModelRow } from "@/server/admin/models-queries";
-import { formatCompact } from "@/lib/utils";
+import { cn, formatCompact } from "@/lib/utils";
 import { ModelImportDialog } from "./import-dialog";
+import { RuleSelector } from "./pricing-editor";
 
 const ALL = "__all__";
 
@@ -46,6 +47,11 @@ function FilterSel({ label, value, onChange, options }: { label: string; value: 
   );
 }
 
+function Prices({ r, pick }: { r: ModelRow; pick: "price" | "official" | "cost" }) {
+  const c = compactUnits(r.units, pick);
+  return c.any ? <span className="whitespace-nowrap text-xs tabular-nums">{c.text}</span> : <span className="text-xs text-muted-foreground">-</span>;
+}
+
 export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: string[] }) {
   const router = useRouter();
   const { run } = useAction();
@@ -55,13 +61,14 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
   const [dup, setDup] = useState<ModelRow | null>(null);
   const [dupSlug, setDupSlug] = useState("");
   const [del, setDel] = useState<ModelRow | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [ruleFor, setRuleFor] = useState<{ ids: string[]; clear: () => void } | null>(null);
 
   const filtered = useMemo(
     () => rows.filter((r) => (!vendor || r.vendor === vendor) && (!status || r.status === status) && (!capability || r.capabilities.includes(capability))),
     [rows, vendor, status, capability],
   );
+  const lossCount = rows.filter((r) => r.loss).length;
 
   async function doExport() {
     const res = await run(() => exportModels(), { refresh: false, success: "" });
@@ -108,41 +115,67 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
         );
       },
     },
-    { accessorKey: "status", header: "Status", cell: ({ row }) => <StatusBadge status={row.original.status} /> },
     {
-      id: "sell",
-      header: "Sell in / out / cached",
-      meta: { label: "Sell in/out/cached (per 1M)" },
-      accessorFn: (r) => `${r.inputPrice}/${r.outputPrice}/${r.cachedInputPrice ?? ""}`,
+      accessorKey: "status",
+      header: "Status",
       cell: ({ row: { original: r } }) => (
-        <span className="whitespace-nowrap text-xs">
-          <MoneyText value={r.inputPrice} /> / <MoneyText value={r.outputPrice} /> /{" "}
-          {r.cachedInputPrice ? <MoneyText value={r.cachedInputPrice} /> : <span className="text-muted-foreground">-</span>}
-        </span>
+        <div className="flex flex-wrap items-center gap-1">
+          <StatusBadge status={r.status} />
+          {r.retiresAt && (
+            <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400" title={`Retires ${r.retiresAt.slice(0, 10)}`}>
+              retiring {r.retiresAt.slice(0, 10)}
+            </Badge>
+          )}
+          {r.pricingMode !== "FIXED" && (
+            <Badge variant="outline" className="gap-1 text-[10px]" title={PRICING_MODE_LABELS[r.pricingMode as PricingModeId]?.label}>
+              <Percent className="size-3" /> {r.pricingMode === "PERCENT_OF_OFFICIAL" ? `${r.pricingValue ?? "?"}% of official` : `+${r.pricingValue ?? "?"}% over cost`}
+            </Badge>
+          )}
+        </div>
       ),
     },
     {
+      id: "official",
+      header: "Official price",
+      meta: { label: "Official price (in / out per 1M)" },
+      accessorFn: (r) => compactUnits(r.units, "official").text,
+      cell: ({ row: { original: r } }) => <Prices r={r} pick="official" />,
+    },
+    {
       id: "cost",
-      header: "Best route cost in / out",
-      meta: { label: "Best cost in/out (per 1M)" },
-      accessorFn: (r) => (r.bestCostIn === null ? "" : `${r.bestCostIn}/${r.bestCostOut}`),
+      header: "Our cost",
+      meta: { label: "Our cost, best route (in / out per 1M)" },
+      accessorFn: (r) => compactUnits(r.units, "cost").text,
       cell: ({ row: { original: r } }) =>
-        r.bestCostIn === null ? (
-          <span className="text-xs text-red-500">no enabled route</span>
-        ) : (
-          <span className="whitespace-nowrap text-xs">
-            <MoneyText value={r.bestCostIn} /> / <MoneyText value={r.bestCostOut ?? 0} />
-          </span>
-        ),
+        r.routesEnabled === 0 ? <span className="text-xs text-red-500">no enabled route</span> : <Prices r={r} pick="cost" />,
+    },
+    {
+      id: "price",
+      header: "Customer price",
+      meta: { label: "Customer price (in / out per 1M)" },
+      accessorFn: (r) => compactUnits(r.units, "price").text,
+      cell: ({ row: { original: r } }) => <Prices r={r} pick="price" />,
+    },
+    {
+      id: "savings",
+      header: "Savings",
+      meta: { label: "Savings vs official %" },
+      accessorFn: (r) => r.savingsPct ?? -999,
+      cell: ({ row: { original: r } }) => (r.savingsPct === null ? <span className="text-xs text-muted-foreground">-</span> : <SavingsBadge official={100} price={100 - r.savingsPct} />),
     },
     {
       id: "margin",
-      header: "Margin in / out",
-      meta: { label: "Margin in/out %" },
-      accessorFn: (r) => r.marginIn ?? -999,
+      header: "Margin",
+      meta: { label: "Margin %" },
+      accessorFn: (r) => r.marginPct ?? -999,
       cell: ({ row: { original: r } }) => (
-        <span className="whitespace-nowrap text-xs tabular-nums">
-          <span className={marginTone(r.marginIn)}>{formatMargin(r.marginIn)}</span> / <span className={marginTone(r.marginOut)}>{formatMargin(r.marginOut)}</span>
+        <span className="inline-flex items-center gap-1 whitespace-nowrap text-xs tabular-nums">
+          <span className={marginTone(r.marginPct)}>{fmtPct(r.marginPct, 1)}</span>
+          {r.loss && (
+            <Badge variant="outline" className="gap-1 border-red-500/40 bg-red-500/10 text-[10px] font-semibold text-red-600 dark:text-red-400">
+              <AlertTriangle className="size-3" /> loss
+            </Badge>
+          )}
         </span>
       ),
     },
@@ -204,7 +237,7 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
     <>
       <PageHeader
         title="Models"
-        description="The public catalog customers call, with sell prices. Each model maps to one or more upstream routes (provider + real upstream model + your cost)."
+        description="The public catalog customers call. Each model has an Official price (what the original provider charges), your Customer price, and Our cost (what your supplier charges)."
         actions={
           <>
             <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
@@ -213,12 +246,20 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
             <Button variant="outline" size="sm" onClick={doExport}>
               <Download className="size-4" /> Export JSON
             </Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="size-4" /> New model
+            <Button size="sm" asChild>
+              <Link href="/admin/models/new">
+                <Plus className="size-4" /> Add model
+              </Link>
             </Button>
           </>
         }
       />
+      <PriceExplainer audience="admin" className="mb-4" />
+      {lossCount > 0 && (
+        <p className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-600 dark:text-red-400" role="alert">
+          <AlertTriangle className="size-4 shrink-0" /> {lossCount} model{lossCount === 1 ? " is" : "s are"} priced below our cost. Every request on {lossCount === 1 ? "it" : "them"} loses money. Look for the red <strong>loss</strong> badge.
+        </p>
+      )}
       <DataTable
         columns={columns}
         data={filtered}
@@ -227,9 +268,18 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
         exportFilename="models"
         pageSize={25}
         getRowId={(r) => r.id}
-        initialColumnVisibility={{ vendor: true }}
+        initialColumnVisibility={{ vendor: false, usage: false }}
         emptyTitle="No models"
-        emptyDescription={rows.length ? "No models match the current filters." : "Create your first model or import a JSON catalog."}
+        emptyDescription={rows.length ? "No models match the current filters." : "Add your first model with the guided flow, or import a JSON catalog."}
+        emptyAction={
+          rows.length ? undefined : (
+            <Button size="sm" asChild>
+              <Link href="/admin/models/new">
+                <Plus className="size-4" /> Add model
+              </Link>
+            </Button>
+          )
+        }
         toolbar={
           <>
             <FilterSel label="Vendor" value={vendor} onChange={setVendor} options={vendors} />
@@ -237,10 +287,15 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
             <FilterSel label="Capability" value={capability} onChange={setCapability} options={[...MODEL_CAPABILITIES]} />
           </>
         }
+        bulkActions={({ selected, clear }) => (
+          <Button size="sm" variant="secondary" onClick={() => setRuleFor({ ids: selected.map((s) => s.id), clear })}>
+            <Percent className="size-4" /> Apply pricing rule
+          </Button>
+        )}
       />
 
-      <CreateModelDialog open={createOpen} onOpenChange={setCreateOpen} vendors={vendors} />
       <ModelImportDialog open={importOpen} onOpenChange={setImportOpen} />
+      <ApplyRuleDialog target={ruleFor} onClose={() => setRuleFor(null)} />
 
       <FormDialog
         open={!!dup}
@@ -276,39 +331,31 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
   );
 }
 
-function CreateModelDialog({ open, onOpenChange, vendors }: { open: boolean; onOpenChange: (o: boolean) => void; vendors: string[] }) {
-  const router = useRouter();
+/** Bulk: set the same pricing rule on every selected model; prices are recomputed immediately. */
+function ApplyRuleDialog({ target, onClose }: { target: { ids: string[]; clear: () => void } | null; onClose: () => void }) {
   const { run, fieldErrors, pending } = useAction();
-  const [f, setF] = useState({ slug: "", displayName: "", vendor: "", capabilities: ["chat"] as string[], inputPrice: "", outputPrice: "", status: "HIDDEN" });
-  const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }));
+  const [mode, setMode] = useState<PricingModeId>("PERCENT_OF_OFFICIAL");
+  const [value, setValue] = useState("70");
+  const n = target?.ids.length ?? 0;
   return (
     <FormDialog
-      open={open}
-      onOpenChange={onOpenChange}
-      title="New model"
-      description="Create the public catalog entry first, then add routes (providers + your cost) on the next screen."
-      submitLabel="Create & continue"
+      open={!!target}
+      onOpenChange={(o) => !o && onClose()}
+      wide
+      title={`Apply pricing rule to ${n} model${n === 1 ? "" : "s"}`}
+      description="Customer prices of the selected models are recalculated right away, and stay in sync when official prices or our costs change."
+      submitLabel="Apply rule"
       pending={pending}
       onSubmit={async () => {
-        const res = await run(() => createModel({ ...f, aliases: [] }), { refresh: false });
-        if (res.ok && res.data) router.push(`/admin/models/${res.data.id}`);
+        if (!target) return false;
+        const res = await run(() => bulkApplyPricingRule(target.ids, { mode, value }), { onOk: () => target.clear() });
         return res.ok;
       }}
     >
-      <div className="grid gap-4 sm:grid-cols-2">
-        <TextField label="Public slug" placeholder="gpt-6-astra" value={f.slug} onChange={(e) => set("slug", e.target.value)} error={fieldErrors.slug} description="What customers put in `model`." />
-        <TextField label="Display name" placeholder="GPT-6 Astra" value={f.displayName} onChange={(e) => set("displayName", e.target.value)} error={fieldErrors.displayName} />
-        <TextField label="Vendor" list="vendor-options" placeholder="openai" value={f.vendor} onChange={(e) => set("vendor", e.target.value)} error={fieldErrors.vendor} />
-        <datalist id="vendor-options">
-          {vendors.map((v) => (
-            <option key={v} value={v} />
-          ))}
-        </datalist>
-        <SelectField label="Status" value={f.status} onChange={(v) => set("status", v)} options={MODEL_STATUSES.map((s) => ({ value: s, label: s }))} description="HIDDEN = callable but not listed." />
-        <NumberField label="Sell input" suffix="USD / 1M tokens" value={f.inputPrice} onChange={(v) => set("inputPrice", v)} error={fieldErrors.inputPrice} min={0} />
-        <NumberField label="Sell output" suffix="USD / 1M tokens" value={f.outputPrice} onChange={(v) => set("outputPrice", v)} error={fieldErrors.outputPrice} min={0} />
-      </div>
-      <MultiSelectField label="Capabilities" values={f.capabilities} onChange={(v) => set("capabilities", v)} options={MODEL_CAPABILITIES.map((c) => ({ value: c, label: c }))} error={fieldErrors.capabilities} />
+      <RuleSelector mode={mode} value={value} onMode={(m) => { setMode(m); if (m === "PERCENT_OF_OFFICIAL" && !value) setValue("70"); if (m === "MARKUP_OVER_COST" && !value) setValue("30"); }} onValue={setValue} valueError={fieldErrors.value} />
+      <p className={cn("text-xs text-muted-foreground", mode === "FIXED" && "text-amber-700 dark:text-amber-400")}>
+        {mode === "FIXED" ? "Fixed keeps today's prices as they are and stops automatic updates." : "Models without an official price (or without a route cost for markup) keep their current prices."}
+      </p>
     </FormDialog>
   );
 }

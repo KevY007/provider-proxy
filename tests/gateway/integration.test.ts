@@ -760,7 +760,7 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
   });
 
   it("a 4xx validation error from the upstream is returned as-is and never fails over", async () => {
-    const res = await call("/v1/messages", null, { model: M.nat, messages: [{ role: "user", content: "no max_tokens" }] }, { headers: { "x-api-key": fx.main.key, "anthropic-version": "2023-06-01" } });
+    const res = await call("/v1/messages", null, { model: M.nat, max_tokens: 20, messages: [{ role: "user", content: "rejected upstream [[http400]]" }] }, { headers: { "x-api-key": fx.main.key, "anthropic-version": "2023-06-01" } });
     expect(res.status).toBe(400);
     const body = await res.json();
     expect(body.type).toBe("error");
@@ -768,6 +768,14 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     const log = await logOf(res);
     expect(log.status).toBe("CLIENT_ERROR");
     expect((log.attempts as unknown[]).length).toBe(1);
+  });
+
+  it("an Anthropic request without max_tokens is not rejected: the funds guard fills it in", async () => {
+    const res = await call("/v1/messages", null, { model: M.nat, messages: [{ role: "user", content: "no max_tokens" }] }, { headers: { "x-api-key": fx.main.key, "anthropic-version": "2023-06-01" } });
+    expect(res.status).toBe(200);
+    await res.text();
+    const last = await mockLast("/v1/messages");
+    expect(last.body.max_tokens).toBe(1024); // model.maxOutput
   });
 
   // ------------------------------------------------------------------ gateway errors

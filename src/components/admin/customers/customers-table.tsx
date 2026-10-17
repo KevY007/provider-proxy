@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Download } from "lucide-react";
+import { Download, Gift } from "lucide-react";
 import { DataTable } from "@/components/common/data-table";
 import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
@@ -13,8 +13,10 @@ import { fmtDate, timeAgo } from "@/components/admin/format";
 import { Button } from "@/components/ui/button";
 import { formatNumber } from "@/lib/utils";
 import type { CustomerRow } from "@/server/admin/customers-queries";
+import { GrantCreditDialog } from "./credit-dialogs";
 
 export function CustomersTable({
+  isAdmin = true,
   rows,
   total,
   page,
@@ -22,6 +24,8 @@ export function CustomersTable({
   groups,
   exportQuery,
 }: {
+  /** Only admins (not support staff) can grant credit. */
+  isAdmin?: boolean;
   rows: CustomerRow[];
   total: number;
   page: number;
@@ -31,6 +35,7 @@ export function CustomersTable({
 }) {
   const { set, get } = useUrlFilters();
   const router = useRouter();
+  const [grant, setGrant] = useState<{ ids: string[]; clear: () => void } | null>(null);
   const columns = useMemo<ColumnDef<CustomerRow>[]>(
     () => [
       {
@@ -57,12 +62,22 @@ export function CustomersTable({
   );
 
   return (
+    <>
     <DataTable
       columns={columns}
       data={rows}
       pageSize={pageSize}
       hideColumnToggle
       getRowId={(r) => r.id}
+      bulkActions={
+        isAdmin
+          ? ({ selected, clear }) => (
+              <Button size="sm" variant="secondary" onClick={() => setGrant({ ids: selected.map((s) => s.id), clear })}>
+                <Gift className="size-4" /> Grant credit
+              </Button>
+            )
+          : undefined
+      }
       onRowClick={(r) => router.push(`/admin/customers/${r.id}`)}
       emptyTitle="No customers match"
       emptyDescription="Try a different search or clear the filters."
@@ -111,5 +126,7 @@ export function CustomersTable({
         </>
       }
     />
+    <GrantCreditDialog userIds={grant?.ids ?? []} open={!!grant} onOpenChange={(o) => !o && setGrant(null)} onDone={() => grant?.clear()} />
+    </>
   );
 }

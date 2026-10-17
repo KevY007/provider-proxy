@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { getSettings, setSettings, SETTING_DEFS, type SettingKey, type SettingValues } from "@/lib/settings";
 import { invalidateGatewayConfig } from "@/gateway/cache";
 import { ActionFail, adminAction, parseInput } from "./action";
+import { friendlySettingIssue, type IssueLike } from "./settings-calc";
 
 /**
  * Save changed settings. `values` is { key: value } for any subset of SETTING_DEFS keys; each value is validated
@@ -26,13 +27,14 @@ export async function saveSettings(values: Record<string, unknown>) {
       if (def.type === "number") v = typeof raw === "string" ? (raw.trim() === "" ? NaN : Number(raw)) : raw;
       const res = (def.schema as z.ZodType).safeParse(v);
       if (!res.success) {
-        fieldErrors[key] = res.error.issues[0]?.message ?? "Invalid value";
+        fieldErrors[key] = friendlySettingIssue(def.label, res.error.issues[0] as IssueLike | undefined);
         continue;
       }
       if (JSON.stringify(res.data) !== JSON.stringify((current as Record<string, unknown>)[key])) next[key] = res.data;
     }
     if (Object.keys(fieldErrors).length) {
-      throw new ActionFail(`${Object.keys(fieldErrors).length} setting${Object.keys(fieldErrors).length === 1 ? " is" : "s are"} invalid`, fieldErrors);
+      const msgs = Object.values(fieldErrors);
+      throw new ActionFail(msgs.length === 1 ? msgs[0] : `${msgs[0]} (and ${msgs.length - 1} more setting${msgs.length === 2 ? "" : "s"} to fix)`, fieldErrors);
     }
     const changed = Object.keys(next);
     if (changed.length === 0) return { data: { changed }, message: "No changes to save" };

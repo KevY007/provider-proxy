@@ -31,7 +31,10 @@ export interface LogRow {
   cachedTokens: number;
   reasoningTokens: number;
   imageCount: number;
+  videoSeconds: number;
   price: string;
+  /** What this usage would cost at official prices ("0" when not recorded). */
+  officialPrice: string;
   latencyMs: number;
   ttftMs: number | null;
   usageEstimated: boolean;
@@ -56,7 +59,9 @@ const SAFE_SELECT = {
   cachedTokens: true,
   reasoningTokens: true,
   imageCount: true,
+  videoSeconds: true,
   price: true,
+  officialPrice: true,
   latencyMs: true,
   ttftMs: true,
   usageEstimated: true,
@@ -84,7 +89,9 @@ function toRow(r: SafeRow): LogRow {
     cachedTokens: r.cachedTokens,
     reasoningTokens: r.reasoningTokens,
     imageCount: r.imageCount,
+    videoSeconds: r.videoSeconds,
     price: r.price.toString(),
+    officialPrice: r.officialPrice.toString(),
     latencyMs: r.latencyMs,
     ttftMs: r.ttftMs,
     usageEstimated: r.usageEstimated,

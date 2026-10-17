@@ -172,14 +172,76 @@ export function computeAmount(usage: Usage, table: PriceTable, opts: PriceOption
   return roundDb(total);
 }
 
+/** Per-unit nullable prices (an "official" price list: any unit may be unknown). */
+export type OptTable = { [K in keyof PriceTable]: Decimal | null };
+
+/** Build the OFFICIAL price list of a Model row (null = the model has no official price for that unit). */
+export function officialTable(m: {
+  officialInputPrice?: MoneyLike;
+  officialOutputPrice?: MoneyLike;
+  officialCachedPrice?: MoneyLike;
+  officialCacheWritePrice?: MoneyLike;
+  officialImagePrice?: MoneyLike;
+  officialRequestPrice?: MoneyLike;
+  officialAudioInputPrice?: MoneyLike;
+  officialAudioOutputPrice?: MoneyLike;
+  officialPerMinutePrice?: MoneyLike;
+  officialPerMillionChars?: MoneyLike;
+  officialPerSecondPrice?: MoneyLike;
+}): OptTable {
+  return {
+    input: opt(m.officialInputPrice),
+    output: opt(m.officialOutputPrice),
+    cachedInput: opt(m.officialCachedPrice),
+    cacheWrite: opt(m.officialCacheWritePrice),
+    cacheWrite1h: null,
+    image: opt(m.officialImagePrice),
+    request: opt(m.officialRequestPrice),
+    audioInput: opt(m.officialAudioInputPrice),
+    audioOutput: opt(m.officialAudioOutputPrice),
+    perMinute: opt(m.officialPerMinutePrice),
+    perMillionChars: opt(m.officialPerMillionChars),
+    perSecond: opt(m.officialPerSecondPrice),
+  };
+}
+
+const scaled = (v: Decimal | null, mult: Decimal): Decimal | null => (v ? v.times(mult) : null);
+
+/**
+ * The price list the SAME usage would have cost at official prices. A unit without an official price is priced at what
+ * the customer pays for it (sell x multiplier), so its savings are exactly 0. The multiplier is baked into those
+ * fallbacks (official prices themselves are never multiplied), so callers compute the amount WITHOUT a multiplier.
+ * A unit the customer is billed flat (image) stays flat here too, so both sides bill the same way.
+ */
+export function effectiveOfficial(official: OptTable | null | undefined, sell: PriceTable, multiplier: MoneyLike): PriceTable {
+  const m = toDecimal(multiplier, 1);
+  const o = official ?? ({} as OptTable);
+  return {
+    input: o.input ?? sell.input.times(m),
+    output: o.output ?? sell.output.times(m),
+    cachedInput: o.cachedInput ?? scaled(sell.cachedInput, m),
+    cacheWrite: o.cacheWrite ?? scaled(sell.cacheWrite, m),
+    cacheWrite1h: o.cacheWrite1h ?? scaled(sell.cacheWrite1h, m),
+    image: sell.image ? (o.image ?? sell.image.times(m)) : null,
+    request: o.request ?? scaled(sell.request, m),
+    audioInput: o.audioInput ?? scaled(sell.audioInput, m),
+    audioOutput: o.audioOutput ?? scaled(sell.audioOutput, m),
+    perMinute: o.perMinute ?? scaled(sell.perMinute, m),
+    perMillionChars: o.perMillionChars ?? scaled(sell.perMillionChars, m),
+    perSecond: o.perSecond ?? scaled(sell.perSecond, m),
+  };
+}
+
 export interface PriceBreakdown {
   price: Decimal;
   cost: Decimal;
   profit: Decimal;
   multiplier: Decimal;
+  /** What the same usage costs at official prices (== price when the model has no official prices). */
+  official: Decimal;
 }
 
-/** price (with multiplier) + cost (without) + profit for one request. */
+/** price (with multiplier) + cost (without) + profit (+ official-price equivalent) for one request. */
 export function priceRequest(
   usage: Usage,
   sell: PriceTable,
@@ -187,11 +249,13 @@ export function priceRequest(
   multiplier: MoneyLike,
   longContext: LongContext | null | undefined,
   billRequest = true,
+  official?: OptTable | null,
 ): PriceBreakdown {
   const mult = toDecimal(multiplier, 1);
   const price = computeAmount(usage, sell, { multiplier: mult, longContext, billRequest });
   const c = cost ? computeAmount(usage, cost, { longContext, billRequest }) : ZERO;
-  return { price, cost: c, profit: roundDb(price.minus(c)), multiplier: mult };
+  const off = official ? computeAmount(usage, effectiveOfficial(official, sell, mult), { longContext, billRequest }) : price;
+  return { price, cost: c, profit: roundDb(price.minus(c)), multiplier: mult, official: off };
 }
 
 /**
