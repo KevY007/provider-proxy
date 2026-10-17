@@ -1,0 +1,354 @@
+"use server";
+
+import { z } from "zod";
+import type { Prisma } from "@/generated/prisma/client";
+import { audit } from "@/lib/audit";
+import { db } from "@/lib/db";
+import { invalidateGatewayConfig } from "@/gateway/cache";
+import { ActionFail, adminAction, parseInput } from "./action";
+import {
+  modelFieldsSchema,
+  modelToExport,
+  parseModelImport,
+  routeFormSchema,
+  type ModelFields,
+  type RouteFields,
+} from "./models-calc";
+import { dstr } from "./serialize";
+
+function modelData(f: ModelFields) {
+  return {
+    slug: f.slug,
+    aliases: f.aliases,
+    displayName: f.displayName,
+    vendor: f.vendor,
+    description: f.description,
+    capabilities: f.capabilities,
+    contextWindow: f.contextWindow,
+    maxOutput: f.maxOutput,
+    status: f.status,
+    sortOrder: f.sortOrder,
+    maskUpstreamModel: f.maskUpstreamModel,
+    inputPrice: f.inputPrice,
+    outputPrice: f.outputPrice,
+    cachedInputPrice: f.cachedInputPrice,
+    cacheWritePrice: f.cacheWritePrice,
+    cacheWrite1hPrice: f.cacheWrite1hPrice,
+    imagePrice: f.imagePrice,
+    requestPrice: f.requestPrice,
+    audioInputPrice: f.audioInputPrice,
+    audioOutputPrice: f.audioOutputPrice,
+    perMinutePrice: f.perMinutePrice,
+    perMillionChars: f.perMillionChars,
+    longContextThreshold: f.longContextThreshold,
+    longContextMultiplier: f.longContextMultiplier,
+    officialInputPrice: f.officialInputPrice,
+    officialOutputPrice: f.officialOutputPrice,
+    officialCachedPrice: f.officialCachedPrice,
+  };
+}
+
+function routeData(f: RouteFields) {
+  return {
+    upstreamModel: f.upstreamModel,
+    label: f.label,
+    enabled: f.enabled,
+    priority: f.priority,
+    weight: f.weight,
+    groupSlugs: f.groupSlugs,
+    paramOverrides: f.paramOverrides as Prisma.InputJsonValue,
+    maxOutputTokens: f.maxOutputTokens,
+    inputCost: f.inputCost,
+    outputCost: f.outputCost,
+    cachedInputCost: f.cachedInputCost,
+    cacheWriteCost: f.cacheWriteCost,
+    cacheWrite1hCost: f.cacheWrite1hCost,
+    imageCost: f.imageCost,
+    requestCost: f.requestCost,
+    audioInputCost: f.audioInputCost,
+    audioOutputCost: f.audioOutputCost,
+    perMinuteCost: f.perMinuteCost,
+    perMillionCharsCost: f.perMillionCharsCost,
+  };
+}
+
+async function assertNamesFree(slug: string, aliases: string[], excludeId?: string) {
+  const names = [slug, ...aliases];
+  const clash = await db.model.findFirst({
+    where: { ...(excludeId ? { id: { not: excludeId } } : {}), OR: [{ slug: { in: names } }, { aliases: { hasSome: names } }] },
+    select: { slug: true, aliases: true },
+  });
+  if (clash) {
+    const hit = names.find((n) => n === clash.slug || clash.aliases.includes(n)) ?? slug;
+    throw new ActionFail(`"${hit}" is already used by model "${clash.slug}"`, { [hit === slug ? "slug" : "aliases"]: "Already in use" });
+  }
+}
+
+function routeConflict(err: unknown): never {
+  if ((err as { code?: string } | null)?.code === "P2002") {
+    throw new ActionFail("This model already has a route for that provider with the same upstream model. Change the upstream model or edit the existing route.", {
+      upstreamModel: "Duplicate of an existing route on this provider",
+    });
+  }
+  throw err;
+}
+
+// ---------------------------------------------------------------------------
+// models
+
+export async function createModel(input: unknown) {
+  return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const f = parseInput(modelFieldsSchema, input);
+    await assertNamesFree(f.slug, f.aliases);
+    const m = await db.model.create({ data: modelData(f), select: { id: true } });
+    await audit(admin.id, "model.create", { type: "Model", id: m.id }, { slug: f.slug }, ip);
+    await invalidateGatewayConfig("models", m.id);
+    return { data: { id: m.id }, message: `Model ${f.slug} created` };
+  });
+}
+
+export async function updateModel(id: string, input: unknown) {
+  return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
+    const f = parseInput(modelFieldsSchema, input);
+    const before = await db.model.findUnique({ where: { id } });
+    if (!before) throw new ActionFail("Model not found");
+    await assertNamesFree(f.slug, f.aliases, id);
+    await db.$transaction(async (tx) => {
+      await tx.model.update({ where: { id }, data: modelData(f) });
+      if (before.slug !== f.slug) {
+        // keep pool/key allow-lists pointing at the renamed model
+        await tx.$executeRaw`UPDATE "Group" SET "allowedModels" = array_replace("allowedModels", ${before.slug}, ${f.slug}) WHERE ${before.slug} = ANY("allowedModels")`;
+        await tx.$executeRaw`UPDATE "ApiKey" SET "allowedModels" = array_replace("allowedModels", ${before.slug}, ${f.slug}) WHERE ${before.slug} = ANY("allowedModels")`;
+      }
+    });
+    const changed = Object.keys(modelData(f)).filter((k) => String((before as Record<string, unknown>)[k] ?? "") !== String((modelData(f) as Record<string, unknown>)[k] ?? ""));
+    await audit(admin.id, "model.update", { type: "Model", id }, { slug: f.slug, changed, prevSlug: before.slug }, ip);
+    await invalidateGatewayConfig("models", id);
+    return { message: "Model saved" };
+  });
+}
+
+export async function deleteModel(id: string) {
+  return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
+    const m = await db.model.findUnique({ where: { id }, select: { slug: true, _count: { select: { routes: true } } } });
+    if (!m) throw new ActionFail("Model not found");
+    await db.$transaction(async (tx) => {
+      await tx.$executeRaw`UPDATE "Group" SET "allowedModels" = array_remove("allowedModels", ${m.slug}) WHERE ${m.slug} = ANY("allowedModels")`;
+      await tx.$executeRaw`UPDATE "ApiKey" SET "allowedModels" = array_remove("allowedModels", ${m.slug}) WHERE ${m.slug} = ANY("allowedModels")`;
+      await tx.model.delete({ where: { id } });
+    });
+    await audit(admin.id, "model.delete", { type: "Model", id }, { slug: m.slug, routes: m._count.routes }, ip);
+    await invalidateGatewayConfig("models", id);
+    return { message: `Model ${m.slug} deleted` };
+  });
+}
+
+export async function duplicateModel(id: string, newSlug: string) {
+  return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const slug = parseInput(modelFieldsSchema.shape.slug, newSlug);
+    const src = await db.model.findUnique({ where: { id }, include: { routes: true } });
+    if (!src) throw new ActionFail("Model not found");
+    await assertNamesFree(slug, []);
+    const created = await db.model.create({
+      data: {
+        ...modelData(parseInput(modelFieldsSchema, serializeForClone(src))),
+        slug,
+        aliases: [],
+        displayName: `${src.displayName} (copy)`,
+        status: "HIDDEN",
+        routes: {
+          create: src.routes.map((r) => ({
+            providerId: r.providerId,
+            upstreamModel: r.upstreamModel,
+            label: r.label,
+            enabled: r.enabled,
+            priority: r.priority,
+            weight: r.weight,
+            groupSlugs: r.groupSlugs,
+            paramOverrides: (r.paramOverrides ?? {}) as Prisma.InputJsonValue,
+            maxOutputTokens: r.maxOutputTokens,
+            inputCost: r.inputCost,
+            outputCost: r.outputCost,
+            cachedInputCost: r.cachedInputCost,
+            cacheWriteCost: r.cacheWriteCost,
+            cacheWrite1hCost: r.cacheWrite1hCost,
+            imageCost: r.imageCost,
+            requestCost: r.requestCost,
+            audioInputCost: r.audioInputCost,
+            audioOutputCost: r.audioOutputCost,
+            perMinuteCost: r.perMinuteCost,
+            perMillionCharsCost: r.perMillionCharsCost,
+          })),
+        },
+      },
+      select: { id: true },
+    });
+    await audit(admin.id, "model.duplicate", { type: "Model", id: created.id }, { from: src.slug, slug, routes: src.routes.length }, ip);
+    await invalidateGatewayConfig("models", created.id);
+    return { data: { id: created.id }, message: `Duplicated as ${slug} (hidden)` };
+  });
+}
+
+/** Turn a DB model row into input accepted by modelFieldsSchema (decimals as strings). */
+function serializeForClone(m: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(m)) {
+    if (k === "routes" || k === "id" || k === "createdAt" || k === "updatedAt") continue;
+    const isDecimal = v !== null && typeof v === "object" && typeof (v as { toFixed?: unknown }).toFixed === "function";
+    out[k] = isDecimal ? dstr(v as never) : v;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// routes
+
+export async function createRoute(modelId: string, input: unknown) {
+  return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const f = parseInput(routeFormSchema, input);
+    const model = await db.model.findUnique({ where: { id: modelId }, select: { slug: true } });
+    if (!model) throw new ActionFail("Model not found");
+    const provider = await db.provider.findUnique({ where: { id: f.providerId }, select: { id: true } });
+    if (!provider) throw new ActionFail("Provider not found", { providerId: "Choose a provider" });
+    const { providerId, ...rest } = f;
+    const r = await db.modelRoute.create({ data: { modelId, providerId, ...routeData(rest) }, select: { id: true } }).catch(routeConflict);
+    await audit(admin.id, "route.create", { type: "ModelRoute", id: r.id }, { model: model.slug, providerId, upstreamModel: f.upstreamModel }, ip);
+    await invalidateGatewayConfig("models", modelId);
+    return { data: { id: r.id }, message: "Route added" };
+  });
+}
+
+export async function updateRoute(routeId: string, input: unknown) {
+  return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
+    const f = parseInput(routeFormSchema, input);
+    const existing = await db.modelRoute.findUnique({ where: { id: routeId }, select: { modelId: true } });
+    if (!existing) throw new ActionFail("Route not found");
+    const { providerId, ...rest } = f;
+    await db.modelRoute.update({ where: { id: routeId }, data: { providerId, ...routeData(rest) } }).catch(routeConflict);
+    await audit(admin.id, "route.update", { type: "ModelRoute", id: routeId }, { modelId: existing.modelId, providerId, upstreamModel: f.upstreamModel }, ip);
+    await invalidateGatewayConfig("models", existing.modelId);
+    return { message: "Route saved" };
+  });
+}
+
+export async function toggleRoute(routeId: string, enabled: boolean) {
+  return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
+    const r = await db.modelRoute.update({ where: { id: routeId }, data: { enabled: z.boolean().parse(enabled) }, select: { modelId: true } });
+    await audit(admin.id, enabled ? "route.enable" : "route.disable", { type: "ModelRoute", id: routeId }, {}, ip);
+    await invalidateGatewayConfig("models", r.modelId);
+    return { message: enabled ? "Route enabled" : "Route disabled" };
+  });
+}
+
+export async function deleteRoute(routeId: string) {
+  return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
+    const r = await db.modelRoute.delete({ where: { id: routeId }, select: { modelId: true, upstreamModel: true, providerId: true } });
+    await audit(admin.id, "route.delete", { type: "ModelRoute", id: routeId }, { upstreamModel: r.upstreamModel, providerId: r.providerId }, ip);
+    await invalidateGatewayConfig("models", r.modelId);
+    return { message: "Route deleted" };
+  });
+}
+
+export async function duplicateRoute(routeId: string) {
+  return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const src = await db.modelRoute.findUnique({ where: { id: routeId } });
+    if (!src) throw new ActionFail("Route not found");
+    const taken = new Set((await db.modelRoute.findMany({ where: { modelId: src.modelId, providerId: src.providerId }, select: { upstreamModel: true } })).map((r) => r.upstreamModel));
+    let name = `${src.upstreamModel}-copy`;
+    for (let i = 2; taken.has(name); i++) name = `${src.upstreamModel}-copy${i}`;
+    const { id: _id, createdAt: _c, ...rest } = src;
+    void _id;
+    void _c;
+    const created = await db.modelRoute.create({
+      data: { ...rest, upstreamModel: name, enabled: false, paramOverrides: (rest.paramOverrides ?? {}) as Prisma.InputJsonValue },
+      select: { id: true },
+    });
+    await audit(admin.id, "route.duplicate", { type: "ModelRoute", id: created.id }, { from: routeId, upstreamModel: name }, ip);
+    await invalidateGatewayConfig("models", src.modelId);
+    return { data: { id: created.id }, message: `Route duplicated as ${name} (disabled)` };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// bulk import / export
+
+export interface ImportItemResult {
+  slug: string;
+  ok: boolean;
+  action?: "create" | "update";
+  routes?: number;
+  error?: string;
+}
+
+export async function importModels(text: string, dryRun: boolean) {
+  return adminAction<{ results: ImportItemResult[]; dryRun: boolean }>({ adminOnly: true }, async ({ admin, ip }) => {
+    if (typeof text !== "string" || text.length > 5_000_000) throw new ActionFail("Import is too large");
+    const parsed = parseModelImport(text);
+    if (parsed.fatal !== undefined) throw new ActionFail(parsed.fatal);
+    const providers = new Map((await db.provider.findMany({ select: { id: true, slug: true } })).map((p) => [p.slug, p.id]));
+    const results: ImportItemResult[] = [];
+    for (const item of parsed.items) {
+      if (!item.ok) {
+        results.push({ slug: item.slug, ok: false, error: item.error });
+        continue;
+      }
+      const { routes = [], ...fields } = item.data;
+      const missing = routes.find((r) => !providers.has(r.provider));
+      if (missing) {
+        results.push({ slug: fields.slug, ok: false, error: `Unknown provider slug "${missing.provider}"` });
+        continue;
+      }
+      try {
+        const existing = await db.model.findUnique({ where: { slug: fields.slug }, select: { id: true } });
+        const clash = await db.model.findFirst({
+          where: { ...(existing ? { id: { not: existing.id } } : {}), OR: [{ slug: { in: fields.aliases } }, { aliases: { hasSome: [fields.slug, ...fields.aliases] } }] },
+          select: { slug: true },
+        });
+        if (clash) throw new Error(`Slug/alias collides with model "${clash.slug}"`);
+        if (!dryRun) {
+          await db.$transaction(async (tx) => {
+            const m = existing
+              ? await tx.model.update({ where: { id: existing.id }, data: modelData(fields), select: { id: true } })
+              : await tx.model.create({ data: modelData(fields), select: { id: true } });
+            for (const r of routes) {
+              const { provider, ...rf } = r;
+              const providerId = providers.get(provider)!;
+              await tx.modelRoute.upsert({
+                where: { modelId_providerId_upstreamModel: { modelId: m.id, providerId, upstreamModel: rf.upstreamModel } },
+                create: { modelId: m.id, providerId, ...routeData(rf) },
+                update: routeData(rf),
+              });
+            }
+          });
+        }
+        results.push({ slug: fields.slug, ok: true, action: existing ? "update" : "create", routes: routes.length });
+      } catch (err) {
+        results.push({ slug: fields.slug, ok: false, error: err instanceof Error ? err.message : "Failed" });
+      }
+    }
+    const okCount = results.filter((r) => r.ok).length;
+    if (!dryRun && okCount > 0) {
+      await audit(admin.id, "model.import", null, { ok: okCount, failed: results.length - okCount }, ip);
+      await invalidateGatewayConfig("models");
+    }
+    return {
+      data: { results, dryRun },
+      message: dryRun ? `Dry run: ${okCount} of ${results.length} valid` : `Imported ${okCount} of ${results.length} models`,
+    };
+  });
+}
+
+export async function exportModels() {
+  return adminAction<{ json: string; count: number }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const models = await db.model.findMany({ orderBy: [{ sortOrder: "asc" }, { slug: "asc" }], include: { routes: { include: { provider: { select: { slug: true } } }, orderBy: { priority: "desc" } } } });
+    const out = models.map((m) => {
+      const { routes, ...rest } = m;
+      return modelToExport(
+        serializeForClone(rest),
+        routes.map(({ provider, ...r }) => ({ ...serializeForClone(r), providerSlug: provider.slug })),
+      );
+    });
+    await audit(admin.id, "model.export", null, { count: out.length }, ip);
+    return { data: { json: JSON.stringify(out, null, 2), count: out.length } };
+  });
+}

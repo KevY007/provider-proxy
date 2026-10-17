@@ -1,16 +1,243 @@
-// STUB created by lead — Gateway agent implements, keeping these signatures.
+import type { HealthStatus } from "@/generated/prisma/client";
+import { db } from "@/lib/db";
+import { decrypt } from "@/lib/crypto";
+import { logger } from "@/lib/logger";
+import { invalidateGatewayConfig } from "./cache";
+import { buildUpstreamHeaders, type AdapterProvider } from "./providers/adapters";
+import { maxTokensParamFor } from "./shape";
+import type { InboundFormat, JsonObject } from "./types";
+import { ClientAbortError, UpstreamTimeoutError, readErrorBody, sendUpstream } from "./upstream";
+import { isObject } from "./util";
+
 export type HealthResult = { ok: boolean; latencyMs: number | null; error?: string };
 
+const CHECK_TIMEOUT_MS = 15_000;
+const trimSlash = (s: string) => s.replace(/\/+$/, "");
+
+type ProviderRow = NonNullable<Awaited<ReturnType<typeof loadKey>>>["provider"];
+
+async function loadKey(id: string) {
+  return db.providerKey.findUnique({ where: { id }, include: { provider: true } });
+}
+
+function toAdapter(p: ProviderRow): AdapterProvider {
+  const headers: Record<string, string> = {};
+  if (isObject(p.extraHeaders)) for (const [k, v] of Object.entries(p.extraHeaders)) if (typeof v === "string") headers[k.toLowerCase()] = v;
+  return {
+    slug: p.slug,
+    preset: p.preset,
+    baseUrl: trimSlash(p.baseUrl),
+    authStyle: p.authStyle,
+    tags: p.tags,
+    extraHeaders: headers,
+    settings: isObject(p.settings) ? p.settings : {},
+  };
+}
+
+interface Probe {
+  url: string;
+  format: InboundFormat;
+  method: "GET" | "POST";
+  body?: JsonObject;
+}
+
+/** Cheap "list models" probe for the provider's primary surface. */
+function listProbe(p: AdapterProvider, formats: string[]): Probe {
+  const s = p.settings;
+  const str = (v: unknown) => (typeof v === "string" && v ? trimSlash(v) : undefined);
+  const hasOpenAI = formats.some((f) => f.startsWith("openai_"));
+  if (p.preset === "azure" || p.authStyle === "AZURE_API_KEY") {
+    return { url: `${p.baseUrl}/openai/models?api-version=${encodeURIComponent(str(s.azureApiVersion) ?? "2025-04-01-preview")}`, format: "openai_chat", method: "GET" };
+  }
+  if (p.preset === "google") {
+    return { url: `${p.baseUrl.replace(/\/v1(beta)?$/, "")}/v1beta/models?pageSize=1`, format: "gemini", method: "GET" };
+  }
+  if (hasOpenAI) return { url: `${str(s.openaiBaseUrl) ?? p.baseUrl}/models`, format: "openai_chat", method: "GET" };
+  if (formats.includes("anthropic_messages")) {
+    return { url: `${(str(s.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "")}/v1/models?limit=1`, format: "anthropic_messages", method: "GET" };
+  }
+  const root = (str(s.geminiBaseUrl) ?? p.baseUrl).replace(/\/v1(beta)?$/, "");
+  return { url: `${root}/v1beta/models?pageSize=1`, format: "gemini", method: "GET" };
+}
+
+/** 1-token completion probe for providers that do not expose a models list. */
+function completionProbe(p: AdapterProvider, formats: string[], upstreamModel: string): Probe {
+  const s = p.settings;
+  const str = (v: unknown) => (typeof v === "string" && v ? trimSlash(v) : undefined);
+  if (formats.some((f) => f.startsWith("openai_"))) {
+    const param = maxTokensParamFor({ preset: p.preset, settings: s });
+    const root = p.preset === "google" ? `${p.baseUrl.replace(/\/v1(beta)?$/, "")}/v1beta/openai` : (str(s.openaiBaseUrl) ?? p.baseUrl);
+    return { url: `${root}/chat/completions`, format: "openai_chat", method: "POST", body: { model: upstreamModel, messages: [{ role: "user", content: "ping" }], [param]: 1 } };
+  }
+  if (formats.includes("anthropic_messages")) {
+    return {
+      url: `${(str(s.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "")}/v1/messages`,
+      format: "anthropic_messages",
+      method: "POST",
+      body: { model: upstreamModel, max_tokens: 1, messages: [{ role: "user", content: "ping" }] },
+    };
+  }
+  const root = (str(s.geminiBaseUrl) ?? p.baseUrl).replace(/\/v1(beta)?$/, "");
+  return {
+    url: `${root}/v1beta/models/${encodeURIComponent(upstreamModel)}:generateContent`,
+    format: "gemini",
+    method: "POST",
+    body: { contents: [{ role: "user", parts: [{ text: "ping" }] }], generationConfig: { maxOutputTokens: 1 } },
+  };
+}
+
+async function runProbe(adapter: AdapterProvider, probe: Probe, secret: string, keyExtra: JsonObject, timeoutMs: number) {
+  const headers = buildUpstreamHeaders({ provider: adapter, format: probe.format, secret, stream: false, keyExtra, hasBody: !!probe.body });
+  let url = probe.url;
+  if (adapter.authStyle === "QUERY_KEY") url += (url.includes("?") ? "&" : "?") + `key=${encodeURIComponent(secret)}`;
+  const t0 = Date.now();
+  try {
+    const h = await sendUpstream({ url, method: probe.method, headers, body: probe.body ? JSON.stringify(probe.body) : null, timeoutMs });
+    const text = await readErrorBody(h.res, 4096);
+    h.dispose();
+    return { status: h.res.status, latencyMs: Date.now() - t0, text };
+  } catch (err) {
+    if (err instanceof UpstreamTimeoutError) return { status: 0, latencyMs: Date.now() - t0, text: `timeout after ${timeoutMs}ms` };
+    if (err instanceof ClientAbortError) return { status: 0, latencyMs: Date.now() - t0, text: "aborted" };
+    const cause = (err as { cause?: { code?: string } }).cause;
+    return { status: 0, latencyMs: Date.now() - t0, text: `${err instanceof Error ? err.message : String(err)}${cause?.code ? ` (${cause.code})` : ""}` };
+  }
+}
+
+/** Check one upstream key: records a HealthCheck row, refreshes key state and the provider's aggregate health. */
 export async function checkProviderKey(providerKeyId: string): Promise<HealthResult> {
-  void providerKeyId;
-  return { ok: false, latencyMs: null, error: "not implemented" };
+  const row = await loadKey(providerKeyId);
+  if (!row) return { ok: false, latencyMs: null, error: "provider key not found" };
+  const provider = row.provider;
+  const adapter = toAdapter(provider);
+  let secret: string;
+  try {
+    secret = decrypt(row.secretEncrypted);
+  } catch {
+    const res: HealthResult = { ok: false, latencyMs: null, error: "secret could not be decrypted (ENCRYPTION_KEY mismatch?)" };
+    await record(provider.id, row.id, res);
+    return res;
+  }
+  const keyExtra = isObject(row.extra) ? row.extra : {};
+  const timeout = Math.min(provider.timeoutMs, CHECK_TIMEOUT_MS);
+
+  let r = await runProbe(adapter, listProbe(adapter, provider.formats), secret, keyExtra, timeout);
+  if (r.status === 404 || r.status === 405 || r.status === 400 || r.status === 501) {
+    const route = await db.modelRoute.findFirst({ where: { providerId: provider.id, enabled: true }, orderBy: { priority: "desc" } });
+    if (route) r = await runProbe(adapter, completionProbe(adapter, provider.formats, route.upstreamModel), secret, keyExtra, timeout);
+  }
+  const ok = r.status >= 200 && r.status < 300;
+  const result: HealthResult = ok ? { ok, latencyMs: r.latencyMs } : { ok, latencyMs: r.latencyMs, error: `${r.status || "network"}: ${r.text.replace(/\s+/g, " ").slice(0, 200)}` };
+  await record(provider.id, row.id, result);
+
+  // key state
+  try {
+    if (ok) {
+      const revive = row.status === "INVALID" || (row.status === "COOLDOWN" && (!row.cooldownUntil || row.cooldownUntil.getTime() <= Date.now()));
+      if (revive || row.consecutiveFailures > 0) {
+        await db.providerKey.update({
+          where: { id: row.id },
+          data: { consecutiveFailures: 0, ...(revive ? { status: "ACTIVE" as const, cooldownUntil: null } : {}) },
+        });
+        void invalidateGatewayConfig("providers", row.id);
+      }
+    } else if (result.error) {
+      await db.providerKey.update({ where: { id: row.id }, data: { lastError: `health: ${result.error}`.slice(0, 500) } });
+    }
+  } catch (err) {
+    logger.warn("health: key update failed", { providerKeyId: row.id, err });
+  }
+  await refreshProviderHealth(provider.id);
+  return result;
 }
 
+async function record(providerId: string, providerKeyId: string, r: HealthResult): Promise<void> {
+  try {
+    await db.healthCheck.create({ data: { providerId, providerKeyId, ok: r.ok, latencyMs: r.latencyMs, error: r.error ?? null } });
+  } catch (err) {
+    logger.warn("health: could not store HealthCheck", { err });
+  }
+}
+
+/** Provider.healthStatus from the latest check of each key (+ passive request error rate). */
+export async function refreshProviderHealth(providerId: string): Promise<HealthStatus> {
+  const keys = await db.providerKey.findMany({ where: { providerId, status: { not: "DISABLED" } }, select: { id: true } });
+  if (!keys.length) {
+    await db.provider.update({ where: { id: providerId }, data: { healthStatus: "UNKNOWN", lastCheckAt: new Date() } }).catch(() => undefined);
+    return "UNKNOWN";
+  }
+  const latest = await db.healthCheck.findMany({
+    where: { providerId, providerKeyId: { in: keys.map((k) => k.id) } },
+    orderBy: { createdAt: "desc" },
+    take: keys.length * 3,
+  });
+  const seen = new Set<string>();
+  const results: Array<{ ok: boolean; latencyMs: number | null }> = [];
+  for (const c of latest) {
+    if (!c.providerKeyId || seen.has(c.providerKeyId)) continue;
+    seen.add(c.providerKeyId);
+    results.push({ ok: c.ok, latencyMs: c.latencyMs });
+  }
+  let status: HealthStatus = "UNKNOWN";
+  if (results.length) {
+    const okCount = results.filter((r) => r.ok).length;
+    status = okCount === results.length ? "OPERATIONAL" : okCount === 0 ? "DOWN" : "DEGRADED";
+  }
+  // passive signal: recent error rate on real traffic
+  try {
+    const since = new Date(Date.now() - 10 * 60_000);
+    const [total, bad] = await Promise.all([
+      db.requestLog.count({ where: { providerId, createdAt: { gte: since } } }),
+      db.requestLog.count({ where: { providerId, createdAt: { gte: since }, status: "UPSTREAM_ERROR" } }),
+    ]);
+    if (total >= 10) {
+      const rate = bad / total;
+      if (rate > 0.5) status = "DOWN";
+      else if (rate > 0.2 && status === "OPERATIONAL") status = "DEGRADED";
+    }
+  } catch {
+    /* passive signal is best effort */
+  }
+  const lat = results.filter((r) => r.ok && r.latencyMs !== null).map((r) => r.latencyMs as number);
+  await db.provider
+    .update({
+      where: { id: providerId },
+      data: { healthStatus: status, lastCheckAt: new Date(), ...(lat.length ? { lastLatencyMs: Math.round(lat.reduce((a, b) => a + b, 0) / lat.length) } : {}) },
+    })
+    .catch((err) => logger.warn("health: provider update failed", { providerId, err }));
+  return status;
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, async () => {
+      for (;;) {
+        const i = next++;
+        if (i >= items.length) return;
+        out[i] = await fn(items[i]);
+      }
+    }),
+  );
+  return out;
+}
+
+/** Check every non-disabled key of a provider. */
 export async function checkProvider(providerId: string): Promise<HealthResult[]> {
-  void providerId;
-  return [];
+  const keys = await db.providerKey.findMany({ where: { providerId, status: { not: "DISABLED" } }, select: { id: true } });
+  const results = await mapLimit(keys, 4, (k) =>
+    checkProviderKey(k.id).catch((err): HealthResult => ({ ok: false, latencyMs: null, error: err instanceof Error ? err.message : String(err) })),
+  );
+  if (!keys.length) await refreshProviderHealth(providerId);
+  return results;
 }
 
+/** Cron entry: check all keys of all ACTIVE providers; prunes old HealthCheck rows. */
 export async function runAllHealthChecks(): Promise<{ checked: number; failed: number }> {
-  return { checked: 0, failed: 0 };
+  const providers = await db.provider.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
+  const all = await mapLimit(providers, 4, (p) => checkProvider(p.id).catch(() => [] as HealthResult[]));
+  const flat = all.flat();
+  db.healthCheck.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 14 * 86_400_000) } } }).catch(() => undefined);
+  return { checked: flat.length, failed: flat.filter((r) => !r.ok).length };
 }
