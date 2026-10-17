@@ -1,0 +1,554 @@
+// ProviderProxy data model. Authoritative spec: docs/PLAN.md §4 + §9b.
+// Money is Decimal(24,12) in USD. Prices are USD per 1M units unless noted.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  SUPPORT
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+}
+
+enum BillingMode {
+  PREPAID
+  POSTPAID
+}
+
+enum TokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  EMAIL_CHANGE
+}
+
+enum KeyStatus {
+  ACTIVE
+  DISABLED
+  REVOKED
+}
+
+enum ProviderStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum ProviderKeyStatus {
+  ACTIVE
+  DISABLED
+  COOLDOWN
+  INVALID
+  EXHAUSTED
+}
+
+enum AuthStyle {
+  BEARER
+  X_API_KEY
+  X_GOOG_API_KEY
+  AZURE_API_KEY
+  QUERY_KEY
+}
+
+enum HealthStatus {
+  UNKNOWN
+  OPERATIONAL
+  DEGRADED
+  DOWN
+}
+
+enum ModelStatus {
+  ACTIVE
+  HIDDEN
+  DISABLED
+}
+
+enum RequestStatus {
+  SUCCESS
+  CLIENT_ERROR
+  UPSTREAM_ERROR
+  GATEWAY_ERROR
+  CANCELLED
+}
+
+enum LedgerType {
+  TOPUP
+  AUTO_RECHARGE
+  TRIAL_CREDIT
+  REDEEM
+  ADJUSTMENT
+  REFUND
+  CHARGEBACK
+  POSTPAID_SETTLEMENT
+  USAGE_CORRECTION
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  DISPUTED
+  CANCELED
+}
+
+// ----------------------------------------------------------------------------
+// Users & auth
+// ----------------------------------------------------------------------------
+
+model User {
+  id                     String      @id @default(cuid())
+  email                  String      @unique
+  name                   String?
+  passwordHash           String
+  role                   Role        @default(CUSTOMER)
+  status                 UserStatus  @default(PENDING_VERIFICATION)
+  emailVerifiedAt        DateTime?
+  totpSecret             String? // encrypted
+  totpEnabled            Boolean     @default(false)
+  groupId                String?
+  group                  Group?      @relation(fields: [groupId], references: [id])
+  priceMultiplier        Decimal?    @db.Decimal(10, 4) // per-customer override on top of group
+  balance                Decimal     @default(0) @db.Decimal(24, 12)
+  creditLimit            Decimal     @default(0) @db.Decimal(24, 12) // how far below 0 they may go (postpaid)
+  billingMode            BillingMode @default(PREPAID)
+  monthlySpendLimit      Decimal?    @db.Decimal(24, 12)
+  stripeCustomerId       String?     @unique
+  defaultPaymentMethodId String?
+  autoRechargeEnabled    Boolean     @default(false)
+  autoRechargeThreshold  Decimal     @default(5) @db.Decimal(24, 12)
+  autoRechargeAmount     Decimal     @default(20) @db.Decimal(24, 12)
+  lowBalanceAlertAt      Decimal?    @db.Decimal(24, 12)
+  trialGrantedAt         DateTime?
+  signupIp               String?
+  lastLoginAt            DateTime?
+  maxConcurrency         Int? // §9b customer-side concurrent request slots
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  sessions   Session[]
+  tokens     VerificationToken[]
+  apiKeys    ApiKey[]
+  requests   RequestLog[]
+  ledger     LedgerEntry[]       @relation("LedgerUser")
+  payments   Payment[]
+  redeemUses RedeemCodeUse[]
+
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Session {
+  id              String   @id // sha256 of the cookie token
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt       DateTime
+  ip              String?
+  userAgent       String?
+  twoFactorPassed Boolean  @default(false)
+  impersonatorId  String?
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model VerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      TokenType
+  tokenHash String    @unique
+  newEmail  String?
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, type])
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  prefix         String // first 12 chars shown in UI, e.g. "sk-pp-AbCd12"
+  keyHash        String    @unique // sha256(fullKey)
+  status         KeyStatus @default(ACTIVE)
+  groupId        String? // key-level group (pool) override; falls back to user.group then default group
+  group          Group?    @relation(fields: [groupId], references: [id])
+  allowedModels  String[]  @default([]) // empty = all models the group allows
+  ipAllowlist    String[]  @default([]) // CIDR or exact IPs, empty = any
+  rpmLimit       Int?
+  tpmLimit       Int?
+  maxConcurrency Int? // §9b
+  spendLimit     Decimal?  @db.Decimal(24, 12) // lifetime cap for this key
+  spent          Decimal   @default(0) @db.Decimal(24, 12)
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  isPlayground   Boolean   @default(false) // auto-created hidden key used by the dashboard playground
+  createdAt      DateTime  @default(now())
+
+  requests RequestLog[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Group {
+  // = "pool" / pricing tier
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  description     String?
+  priceMultiplier Decimal  @default(1) @db.Decimal(10, 4) // applied to model sell prices
+  providerTags    String[] @default([]) // if non-empty, only routes whose provider has ANY of these tags are used
+  allowedModels   String[] @default([]) // model slugs; empty = all public models
+  isDefault       Boolean  @default(false)
+  isPublic        Boolean  @default(true) // customers may pick it for their keys
+  rpmLimit        Int?
+  maxConcurrency  Int? // §9b
+  sortOrder       Int      @default(0)
+
+  users   User[]
+  apiKeys ApiKey[]
+}
+
+// ----------------------------------------------------------------------------
+// Providers, models, routing
+// ----------------------------------------------------------------------------
+
+model Provider {
+  id             String         @id @default(cuid())
+  name           String
+  slug           String         @unique
+  preset         String // "openai" | "anthropic" | "google" | "xai" | "groq" | "deepseek" | "openrouter" | "mistral" | "together" | "fireworks" | "azure" | "codex-everywhere" | "custom"
+  baseUrl        String // e.g. https://api.openai.com/v1
+  authStyle      AuthStyle      @default(BEARER)
+  formats        String[] // natively accepted EndpointFormat values (see PLAN §5)
+  tags           String[]       @default([])
+  extraHeaders   Json           @default("{}")
+  settings       Json           @default("{}") // { anthropicVersion, azureApiVersion, stripFields:[], forceStreamUsage:true, geminiBaseUrl, anthropicBaseUrl ... }
+  status         ProviderStatus @default(ACTIVE)
+  timeoutMs      Int            @default(600000)
+  priority       Int            @default(0)
+  maxConcurrency Int? // §9b cap across all of the provider's keys
+  healthStatus   HealthStatus   @default(UNKNOWN)
+  lastCheckAt    DateTime?
+  lastLatencyMs  Int?
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  keys     ProviderKey[]
+  routes   ModelRoute[]
+  requests RequestLog[]
+  checks   HealthCheck[]
+}
+
+model ProviderKey {
+  // an upstream credential / account
+  id                  String            @id @default(cuid())
+  providerId          String
+  provider            Provider          @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  label               String
+  secretEncrypted     String // AES-256-GCM via lib/crypto
+  secretHint          String // last 4 chars for display
+  status              ProviderKeyStatus @default(ACTIVE)
+  weight              Int               @default(1)
+  priority            Int               @default(0) // higher = tried first
+  rpmLimit            Int?
+  tpmLimit            Int?
+  maxConcurrency      Int? // §9b slots per key (null = settings.defaultKeyConcurrency)
+  dailyBudget         Decimal?          @db.Decimal(24, 12) // stop using after this cost/day
+  cooldownUntil       DateTime?
+  consecutiveFailures Int               @default(0)
+  lastError           String?
+  lastUsedAt          DateTime?
+  totalRequests       Int               @default(0)
+  totalCost           Decimal           @default(0) @db.Decimal(24, 12)
+  extra               Json              @default("{}") // org id, project id, azure deployment map, ...
+  createdAt           DateTime          @default(now())
+
+  requests RequestLog[]
+  checks   HealthCheck[]
+
+  @@index([providerId, status])
+}
+
+model Model {
+  // public catalog entry (what customers put in "model")
+  id                String      @id @default(cuid())
+  slug              String      @unique // "gpt-6-astra", "claude-opus-5-5", "gemini-3.1-pro", "gpt-image-2"
+  aliases           String[]    @default([])
+  displayName       String
+  vendor            String // "openai" | "anthropic" | "google" | "xai" | ...
+  description       String?
+  capabilities      String[] // "chat","responses","completions","embeddings","images","audio_speech","audio_transcription","moderation","vision","tools","reasoning"
+  contextWindow     Int?
+  maxOutput         Int?
+  status            ModelStatus @default(ACTIVE)
+  sortOrder         Int         @default(0)
+  maskUpstreamModel Boolean     @default(true) // §9b rewrite `model` in responses to the public slug
+
+  // SELL prices (what customers pay, before group/user multipliers). USD per 1M units unless noted.
+  inputPrice            Decimal  @default(0) @db.Decimal(24, 12)
+  outputPrice           Decimal  @default(0) @db.Decimal(24, 12)
+  cachedInputPrice      Decimal? @db.Decimal(24, 12) // null => inputPrice
+  cacheWritePrice       Decimal? @db.Decimal(24, 12) // null => inputPrice (5m)
+  cacheWrite1hPrice     Decimal? @db.Decimal(24, 12)
+  imagePrice            Decimal? @db.Decimal(24, 12) // USD per generated image (flat); if null bill image tokens
+  requestPrice          Decimal? @db.Decimal(24, 12) // USD flat per request (added)
+  audioInputPrice       Decimal? @db.Decimal(24, 12) // per 1M audio tokens
+  audioOutputPrice      Decimal? @db.Decimal(24, 12)
+  perMinutePrice        Decimal? @db.Decimal(24, 12) // transcription USD/minute
+  perMillionChars       Decimal? @db.Decimal(24, 12) // TTS USD per 1M input chars
+  longContextThreshold  Int? // input tokens above which multiplier applies
+  longContextMultiplier Decimal? @db.Decimal(10, 4)
+
+  // reference official price (marketing / "savings" display only)
+  officialInputPrice  Decimal? @db.Decimal(24, 12)
+  officialOutputPrice Decimal? @db.Decimal(24, 12)
+  officialCachedPrice Decimal? @db.Decimal(24, 12)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  routes ModelRoute[]
+
+  @@index([status, sortOrder])
+  @@index([vendor])
+}
+
+model ModelRoute {
+  // how a public model maps to an upstream provider + our COST
+  id              String   @id @default(cuid())
+  modelId         String
+  model           Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  providerId      String
+  provider        Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  upstreamModel   String // model id sent upstream
+  label           String? // §9b
+  enabled         Boolean  @default(true)
+  priority        Int      @default(0) // higher first; same priority => weighted random
+  weight          Int      @default(1)
+  groupSlugs      String[] @default([]) // §9b route only used for these groups/pools; empty = all
+  paramOverrides  Json     @default("{}") // §9b deep-merged into upstream body; null value = delete field
+  maxOutputTokens Int? // §9b clamp
+
+  // COST prices (what we pay upstream) — same units as Model sell prices
+  inputCost           Decimal  @default(0) @db.Decimal(24, 12)
+  outputCost          Decimal  @default(0) @db.Decimal(24, 12)
+  cachedInputCost     Decimal? @db.Decimal(24, 12)
+  cacheWriteCost      Decimal? @db.Decimal(24, 12)
+  cacheWrite1hCost    Decimal? @db.Decimal(24, 12)
+  imageCost           Decimal? @db.Decimal(24, 12)
+  requestCost         Decimal? @db.Decimal(24, 12)
+  audioInputCost      Decimal? @db.Decimal(24, 12)
+  audioOutputCost     Decimal? @db.Decimal(24, 12)
+  perMinuteCost       Decimal? @db.Decimal(24, 12)
+  perMillionCharsCost Decimal? @db.Decimal(24, 12)
+
+  createdAt DateTime @default(now())
+
+  @@unique([modelId, providerId, upstreamModel])
+  @@index([providerId])
+}
+
+// ----------------------------------------------------------------------------
+// Metering
+// ----------------------------------------------------------------------------
+
+model RequestLog {
+  id               String        @id @default(cuid()) // also returned as x-request-id
+  userId           String?
+  user             User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKeyId         String?
+  apiKey           ApiKey?       @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  groupSlug        String?
+  modelSlug        String?
+  endpoint         String // "/v1/chat/completions", "/v1/messages", "/v1beta/models:generateContent" ...
+  inboundFormat    String
+  providerId       String?
+  provider         Provider?     @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  providerKeyId    String?
+  providerKey      ProviderKey?  @relation(fields: [providerKeyId], references: [id], onDelete: SetNull)
+  upstreamModel    String?
+  status           RequestStatus
+  httpStatus       Int
+  errorCode        String?
+  errorMessage     String? // customer-safe message
+  internalError    String? // admin-only detail (upstream body, stack) — never shown to customers
+  stream           Boolean       @default(false)
+  inputTokens      Int           @default(0)
+  outputTokens     Int           @default(0)
+  cachedTokens     Int           @default(0)
+  cacheWriteTokens Int           @default(0)
+  reasoningTokens  Int           @default(0)
+  imageCount       Int           @default(0)
+  audioSeconds     Float         @default(0)
+  characters       Int           @default(0)
+  usageEstimated   Boolean       @default(false)
+  price            Decimal       @default(0) @db.Decimal(24, 12) // charged to customer
+  cost             Decimal       @default(0) @db.Decimal(24, 12) // paid upstream
+  profit           Decimal       @default(0) @db.Decimal(24, 12)
+  latencyMs        Int           @default(0)
+  ttftMs           Int?
+  queueMs          Int           @default(0) // §9b time spent waiting for an upstream slot
+  attempts         Json          @default("[]") // [{providerId, providerKeyId, status, error, latencyMs}]
+  ip               String?
+  userAgent        String?
+  requestBody      Json? // only if settings.logBodies
+  responseBody     Json?
+  createdAt        DateTime      @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([providerId, createdAt])
+  @@index([modelSlug, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([status, createdAt])
+}
+
+// ----------------------------------------------------------------------------
+// Billing
+// ----------------------------------------------------------------------------
+
+model LedgerEntry {
+  // every balance movement EXCEPT per-request usage (that lives in RequestLog)
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation("LedgerUser", fields: [userId], references: [id], onDelete: Cascade)
+  type         LedgerType
+  amount       Decimal    @db.Decimal(24, 12) // + credit, - debit
+  balanceAfter Decimal    @db.Decimal(24, 12)
+  description  String
+  paymentId    String?    @unique
+  payment      Payment?   @relation(fields: [paymentId], references: [id])
+  createdById  String? // admin who made an adjustment
+  metadata     Json       @default("{}")
+  createdAt    DateTime   @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  userId                String
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?       @unique
+  stripeCheckoutId      String?       @unique
+  amount                Decimal       @db.Decimal(24, 12)
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+  kind                  String // "topup" | "auto_recharge" | "postpaid_settlement"
+  failureReason         String?
+  receiptUrl            String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  ledger LedgerEntry?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model RedeemCode {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  amount      Decimal   @db.Decimal(24, 12)
+  maxUses     Int       @default(1)
+  uses        Int       @default(0)
+  expiresAt   DateTime?
+  note        String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  usages RedeemCodeUse[]
+}
+
+model RedeemCodeUse {
+  id        String     @id @default(cuid())
+  codeId    String
+  code      RedeemCode @relation(fields: [codeId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+
+  @@unique([codeId, userId])
+}
+
+// ----------------------------------------------------------------------------
+// Operations
+// ----------------------------------------------------------------------------
+
+model HealthCheck {
+  id            String       @id @default(cuid())
+  providerId    String
+  provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerKeyId String?
+  providerKey   ProviderKey? @relation(fields: [providerKeyId], references: [id], onDelete: Cascade)
+  ok            Boolean
+  latencyMs     Int?
+  error         String?
+  createdAt     DateTime     @default(now())
+
+  @@index([providerId, createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  data       Json     @default("{}")
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  level     String   @default("info")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model EmailOutbox {
+  id        String    @id @default(cuid())
+  to        String
+  subject   String
+  html      String
+  sentAt    DateTime?
+  error     String?
+  createdAt DateTime  @default(now())
+
+  @@index([createdAt])
+}
