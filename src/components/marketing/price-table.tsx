@@ -38,18 +38,15 @@ export function buildPriceRows(models: PriceModel[], multiplier: string): PriceR
   });
 }
 
+/** A saving is only advertised when our price is really below the official one; at list price we say so, above it we show nothing. */
 export function SavingsBadge({ pct }: { pct: number | null }) {
   if (pct === null) return <span className="text-muted-foreground">-</span>;
   const r = Math.round(pct);
+  if (r < 0) return <span className="text-muted-foreground">-</span>;
+  if (r === 0) return <span className="text-xs text-muted-foreground">Official parity</span>;
   return (
-    <Badge
-      variant="outline"
-      className={cn(
-        "font-semibold tabular-nums",
-        r > 0 ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
-      )}
-    >
-      {r > 0 ? `${r}% off` : r === 0 ? "same" : `+${Math.abs(r)}%`}
+    <Badge variant="outline" className={cn("font-semibold tabular-nums", "border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400")}>
+      {r}% off
     </Badge>
   );
 }

@@ -99,6 +99,7 @@ export function recordOutcome(o: Outcome): Charge {
     imageCount: u?.imageCount ?? 0,
     audioSeconds: u?.audioSeconds ?? 0,
     characters: u?.characters ?? 0,
+    videoSeconds: u?.videoSeconds ?? 0,
     usageEstimated: u?.estimated ?? false,
     price: toDbString(charge.price),
     cost: toDbString(charge.cost),

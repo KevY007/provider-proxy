@@ -73,7 +73,7 @@ function Section({ icon: Icon, title, description, children, tone }: { icon: Rea
 
 export function SettingsClient({ user, sessions }: SettingsClientProps) {
   return (
-    <div className="mx-auto max-w-3xl space-y-6">
+    <div className="max-w-3xl space-y-6">
       <ProfileSection name={user.name} email={user.email} verified={user.emailVerified} />
       <EmailSection />
       <PasswordSection />

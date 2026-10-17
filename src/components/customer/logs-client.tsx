@@ -259,7 +259,7 @@ function LogSheet({ row, onClose }: { row: LogRow | null; onClose: () => void })
                 <Row label="Cost"><MoneyText value={row.price} /></Row>
                 <Row label="Latency">{formatDuration(row.latencyMs)}</Row>
                 <Row label="Time to first token">{row.ttftMs != null ? formatDuration(row.ttftMs) : "-"}</Row>
-                <Row label="Attempts">{row.attempts || 1}</Row>
+                <Row label="Attempts">{row.attempts}</Row>
               </dl>
             </div>
           </>

@@ -39,12 +39,21 @@ interface Probe {
   format: InboundFormat;
   method: "GET" | "POST";
   body?: JsonObject;
+  /** Extra statuses that still prove the credential works (e.g. 404 for "no such job" on fal). */
+  accept?: number[];
 }
 
 /** Cheap "list models" probe for the provider's primary surface. */
 function listProbe(p: AdapterProvider, formats: string[]): Probe {
   const s = p.settings;
   const str = (v: unknown) => (typeof v === "string" && v ? trimSlash(v) : undefined);
+  // fal.ai has no cheap authenticated "whoami": ask the queue for a job that cannot exist. A valid key answers 404
+  // (NOT_FOUND), a bad one 401. Free, no job is created.
+  if (p.preset === "fal") {
+    const queue = str(s.queueBaseUrl) ?? "https://queue.fal.run";
+    return { url: `${queue}/fal-ai/flux/requests/00000000-0000-0000-0000-000000000000/status`, format: "openai_images", method: "GET", accept: [404] };
+  }
+  if (p.preset === "replicate") return { url: `${p.baseUrl}/account`, format: "openai_images", method: "GET" };
   const hasOpenAI = formats.some((f) => f.startsWith("openai_"));
   if (p.preset === "azure" || p.authStyle === "AZURE_API_KEY") {
     return { url: `${p.baseUrl}/openai/models?api-version=${encodeURIComponent(str(s.azureApiVersion) ?? "2025-04-01-preview")}`, format: "openai_chat", method: "GET" };
@@ -121,12 +130,15 @@ export async function checkProviderKey(providerKeyId: string): Promise<HealthRes
   const keyExtra = isObject(row.extra) ? row.extra : {};
   const timeout = Math.min(provider.timeoutMs, CHECK_TIMEOUT_MS);
 
-  let r = await runProbe(adapter, listProbe(adapter, provider.formats), secret, keyExtra, timeout);
-  if (r.status === 404 || r.status === 405 || r.status === 400 || r.status === 501) {
+  const probe = listProbe(adapter, provider.formats);
+  let r = await runProbe(adapter, probe, secret, keyExtra, timeout);
+  const accepted = !!probe.accept?.includes(r.status);
+  const hasChatProbe = adapter.preset !== "fal" && adapter.preset !== "replicate";
+  if (!accepted && hasChatProbe && (r.status === 404 || r.status === 405 || r.status === 400 || r.status === 501)) {
     const route = await db.modelRoute.findFirst({ where: { providerId: provider.id, enabled: true }, orderBy: { priority: "desc" } });
     if (route) r = await runProbe(adapter, completionProbe(adapter, provider.formats, route.upstreamModel), secret, keyExtra, timeout);
   }
-  const ok = r.status >= 200 && r.status < 300;
+  const ok = (r.status >= 200 && r.status < 300) || accepted;
   const result: HealthResult = ok ? { ok, latencyMs: r.latencyMs } : { ok, latencyMs: r.latencyMs, error: `${r.status || "network"}: ${r.text.replace(/\s+/g, " ").slice(0, 200)}` };
   await record(provider.id, row.id, result);
 

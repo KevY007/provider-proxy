@@ -14,7 +14,7 @@ import { JsonView, KV } from "@/components/admin/misc";
 import type { AuditRow } from "@/server/admin/audit-queries";
 
 const columns: ColumnDef<AuditRow>[] = [
-  { accessorKey: "createdAt", header: "When", cell: ({ row }) => <span className="whitespace-nowrap text-xs">{new Date(row.original.createdAt).toLocaleString()}</span> },
+  { accessorKey: "createdAt", header: "When", cell: ({ row }) => <span className="whitespace-nowrap text-xs" suppressHydrationWarning>{new Date(row.original.createdAt).toLocaleString()}</span> },
   { accessorKey: "action", header: "Action", cell: ({ row }) => <Badge variant="secondary" className="font-mono">{row.original.action}</Badge> },
   { id: "actor", header: "Actor", accessorFn: (r) => r.actorEmail ?? r.actorId ?? "system", cell: ({ row }) => <span className="text-sm">{row.original.actorEmail ?? row.original.actorId ?? <span className="text-muted-foreground">system</span>}</span> },
   {

@@ -3,7 +3,8 @@ import type { SettingValues } from "@/lib/settings";
 import type { ConfigSnapshot } from "./cache";
 import { getKeySecret } from "./cache";
 import { logOutcome, releaseAll, releaseUpstream, withCommon, type Ctx } from "./context";
-import { GatewayError, streamErrorEvent, type GatewayErrorCode } from "./errors";
+import { GatewayError, streamErrorEvent } from "./errors";
+import { finalError, type Failure } from "./failure";
 import { classifyStatus, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
 import { checkRpm, checkTpm, providerKeyDailyCost } from "./limits";
 import { fileBytes } from "./multipart";
@@ -12,6 +13,7 @@ import { rememberResponse } from "./responses-sticky";
 import { buildCandidates, type Candidate, type RoutePlan } from "./select";
 import {
   clientErrorFromUpstream,
+  type HeaderLike,
   extractErrorMessage,
   extractUsage,
   maskResponse,
@@ -21,29 +23,25 @@ import {
   type Prepared,
   type ScrubContext,
 } from "./shape";
+import { DriverClientError, DriverFailure, UpstreamHttpError, type Driver } from "./providers/driver-types";
+import { makeDriverEnv } from "./providers/driver-env";
+import { getDriver } from "./providers/drivers";
 import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPool } from "./slots";
 import { InBandError, StreamSession, type FinishInfo } from "./stream";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
 import { countRequestTokens, countTokens } from "./tokenizer";
 import { AnthropicToChatStream, ChatToAnthropicStream, chatResponseToMessages, messagesResponseToChat } from "./translate";
-import { emptyUsage, type Json, type Operation, type Usage } from "./types";
+import { emptyUsage, type InboundFormat, type Json, type JsonObject, type Operation, type Usage } from "./types";
 import { ClientAbortError, UpstreamTimeoutError, readErrorBody, readTextLimited, sendUpstream, type UpstreamHandle } from "./upstream";
-import { isObject, safeJsonParse, sleep } from "./util";
+import { finishVideoCreate, handleVideoCreateOk } from "./video";
+import { describeNetworkError, isObject, safeJsonParse, sleep } from "./util";
+
+export { finalError, type Failure } from "./failure";
 
 const MAX_JSON_RESPONSE = 64 * 1024 * 1024;
 const STREAM_OPS = new Set<Operation>(["chat", "completions", "responses", "messages", "gemini_stream"]);
 const TOKEN_OPS = new Set<Operation>(["chat", "completions", "responses", "messages", "gemini_generate", "gemini_stream", "embeddings", "gemini_embed", "gemini_batch_embed"]);
-
-export interface Failure {
-  fk: FailureKind;
-  status: number;
-  message: string;
-  startedAt?: number;
-  retryAfterSec?: number;
-  rlHeaders?: Record<string, string>;
-  internal: string;
-}
 
 export type AttemptResult =
   | { kind: "response"; response: Response }
@@ -55,6 +53,11 @@ export interface ExecOptions {
   pinKeyId?: string | null;
   maxAttempts?: number;
   responseId?: string;
+  /** Video lookups: the UPSTREAM video id + raw query string (e.g. "variant=thumbnail"). */
+  upstreamVideoId?: string;
+  upstreamQuery?: string;
+  /** Video content hosted outside the provider API (fal CDN): fetched as-is, without credentials. */
+  externalUrl?: string;
 }
 
 const isFailoverStatus = (s: number) => s === 401 || s === 402 || s === 403 || s === 408 || s === 429 || s >= 500 || (s >= 300 && s < 400);
@@ -176,31 +179,6 @@ function noProviderError(snap: ConfigSnapshot, routes: RoutePlan[]): GatewayErro
   return new GatewayError("no_available_provider", undefined, { retryAfterSec: retry, internal: "no usable upstream key (all disabled, invalid, cooling down or missing)" });
 }
 
-/** Customer-facing error once attempts are exhausted (never reveals upstream identity). */
-export function finalError(f: Failure, settings: Pick<SettingValues, "passUpstreamRateLimits">): GatewayError {
-  let code: GatewayErrorCode;
-  let opts: ConstructorParameters<typeof GatewayError>[2] = { internal: `${f.status || "network"} ${f.fk}: ${f.internal}`.slice(0, 4000), upstreamStatus: f.status || undefined };
-  switch (f.fk) {
-    case "rate_limit":
-      code = "rate_limited";
-      opts = {
-        ...opts,
-        kind: "upstream",
-        retryAfterSec: f.retryAfterSec ?? 2,
-        headers: settings.passUpstreamRateLimits ? (f.rlHeaders ?? {}) : {},
-      };
-      return new GatewayError(code, "Rate limit exceeded. Please retry later.", opts);
-    case "timeout":
-      return new GatewayError("upstream_timeout", undefined, opts);
-    case "auth":
-    case "payment":
-      return new GatewayError("no_available_provider", undefined, { ...opts, retryAfterSec: 30 });
-    default:
-      if (f.status === 529) return new GatewayError("upstream_overloaded", undefined, { ...opts, retryAfterSec: f.retryAfterSec ?? 5, anthropicType: "overloaded_error" });
-      return new GatewayError("upstream_error", undefined, opts);
-  }
-}
-
 // ------------------------------------------------------------------ one attempt
 async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts: ExecOptions): Promise<AttemptResult> {
   const t0 = Date.now();
@@ -216,9 +194,29 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
   const secret = getKeySecret(key);
   if (!secret) return fail("auth", 0, "upstream key could not be decrypted");
 
+  // providers whose API is not one OpenAI-shaped HTTP exchange (fal.ai, Replicate) run through a driver
+  const driver = getDriver(provider.preset, ctx.path!.op);
+  if (driver) return runDriver(driver, ctx, cand, secret, t0, rec, fail);
+
   let prepared: Prepared;
   try {
-    prepared = prepareUpstream({ path: ctx.path!, cand, model: ctx.model!, body: ctx.body, form: ctx.form, stream: ctx.stream, inboundHeaders: ctx.req.headers, secret, responseId: opts.responseId ?? ctx.path!.responseId });
+    prepared = prepareUpstream({
+      path: ctx.path!,
+      cand,
+      model: ctx.model!,
+      body: ctx.body,
+      form: ctx.form,
+      stream: ctx.stream,
+      inboundHeaders: ctx.req.headers,
+      secret,
+      responseId: opts.responseId ?? ctx.path!.responseId,
+      videoId: opts.upstreamVideoId,
+      query: opts.upstreamQuery,
+    });
+    if (opts.externalUrl) {
+      const range = ctx.req.headers.get("range");
+      prepared = { ...prepared, url: opts.externalUrl, headers: { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) } };
+    }
   } catch (e) {
     if (e instanceof GatewayError) {
       rec(e.status, e.message);
@@ -244,42 +242,91 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
     }
   }
 
+  // media downloads may be answered with a redirect to a CDN: follow it once (credentials only to the same origin)
+  if (ctx.path!.op === "videos_content" && [301, 302, 303, 307, 308].includes(h.res.status)) {
+    const location = h.res.headers.get("location");
+    h.dispose();
+    if (location) {
+      try {
+        const target = new URL(location, prepared.url);
+        const sameOrigin = target.origin === new URL(prepared.url).origin;
+        const range = ctx.req.headers.get("range");
+        const headers: Record<string, string> = sameOrigin ? prepared.headers : { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) };
+        h = await sendUpstream({ url: target.toString(), method: "GET", headers, timeoutMs: provider.timeoutMs, clientSignal: ctx.req.signal });
+      } catch (err) {
+        if (err instanceof ClientAbortError) throw new GatewayError("client_closed");
+        if (err instanceof UpstreamTimeoutError) return fail("timeout", 0, `no response within ${provider.timeoutMs}ms`);
+        return fail("network", 0, describeNetworkError(err));
+      }
+    }
+  }
+
   const res = h.res;
   if (res.status >= 200 && res.status < 300) return handleOk(ctx, cand, prepared, h, t0, settings, rec, fail);
 
   const errBody = await readErrorBody(res);
   h.dispose();
-  const message = extractErrorMessage(errBody) || `HTTP ${res.status}`;
-  rec(res.status, message);
-  if (isFailoverStatus(res.status)) {
+  return httpErrorResult(ctx, cand, secret, res.status, res.headers, errBody, t0, rec, prepared.upstreamFormat);
+}
+
+/** Classify a non-2xx upstream answer: failover-worthy failure, or a client error passed through (scrubbed). */
+function httpErrorResult(
+  ctx: Ctx,
+  cand: Candidate,
+  secret: string,
+  status: number,
+  headers: HeaderLike,
+  errBody: string,
+  t0: number,
+  rec: Rec,
+  upstreamFormat: InboundFormat,
+): AttemptResult {
+  const message = extractErrorMessage(errBody) || `HTTP ${status}`;
+  rec(status, message);
+  if (isFailoverStatus(status)) {
     return {
       kind: "failure",
       failure: {
-        fk: classifyStatus(res.status),
-        status: res.status,
+        fk: classifyStatus(status),
+        status,
         message,
-        retryAfterSec: parseRetryAfter(res.headers),
-        rlHeaders: pickRateLimitHeaders(res.headers),
+        retryAfterSec: parseRetryAfter(headers),
+        rlHeaders: pickRateLimitHeaders(headers),
         internal: errBody.slice(0, 2000),
         startedAt: t0,
       },
     };
   }
-  return { kind: "client_error", error: clientErrorFromUpstream(res.status, errBody, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, prepared.upstreamFormat, scrubCtx(ctx, cand, secret)) };
+  return { kind: "client_error", error: clientErrorFromUpstream(status, errBody, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, upstreamFormat, scrubCtx(ctx, cand, secret)) };
+}
+
+/** Run a provider driver (fal.ai / Replicate): one logical upstream call that may submit, poll and download. */
+async function runDriver(driver: Driver, ctx: Ctx, cand: Candidate, secret: string, t0: number, rec: Rec, fail: Fail): Promise<AttemptResult> {
+  const env = makeDriverEnv(ctx, cand, secret, t0);
+  try {
+    const out = await driver.run(env);
+    if (ctx.path!.op === "videos_create") return await finishVideoCreate({ ctx, cand, up: out.body as JsonObject, meta: out.meta ?? {}, t0, rec });
+    rec(out.status);
+    recordKeySuccess(cand.key);
+    logOutcome(ctx, { status: "SUCCESS", httpStatus: out.status, usage: out.usage, ttftMs: Date.now() - t0, responseBody: ctx.logBodies ? out.body : undefined });
+    return { kind: "response", response: withCommon(ctx, new Response(JSON.stringify(out.body), { status: out.status, headers: jsonHeaders(ctx) })) };
+  } catch (e) {
+    if (e instanceof ClientAbortError) throw new GatewayError("client_closed");
+    if (e instanceof DriverFailure) return fail(e.fk, e.status, e.message, e.internal ? { internal: e.internal } : {});
+    if (e instanceof DriverClientError) {
+      rec(e.status, e.message);
+      return { kind: "client_error", error: new GatewayError(e.code, e.message, { status: e.status, param: e.param ?? null, kind: e.opts.kind ?? "client", internal: e.opts.internal }) };
+    }
+    // 422 (validation) is reported as a plain 400, like OpenAI's image API
+    if (e instanceof UpstreamHttpError) return httpErrorResult(ctx, cand, secret, e.status === 422 ? 400 : e.status, e.headers, e.body, t0, rec, "openai_images");
+    throw e;
+  }
 }
 
 /** Errors raised before any byte of the request reached the upstream (retry-safe). */
 function isConnectError(err: unknown): boolean {
   const code = (err as { cause?: { code?: string } })?.cause?.code;
   return code === "ECONNREFUSED" || code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "UND_ERR_CONNECT_TIMEOUT";
-}
-
-function describeNetworkError(err: unknown): string {
-  if (err instanceof Error) {
-    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
-    return `${err.message}${cause?.code ? ` (${cause.code})` : ""}`.slice(0, 300);
-  }
-  return String(err).slice(0, 300);
 }
 
 function scrubCtx(ctx: Ctx, cand: Candidate, secret: string): ScrubContext {
@@ -293,14 +340,17 @@ function scrubCtx(ctx: Ctx, cand: Candidate, secret: string): ScrubContext {
   };
 }
 
-type Rec = (status: number, error?: string) => number;
-type Fail = (fk: FailureKind, status: number, message: string, extra?: Partial<Failure>) => AttemptResult;
+export type Rec = (status: number, error?: string) => number;
+export type Fail = (fk: FailureKind, status: number, message: string, extra?: Partial<Failure>) => AttemptResult;
 
 // ------------------------------------------------------------------ successful upstream response
 async function handleOk(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail): Promise<AttemptResult> {
   const path = ctx.path!;
   const ct = h.res.headers.get("content-type") ?? "";
   const isSse = ct.includes("text/event-stream");
+
+  if (path.op === "videos_create") return handleVideoCreateOk({ ctx, cand, h, t0, rec, fail });
+  if (path.op === "videos_content") return handleBinary(ctx, cand, h, t0, rec, true);
 
   if (ctx.stream && STREAM_OPS.has(path.op)) {
     if (!isSse) {
@@ -435,7 +485,7 @@ function collectOutputText(json: Json): string {
 }
 
 // ------------------------------------------------------------------ binary passthrough (audio)
-async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: number, rec: Rec): Promise<AttemptResult> {
+async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: number, rec: Rec, passthrough = false): Promise<AttemptResult> {
   const path = ctx.path!;
   rec(200);
   recordKeySuccess(cand.key);
@@ -447,7 +497,7 @@ async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: nu
     ctx.deferRelease = false;
     const u = emptyUsage();
     logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage: u });
-    return { kind: "response", response: withCommon(ctx, new Response(null, { status: 200, headers: { "content-type": ct, "x-request-id": ctx.requestId } })) };
+    return { kind: "response", response: withCommon(ctx, new Response(null, { status: passthrough ? h.res.status : 200, headers: { "content-type": ct, "x-request-id": ctx.requestId } })) };
   }
   const session = new StreamSession({
     body,
@@ -465,7 +515,15 @@ async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: nu
     },
   });
   const hdr = new Headers({ "content-type": ct, "cache-control": "no-store", "x-request-id": ctx.requestId });
-  return { kind: "response", response: withCommon(ctx, new Response(session.toReadable(), { status: 200, headers: hdr })) };
+  if (passthrough) {
+    // media downloads (video content): keep range / length semantics so players can seek
+    const encoded = !!h.res.headers.get("content-encoding");
+    for (const k of ["content-length", "content-range", "accept-ranges", "content-disposition", "etag", "last-modified"]) {
+      const v = h.res.headers.get(k);
+      if (v && !(encoded && k === "content-length")) hdr.set(k, v);
+    }
+  }
+  return { kind: "response", response: withCommon(ctx, new Response(session.toReadable(), { status: passthrough ? h.res.status : 200, headers: hdr })) };
 }
 
 function finishLog(ctx: Ctx, cand: Candidate, info: FinishInfo, usage: Usage, what: string): void {

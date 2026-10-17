@@ -58,7 +58,7 @@ export function KeysTable({
         meta: { className: "text-right" },
       },
       { accessorKey: "rpmLimit", header: "RPM", cell: ({ row }) => row.original.rpmLimit ?? "-" },
-      { accessorKey: "lastUsedAt", header: "Last used", cell: ({ row }) => <span title={row.original.lastUsedAt ?? ""}>{timeAgo(row.original.lastUsedAt)}</span> },
+      { accessorKey: "lastUsedAt", header: "Last used", cell: ({ row }) => <span title={row.original.lastUsedAt ?? ""} suppressHydrationWarning>{timeAgo(row.original.lastUsedAt)}</span> },
       { accessorKey: "expiresAt", header: "Expires", cell: ({ row }) => (row.original.expiresAt ? fmtDate(row.original.expiresAt) : "-") },
       { accessorKey: "createdAt", header: "Created", cell: ({ row }) => fmtDate(row.original.createdAt) },
       {

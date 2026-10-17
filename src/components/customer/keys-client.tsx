@@ -40,8 +40,8 @@ export interface KeysClientProps {
 export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName, emailVerified, email }: KeysClientProps) {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<KeyRow | null>(null);
-  const [created, setCreated] = useState<CreatedKey | null>(null);
-  const [useKey, setUseKey] = useState<{ name: string; apiKey: string | null } | null>(null);
+  const [created, setCreated] = useState<(CreatedKey & { name: string; allowedModels: string[] }) | null>(null);
+  const [useKey, setUseKey] = useState<{ name: string; apiKey: string | null; allowedModels: string[] } | null>(null);
   const [revoking, setRevoking] = useState<KeyRow | null>(null);
 
   function openCreate() {
@@ -186,7 +186,7 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => setUseKey({ name: k.name, apiKey: null })}>
+                <DropdownMenuItem onSelect={() => setUseKey({ name: k.name, apiKey: null, allowedModels: k.allowedModels })}>
                   <Terminal className="size-4" /> Use key
                 </DropdownMenuItem>
                 {!revoked && (
@@ -248,11 +248,11 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
         <DataTable columns={columns} data={keys} searchKey="name" searchPlaceholder="Search keys..." exportFilename="api-keys" getRowId={(k) => k.id} hideColumnToggle initialSorting={[{ id: "created", desc: true }]} />
       )}
 
-      <KeyFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} pools={pools} currentPool={currentPool} models={models} onCreated={setCreated} />
+      <KeyFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} pools={pools} currentPool={currentPool} models={models} onCreated={(k, meta) => setCreated({ ...k, ...meta })} />
 
-      <RevealKeyDialog created={created} onClose={() => setCreated(null)} onUse={(k) => { setCreated(null); setUseKey({ name: "new key", apiKey: k.key }); }} />
+      <RevealKeyDialog created={created} onClose={() => setCreated(null)} onUse={(k) => { setCreated(null); setUseKey({ name: k.name, apiKey: k.key, allowedModels: k.allowedModels }); }} />
 
-      <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={models} keyName={useKey?.name} apiKey={useKey?.apiKey} />
+      <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={useKey?.allowedModels.length ? models.filter((m) => useKey.allowedModels.includes(m.slug)) : models} keyName={useKey?.name} apiKey={useKey?.apiKey} />
 
       <ConfirmDialog
         open={!!revoking}
@@ -275,7 +275,9 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
   );
 }
 
-function RevealKeyDialog({ created, onClose, onUse }: { created: CreatedKey | null; onClose: () => void; onUse: (k: CreatedKey) => void }) {
+type RevealedKey = CreatedKey & { name: string; allowedModels: string[] };
+
+function RevealKeyDialog({ created, onClose, onUse }: { created: RevealedKey | null; onClose: () => void; onUse: (k: RevealedKey) => void }) {
   return (
     <Dialog open={!!created} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => e.preventDefault()}>

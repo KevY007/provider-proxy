@@ -130,8 +130,65 @@ print(img.url or "base64 image of", len(data or b""), "bytes")`,
           },
         ]}
       />
+      <H2>Request fields</H2>
+      <Table
+        head={["Field", "Meaning"]}
+        rows={[
+          [<C key="n">n</C>, "Number of images (1-10). Billed per image actually returned."],
+          [<C key="s">size</C>, <>e.g. <C key="s1">1024x1024</C>. Mapped to each model&apos;s own size / aspect-ratio parameter.</>],
+          [<C key="r">response_format</C>, <><C key="r1">url</C> (default for FLUX-style models) or <C key="r2">b64_json</C> (we download and encode the image for you).</>],
+          [<C key="sd">seed</C>, "Fixed seed for reproducible results where the model supports it."],
+          [<C key="e">extra_input</C>, "Object of model-specific parameters passed through unchanged (e.g. guidance_scale, num_inference_steps, go_fast)."],
+        ]}
+      />
+      <CodeBlock
+        lang="bash"
+        code={`curl ${ctx.base}/images/generations -H "Authorization: Bearer ${KEY}" -H "Content-Type: application/json" \\
+  -d '{"model": "${ctx.m.image}", "prompt": "A red fox in snow", "n": 2, "size": "1024x1024", "seed": 7,
+       "response_format": "b64_json", "extra_input": {"guidance_scale": 3.5}}'`}
+      />
+      <Callout kind="info">
+        FLUX models served through fal.ai or Replicate are exposed through this same endpoint. Only <C>/v1/images/generations</C> is available for them (no edits or variations).
+      </Callout>
       <H2>Pricing</H2>
-      <P>Image models are billed per generated image (shown on the Pricing page) times your pool multiplier. Each request shows its exact cost in your Logs.</P>
+      <P>Image models are billed per generated image (shown on the Pricing page) or, for token-billed models, by the tokens the model reports, times your pool multiplier. Each request shows its exact cost in your Logs.</P>
+    </>
+  );
+}
+
+export function videosGuide(ctx: DocCtx) {
+  return (
+    <>
+      <P>
+        Video generation follows the OpenAI videos API: you create a job, poll it until it is <C>completed</C>, then download the file. Use a model with the <strong>Video</strong> capability from{" "}
+        <C>GET /v1/models</C>.
+      </P>
+      <Table
+        head={["Endpoint", "Purpose"]}
+        rows={[
+          [<C key="a">POST /v1/videos</C>, <>Create a job. JSON or <C key="a1">multipart/form-data</C> with an <C key="a2">input_reference</C> image. Fields: <C key="a3">model</C>, <C key="a4">prompt</C>, <C key="a5">seconds</C>, <C key="a6">size</C>.</>],
+          [<C key="b">GET /v1/videos/{"{id}"}</C>, <>Status: <C key="b1">queued</C>, <C key="b2">in_progress</C>, <C key="b3">completed</C> or <C key="b4">failed</C>, with <C key="b5">progress</C>.</>],
+          [<C key="c">GET /v1/videos/{"{id}"}/content</C>, <>Download the result (<C key="c1">video/mp4</C>). <C key="c2">?variant=thumbnail</C> or <C key="c3">spritesheet</C> where supported. Range requests work.</>],
+          [<C key="d">GET /v1/videos</C>, "List your own videos (limit, after, order)."],
+          [<C key="e">DELETE /v1/videos/{"{id}"}</C>, "Delete a video."],
+        ]}
+      />
+      <CodeBlock
+        lang="bash"
+        code={`# 1. create
+curl ${ctx.base}/videos -H "Authorization: Bearer ${KEY}" -H "Content-Type: application/json" \\
+  -d '{"model": "<video-model>", "prompt": "A calm ocean wave at sunrise", "seconds": "4", "size": "720x1280"}'
+# 2. poll until "status": "completed"
+curl ${ctx.base}/videos/video_... -H "Authorization: Bearer ${KEY}"
+# 3. download
+curl ${ctx.base}/videos/video_.../content -H "Authorization: Bearer ${KEY}" -o out.mp4`}
+      />
+      <H2>Billing</H2>
+      <UL>
+        <li>The job is charged <strong>when it is created</strong>: requested seconds times the per-second price of the model, times your pool multiplier.</li>
+        <li>If a job later ends as <C>failed</C>, the full charge is refunded to your balance automatically (shown as a Refund in your ledger), exactly once.</li>
+        <li>Polling and downloading are free. Videos are only visible to the account that created them; any other key gets <C>404</C>.</li>
+      </UL>
     </>
   );
 }

@@ -87,7 +87,7 @@ export function LiveSlots({ initial, compact, intervalMs }: { initial: SlotSnaps
         </div>
         <div className="flex items-center gap-2">
           <Badge variant={snapshot.queued > 0 ? "destructive" : "secondary"}>{snapshot.queued} queued</Badge>
-          <span className="flex items-center gap-1 text-xs text-muted-foreground" title={error ?? "Last updated"}>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground" title={error ?? "Last updated"} suppressHydrationWarning>
             <RefreshCw className="size-3" />
             {error ? "stale" : new Date(updatedAt).toLocaleTimeString()}
           </span>

@@ -68,7 +68,7 @@ export function usageFromGemini(u: Json): Usage {
 
 /** True when a Usage carries any billable signal (used to decide whether to fall back to estimation). */
 export function hasUsage(u: Usage | null | undefined): u is Usage {
-  return !!u && (u.inputTokens > 0 || u.outputTokens > 0 || u.imageCount > 0 || u.audioSeconds > 0 || u.characters > 0);
+  return !!u && (u.inputTokens > 0 || u.outputTokens > 0 || u.imageCount > 0 || u.audioSeconds > 0 || u.characters > 0 || u.videoSeconds > 0);
 }
 
 /** Overlay non-zero fields of `next` on `base` (stream usage arrives in pieces). */
@@ -86,6 +86,7 @@ export function mergeUsage(base: Usage, next: Usage): Usage {
     "imageCount",
     "audioSeconds",
     "characters",
+    "videoSeconds",
   ];
   for (const k of keys) {
     const v = next[k] as number;

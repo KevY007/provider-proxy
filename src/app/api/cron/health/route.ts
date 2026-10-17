@@ -1,11 +1,13 @@
 import { safeEqual } from "@/lib/crypto";
 import { env, isProd } from "@/lib/env";
 import { runAllHealthChecks } from "@/gateway/health";
+import { sweepVideoJobs } from "@/gateway/video";
 import { logger } from "@/lib/logger";
 
 /**
  * Cloud Scheduler -> POST/GET /api/cron/health every 5 minutes with `Authorization: Bearer $CRON_SECRET`.
- * Probes every upstream key of every active provider and updates Provider.healthStatus.
+ * Probes every upstream key of every active provider and updates Provider.healthStatus, and polls open video jobs
+ * so jobs that failed upstream are refunded even if the customer never asks for their status again.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,7 +26,11 @@ async function run(req: Request): Promise<Response> {
   const started = Date.now();
   try {
     const res = await runAllHealthChecks();
-    return Response.json({ ok: true, ...res, ms: Date.now() - started }, { headers: { "cache-control": "no-store" } });
+    const videos = await sweepVideoJobs().catch((err) => {
+      logger.warn("video sweep failed", { err });
+      return { polled: 0, refunded: 0 };
+    });
+    return Response.json({ ok: true, ...res, videos, ms: Date.now() - started }, { headers: { "cache-control": "no-store" } });
   } catch (err) {
     logger.error("health cron failed", { err });
     return Response.json({ ok: false, error: { code: "internal_error", message: "Health run failed" } }, { status: 500 });

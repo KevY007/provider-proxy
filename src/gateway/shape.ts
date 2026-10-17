@@ -24,6 +24,9 @@ export interface PrepareInput {
   inboundHeaders: Headers;
   secret: string;
   responseId?: string;
+  /** Video lookups: UPSTREAM video id + raw query (e.g. "variant=thumbnail"). */
+  videoId?: string;
+  query?: string;
 }
 
 export interface Prepared {
@@ -104,6 +107,8 @@ export function prepareUpstream(i: PrepareInput): Prepared {
         }
       }
     }
+    // the Sora-style video API takes `seconds` as a string enum ("4" | "8" | "12")
+    if (op === "videos_create" && obj.seconds !== undefined && typeof obj.seconds !== "string") obj.seconds = String(obj.seconds);
     if (i.stream && (op === "chat" || op === "completions") && ps.forceStreamUsage) {
       obj.stream_options = { ...(isObject(obj.stream_options) ? obj.stream_options : {}), include_usage: true };
     }
@@ -113,12 +118,17 @@ export function prepareUpstream(i: PrepareInput): Prepared {
     body = JSON.stringify(obj);
   }
 
-  const method = path.op === "responses_get" || path.op === "responses_input_items" ? "GET" : path.op === "responses_delete" ? "DELETE" : "POST";
+  const method =
+    path.op === "responses_get" || path.op === "responses_input_items" || path.op === "videos_get" || path.op === "videos_content"
+      ? "GET"
+      : path.op === "responses_delete" || path.op === "videos_delete"
+        ? "DELETE"
+        : "POST";
   const hasBody = body !== null;
   return {
-    url: buildUpstreamUrl({ provider, format: upFormat, op, upstreamModel: route.upstreamModel, stream: i.stream, keyExtra: key.extra, responseId: i.responseId, secret: i.secret }),
+    url: buildUpstreamUrl({ provider, format: upFormat, op, upstreamModel: route.upstreamModel, stream: i.stream, keyExtra: key.extra, responseId: i.responseId, videoId: i.videoId, query: i.query, secret: i.secret }),
     method,
-    headers: buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: i.stream, keyExtra: key.extra, inbound: i.inboundHeaders, contentType, hasBody }),
+    headers: buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: i.stream, keyExtra: key.extra, inbound: i.inboundHeaders, contentType, hasBody, op }),
     body,
     upstreamFormat: upFormat,
     upstreamOp: op,
@@ -225,6 +235,11 @@ export function extractErrorMessage(body: string): string {
     if (isObject(j.error) && typeof j.error.message === "string") return j.error.message;
     if (typeof j.error === "string") return j.error;
     if (typeof j.message === "string") return j.message;
+    if (typeof j.detail === "string") return j.detail;
+    if (Array.isArray(j.detail)) {
+      const msgs = j.detail.map((d: Json) => (isObject(d) && typeof d.msg === "string" ? d.msg : typeof d === "string" ? d : "")).filter(Boolean);
+      if (msgs.length) return msgs.join("; ");
+    }
     if (Array.isArray(j) && isObject(j[0]) && isObject(j[0].error)) return String(j[0].error.message ?? "");
   }
   return body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);

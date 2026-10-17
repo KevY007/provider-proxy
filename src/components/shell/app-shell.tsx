@@ -27,7 +27,7 @@ import { MoneyText } from "@/components/common/money-text";
 import { stopImpersonationAction } from "@/lib/auth/actions";
 import { cn } from "@/lib/utils";
 import { AnnouncementsBell, type AnnouncementItem } from "./announcements-bell";
-import { adminNav, customerNav, findNavItem, isNavActive, type NavGroup } from "./nav";
+import { adminNav, customerNav, findNavItem, isNavActive, navForRole, type NavGroup } from "./nav";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu, type ShellUser } from "./user-menu";
 
@@ -61,7 +61,7 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const pathname = usePathname();
-  const groups: NavGroup[] = variant === "admin" ? adminNav : customerNav;
+  const groups: NavGroup[] = navForRole(variant === "admin" ? adminNav : customerNav, user.role);
   const current = findNavItem(groups, pathname);
   const section = variant === "admin" ? "Admin" : siteName;
 
@@ -133,9 +133,10 @@ export function AppShell({
             <UserMenu user={user} variant={variant} />
           </div>
         </header>
-        <main className="flex-1 p-4 md:p-6 lg:p-8">
+        {/* SidebarInset already renders the page's <main> landmark; don't nest another */}
+        <div className="flex-1 p-4 md:p-6 lg:p-8">
           <div className="mx-auto w-full max-w-7xl">{children}</div>
-        </main>
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );

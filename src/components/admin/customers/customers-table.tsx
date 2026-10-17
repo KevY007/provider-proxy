@@ -50,7 +50,7 @@ export function CustomersTable({
       { accessorKey: "creditLimit", header: "Credit limit", cell: ({ row }) => <MoneyText value={row.original.creditLimit} />, meta: { className: "text-right" } },
       { accessorKey: "spend30d", header: "30d spend", cell: ({ row }) => <MoneyText value={row.original.spend30d} />, meta: { className: "text-right" } },
       { accessorKey: "requests30d", header: "30d requests", cell: ({ row }) => formatNumber(row.original.requests30d), meta: { className: "text-right" } },
-      { accessorKey: "lastActive", header: "Last active", cell: ({ row }) => <span title={row.original.lastActive ?? ""}>{timeAgo(row.original.lastActive)}</span> },
+      { accessorKey: "lastActive", header: "Last active", cell: ({ row }) => <span title={row.original.lastActive ?? ""} suppressHydrationWarning>{timeAgo(row.original.lastActive)}</span> },
       { accessorKey: "createdAt", header: "Created", cell: ({ row }) => fmtDate(row.original.createdAt) },
     ],
     [],

@@ -5,13 +5,14 @@ import { encrypt, secretHint, sha256 } from "../src/lib/crypto";
 import { hashPassword } from "../src/lib/auth/password";
 import { Decimal } from "../src/lib/money";
 import { SETTING_KEYS, SETTING_DEFS } from "../src/lib/settings";
-import { MODELS, PROVIDERS, SELL_FACTOR } from "./seed-data";
+import { LEGACY_SELL_FACTOR, MODELS, PROVIDERS, SELL_FACTOR } from "./seed-data";
 
 /**
  * Idempotent seed. Re-running never overwrites values an admin may have edited
  * (settings, groups, providers, models, routes use create-if-missing semantics).
  */
 const sell = (official: string) => new Decimal(official).times(SELL_FACTOR).toFixed(12);
+const legacySell = (official: string) => new Decimal(official).times(LEGACY_SELL_FACTOR).toFixed(12);
 const money = (v: string | Decimal) => new Decimal(v).toFixed(12);
 
 async function seedSettings() {
@@ -144,6 +145,7 @@ async function seedModels() {
         cacheWritePrice: cacheWrite ? sell(cacheWrite.toString()) : null,
         cacheWrite1hPrice: cacheWrite1h ? sell(cacheWrite1h.toString()) : null,
         imagePrice: m.image ? sell(m.image) : null,
+        perSecondPrice: m.perSecond ? sell(m.perSecond) : null,
         longContextThreshold: m.longContext?.threshold ?? null,
         longContextMultiplier: m.longContext?.multiplier ?? null,
         officialInputPrice: m.input ? money(m.input) : null,
@@ -165,11 +167,26 @@ async function seedModels() {
         cacheWriteCost: cacheWrite ? money(cacheWrite) : null,
         cacheWrite1hCost: cacheWrite1h ? money(cacheWrite1h) : null,
         imageCost: m.image ? money(m.image) : null,
+        perSecondCost: m.perSecond ? money(m.perSecond) : null,
       },
       update: {},
     });
+    // A dev DB seeded under the old policy (official x 0.5) would sell BELOW cost: re-price rows that still carry the
+    // untouched legacy default. Anything an admin edited (or setup:live priced) is left alone.
+    if (m.input && new Decimal(model.inputPrice.toString()).equals(legacySell(m.input))) {
+      await db.model.update({
+        where: { id: model.id },
+        data: {
+          inputPrice: sellInput,
+          outputPrice: m.output ? sell(m.output) : money("0"),
+          cachedInputPrice: m.cached ? sell(m.cached) : null,
+          cacheWritePrice: cacheWrite ? sell(cacheWrite.toString()) : null,
+          cacheWrite1hPrice: cacheWrite1h ? sell(cacheWrite1h.toString()) : null,
+        },
+      });
+    }
   }
-  console.log(`models: ${MODELS.length} catalog entries with routes`);
+  console.log(`models: ${MODELS.length} catalog entries with routes (sell = cost x ${SELL_FACTOR})`);
 }
 
 async function seedMock() {

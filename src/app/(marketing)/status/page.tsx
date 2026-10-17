@@ -28,12 +28,12 @@ const pct = (v: number | null) => (v === null ? "-" : `${v >= 99.995 ? "100" : v
 
 function Bars({ bars }: { bars: DayBar[] }) {
   return (
-    <div className="flex h-9 items-end gap-[2px]" role="img" aria-label="90 day availability history">
+    <div className="flex h-9 items-end gap-px sm:gap-[2px]" role="img" aria-label="90 day availability history">
       {bars.map((b) => (
         <div
           key={b.date}
           title={`${b.date}: ${b.pct === null ? "no data" : `${pct(b.pct)} (${(b.success + b.failed).toLocaleString()} requests)`}`}
-          className={cn("h-full min-w-[2px] flex-1 rounded-[2px] transition-opacity hover:opacity-70", BAR_COLOR[b.level])}
+          className={cn("h-full min-w-px flex-1 sm:min-w-[2px] rounded-[2px] transition-opacity hover:opacity-70", BAR_COLOR[b.level])}
         />
       ))}
     </div>

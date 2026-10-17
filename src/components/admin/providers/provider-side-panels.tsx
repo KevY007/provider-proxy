@@ -14,7 +14,7 @@ type Check = ProviderDetail["checks"][number];
 type Route = ProviderDetail["routes"][number];
 
 const checkCols: ColumnDef<Check>[] = [
-  { accessorKey: "createdAt", header: "When", cell: ({ row }) => <span className="whitespace-nowrap text-xs">{new Date(row.original.createdAt).toLocaleString()}</span> },
+  { accessorKey: "createdAt", header: "When", cell: ({ row }) => <span className="whitespace-nowrap text-xs" suppressHydrationWarning>{new Date(row.original.createdAt).toLocaleString()}</span> },
   { accessorKey: "keyLabel", header: "Target" },
   { id: "ok", header: "Result", accessorFn: (r) => (r.ok ? "OK" : "FAILED"), cell: ({ row }) => <StatusBadge status={row.original.ok ? "OK" : "FAILED"} /> },
   { accessorKey: "latencyMs", header: "Latency", cell: ({ row }) => (row.original.latencyMs != null ? `${row.original.latencyMs}ms` : "-") },

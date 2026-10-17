@@ -19,6 +19,7 @@ import { acquireSlots, type SlotPool } from "./slots";
 import { countRequestTokens, estimateInputTokens } from "./tokenizer";
 import { emptyUsage, type Json, type JsonObject, type Operation } from "./types";
 import { isObject, newId, safeJsonParse } from "./util";
+import { requestedSeconds, videoContentPlan, videoDelete, videoGet, videoList } from "./video";
 
 export { guessErrorFormat, parsePath } from "./path";
 
@@ -86,6 +87,7 @@ async function run(ctx: Ctx): Promise<Response> {
   }
 
   if (path.op.startsWith("responses_")) return dispatchResponsesLookup(ctx);
+  if (path.op.startsWith("videos_") && path.op !== "videos_create") return dispatchVideoLookup(ctx);
 
   await readBody(ctx);
   resolveRequestModel(ctx);
@@ -143,8 +145,11 @@ async function readLimited(req: Request, limit: number): Promise<Buffer> {
 async function readBody(ctx: Ctx): Promise<void> {
   const path = ctx.path!;
   const req = ctx.req;
-  if (path.multipart) {
-    const ct = req.headers.get("content-type") ?? "";
+  const contentType = req.headers.get("content-type") ?? "";
+  // POST /v1/videos takes JSON or multipart (input_reference file)
+  const multipart = path.multipart || (path.op === "videos_create" && /multipart\/form-data/i.test(contentType));
+  if (multipart) {
+    const ct = contentType;
     if (!/multipart\/form-data/i.test(ct)) throw new GatewayError("invalid_request", "Content-Type must be multipart/form-data.");
     const buf = await readLimited(req, MAX_MULTIPART_BODY);
     try {
@@ -188,6 +193,10 @@ function resolveRequestModel(ctx: Ctx): void {
   if (ctx.group?.allowedModels && !ctx.group.allowedModels.has(model.slug)) throw new GatewayError("model_not_allowed");
   if (path.capability && !model.capabilities.has(path.capability)) {
     throw new GatewayError("unsupported_endpoint", `The model '${model.slug}' does not support this endpoint.`, { param: "model" });
+  }
+  if (path.op === "videos_create" && !model.sell.perSecond?.gt(0)) {
+    // fail closed: a video model without a per-second price would be generated for free
+    throw new GatewayError("no_available_provider", undefined, { retryAfterSec: 60, internal: `model '${model.slug}' has no perSecondPrice configured` });
   }
   const { user } = ctx.auth!;
   ctx.multiplier = effectiveMultiplier(user.priceMultiplier, ctx.group?.priceMultiplier);
@@ -264,6 +273,9 @@ function estimateCost(ctx: Ctx): Decimal {
     case "audio_speech":
       u.characters = typeof body?.input === "string" ? body.input.length : 0;
       break;
+    case "videos_create":
+      u.videoSeconds = requestedSeconds(ctx);
+      break;
     case "audio_transcriptions":
     case "audio_translations":
       u.audioSeconds = ctx.form ? fileBytes(ctx.form) / 16_000 : 0;
@@ -332,6 +344,23 @@ async function localCountTokens(ctx: Ctx): Promise<Response> {
   const n = await countRequestTokens({ system: body.system, messages: body.messages, tools: body.tools });
   logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage: emptyUsage() });
   return withCommon(ctx, new Response(JSON.stringify({ input_tokens: n }), { status: 200, headers: { "content-type": "application/json; charset=utf-8" } }));
+}
+
+/** GET/DELETE /v1/videos[/{id}[/content]]: ownership-checked, sticky to the upstream account that created the job. */
+async function dispatchVideoLookup(ctx: Ctx): Promise<Response> {
+  ctx.multiplier = effectiveMultiplier(ctx.auth!.user.priceMultiplier, ctx.group?.priceMultiplier);
+  switch (ctx.path!.op) {
+    case "videos_list":
+      return videoList(ctx);
+    case "videos_get":
+      return videoGet(ctx);
+    case "videos_delete":
+      return videoDelete(ctx);
+    default: {
+      const plan = await videoContentPlan(ctx);
+      return execute(ctx, plan.routes, { pinKeyId: plan.pinKeyId, maxAttempts: 1, upstreamVideoId: plan.upstreamId, upstreamQuery: plan.query, externalUrl: plan.externalUrl });
+    }
+  }
 }
 
 async function dispatchResponsesLookup(ctx: Ctx): Promise<Response> {

@@ -147,6 +147,7 @@ model User {
   ledger     LedgerEntry[]       @relation("LedgerUser")
   payments   Payment[]
   redeemUses RedeemCodeUse[]
+  videoJobs  VideoJob[]
 
   @@index([role])
   @@index([status])
@@ -318,6 +319,7 @@ model Model {
   audioOutputPrice      Decimal? @db.Decimal(24, 12)
   perMinutePrice        Decimal? @db.Decimal(24, 12) // transcription USD/minute
   perMillionChars       Decimal? @db.Decimal(24, 12) // TTS USD per 1M input chars
+  perSecondPrice        Decimal? @db.Decimal(24, 12) // video: USD per generated second
   longContextThreshold  Int? // input tokens above which multiplier applies
   longContextMultiplier Decimal? @db.Decimal(10, 4)
 
@@ -363,6 +365,7 @@ model ModelRoute {
   audioOutputCost     Decimal? @db.Decimal(24, 12)
   perMinuteCost       Decimal? @db.Decimal(24, 12)
   perMillionCharsCost Decimal? @db.Decimal(24, 12)
+  perSecondCost       Decimal? @db.Decimal(24, 12) // video: USD per generated second
 
   createdAt DateTime @default(now())
 
@@ -403,6 +406,7 @@ model RequestLog {
   imageCount       Int           @default(0)
   audioSeconds     Float         @default(0)
   characters       Int           @default(0)
+  videoSeconds     Float         @default(0)
   usageEstimated   Boolean       @default(false)
   price            Decimal       @default(0) @db.Decimal(24, 12) // charged to customer
   cost             Decimal       @default(0) @db.Decimal(24, 12) // paid upstream
@@ -423,6 +427,41 @@ model RequestLog {
   @@index([modelSlug, createdAt])
   @@index([apiKeyId, createdAt])
   @@index([status, createdAt])
+}
+
+model VideoJob {
+  // OpenAI-compatible video generation job (POST /v1/videos). `id` is OUR public id ("video_..."); the upstream id
+  // and the provider key that created it are stored here so status / content / delete calls stay sticky to the
+  // same upstream account, and so ownership (userId) can be enforced.
+  id            String    @id
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKeyId      String?
+  modelId       String
+  modelSlug     String
+  providerId    String
+  providerKeyId String
+  routeId       String
+  upstreamId    String
+  upstreamModel String
+  status        String    @default("queued") // queued | in_progress | completed | failed
+  progress      Int       @default(0)
+  seconds       Float     @default(0)
+  size          String?
+  price         Decimal   @default(0) @db.Decimal(24, 12) // charged at creation
+  cost          Decimal   @default(0) @db.Decimal(24, 12)
+  refunded      Boolean   @default(false)
+  refundedAt    DateTime?
+  deleted       Boolean   @default(false)
+  requestId     String? // RequestLog id of the creating request
+  meta          Json      @default("{}") // backend-specific (e.g. queue urls)
+  lastObject    Json? // last upstream video object seen (id/model already rewritten)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  completedAt   DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status])
 }
 
 // ----------------------------------------------------------------------------

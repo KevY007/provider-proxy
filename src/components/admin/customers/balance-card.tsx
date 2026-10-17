@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatUSD } from "@/lib/money";
 import { MoneyText } from "@/components/common/money-text";
 import { TextField } from "@/components/common/form-fields";
 import { TextAreaField } from "@/components/admin/fields";
@@ -54,7 +55,7 @@ export function BalanceCard({ user, isAdmin, spend30d }: { user: CustomerDetail[
             }
           }}
           title="Adjust balance"
-          description={`Positive amounts credit the account, negative amounts debit it. Current balance: ${user.balance}`}
+          description={`Positive amounts credit the account, negative amounts debit it. Current balance: ${formatUSD(user.balance)}`}
           submitLabel="Apply adjustment"
           pending={pending}
           submitDisabled={!valid}

@@ -15,6 +15,15 @@ export function safeJsonParse<T = Json>(text: string): T | undefined {
   }
 }
 
+/** Short, log-safe description of a fetch/network error (includes the undici cause code). */
+export function describeNetworkError(err: unknown): string {
+  if (err instanceof Error) {
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    return `${err.message}${cause?.code ? ` (${cause.code})` : ""}`.slice(0, 300);
+  }
+  return String(err).slice(0, 300);
+}
+
 export function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "...[truncated]" : s;
 }

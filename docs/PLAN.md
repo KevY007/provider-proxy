@@ -399,9 +399,10 @@ model EmailOutbox { id String @id @default(cuid())  to String  subject String  h
 | `openai_completions` | `POST /v1/completions` |
 | `openai_responses` | `POST /v1/responses`, `GET/DELETE /v1/responses/{id}`, `POST /v1/responses/{id}/cancel`, `GET /v1/responses/{id}/input_items` (passthrough, sticky to provider key recorded for that response id in Redis/mem, else 404) |
 | `openai_embeddings` | `POST /v1/embeddings` |
-| `openai_images` | `POST /v1/images/generations`, `/v1/images/edits` (multipart), `/v1/images/variations` (multipart) |
+| `openai_images` | `POST /v1/images/generations`, `/v1/images/edits` (multipart), `/v1/images/variations` (multipart). fal.ai and Replicate models are served on `/generations` only (see 5c) |
 | `openai_audio` | `POST /v1/audio/speech` (binary response), `/v1/audio/transcriptions`, `/v1/audio/translations` (multipart) |
 | `openai_moderations` | `POST /v1/moderations` |
+| `openai_videos` | `POST /v1/videos` (JSON or multipart), `GET /v1/videos`, `GET /v1/videos/{id}`, `GET /v1/videos/{id}/content[?variant=]`, `DELETE /v1/videos/{id}` (see 5c) |
 | `anthropic_messages` | `POST /v1/messages`, `POST /v1/messages/count_tokens` |
 | `gemini` | `POST /v1beta/models/{model}:generateContent`, `:streamGenerateContent` (`?alt=sse`), `:countTokens`, `:embedContent`, `:batchEmbedContents` |
 | catalog | `GET /v1/models`, `GET /v1/models/{id}` (OpenAI shape; Anthropic shape when `anthropic-version` header present), `GET /v1beta/models` (Gemini shape) — only models the key's group allows |
@@ -436,6 +437,8 @@ Also accept `/chat/completions` etc. without `/v1`? No — but `/v1/v1/...` doub
 - **anthropic**: `x-api-key` + `anthropic-version` (forward client's header, default `2023-06-01`) + forward `anthropic-beta`; `${baseUrl}/v1/messages`.
 - **google**: `x-goog-api-key`; native `${baseUrl}/v1beta/models/{m}:generateContent`; also OpenAI-compat at `${baseUrl}/v1beta/openai/chat/completions` (so openai_chat → google needs no translator).
 - **azure**: `api-key` header, `${baseUrl}/openai/deployments/{deployment}/chat/completions?api-version=…` (deployment = upstreamModel).
+- **fal** (preset `fal`, formats `openai_images`): `Authorization: Key <key>` (applied in `providers/adapters.ts`, keyed on preset - no AuthStyle change); synchronous `https://fal.run/{model}` with automatic fallback to the queue API; see 5c.
+- **replicate** (preset `replicate`, formats `openai_images`): Bearer; predictions API with polling; see 5c.
 - the relay preset: formats `openai_chat, openai_responses, openai_images, anthropic_messages, gemini, openai_embeddings`; baseUrl `https://codex-everywhere.com/v1`; anthropic at same base; gemini at `https://codex-everywhere.com/v1beta` (store in settings.geminiBaseUrl).
 
 Presets live in `src/gateway/providers/presets.ts` (exported; Admin UI uses them for the "Add provider" form): name, baseUrl, authStyle, formats, docs link, sample models.
@@ -448,6 +451,23 @@ Presets live in `src/gateway/providers/presets.ts` (exported; Admin UI uses them
 | gemini | not supported unless native (error `unsupported_endpoint`) | — | passthrough |
 | openai_responses | passthrough only | — | — |
 Translations must cover: system prompts, multi-turn, images (base64 + url), tool definitions, tool_choice, tool calls & results, stop sequences, temperature/top_p/max_tokens, streaming deltas (text, tool-call args), finish/stop reasons, usage mapping.
+
+### 5c. Live providers: fal.ai, Replicate and the video API
+
+**Drivers** (`src/gateway/providers/{fal,replicate,drivers,driver-env,driver-types,image-common}.ts`). Providers whose API is not "one OpenAI-shaped HTTP exchange" run through a *driver* chosen by `provider.preset` and the operation (`getDriver`). `execute.ts` keeps doing slots, key selection, failover, metering and logging; the driver only talks to the vendor (submit / poll / download) inside the attempt and returns the OpenAI-shaped body + normalised usage. Errors are mapped uniformly: transport/timeout/5xx/429/401/403/402 -> failover and key-health handling; vendor 4xx -> `invalid_request` (422 reported as 400, body scrubbed); a deterministic model failure (failed prediction) is a final 502 without retry (no double payment).
+- **Request mapping** (`POST /v1/images/generations`): `prompt`, `n` (1-10), `size` (fal `image_size` preset or `{width,height}`; Replicate nearest `aspect_ratio`), `seed`, `negative_prompt`, `output_format`, `response_format` `url` (default) | `b64_json` (result downloaded and base64-encoded), and `extra_input` (object merged into the vendor input; the route's `paramOverrides` are merged last and win).
+- **fal**: `settings.falMode` = `sync` | `queue` | `auto` (default; sync, falling back to `queueBaseUrl` queue + status/result polling on 408/504/524 or after `falSyncTimeoutMs`). A 403 "locked/exhausted balance" is treated as a payment problem (10 min key cooldown), not an invalid key. Health probe: queue status of a non-existent job (404 = key ok, 401 = bad key; free).
+- **Replicate**: `owner/name` -> `POST /models/{owner}/{name}/predictions`; `owner/name:version` (or a bare 64-hex version) -> `POST /predictions {version}`; polls `/predictions/{id}`. `settings.replicateWait` (seconds) opts in to `Prefer: wait` (OFF by default: against the live API it holds the call for the full wait even when the prediction finished after ~5 s). Health probe: `GET /account`.
+- **Billing**: flat per image (`Model.imagePrice` / `ModelRoute.imageCost`, `RequestLog.imageCount`); token-billed image models (gpt-image-1-mini) bill the usage the vendor reports.
+
+**Videos** (`src/gateway/video.ts`, format `openai_videos`, capability `video`). OpenAI Sora-compatible job API. Our public id is `video_<48 hex>`; the `VideoJob` table stores the upstream id, the provider key that created the job (status / content / delete stay sticky to that upstream account and survive restarts), the owner (every lookup is scoped to the authenticated user: foreign or unknown ids answer 404), the charge and the refund flag.
+- **Billing**: charged at creation, `seconds x Model.perSecondPrice x multiplier` (cost: `ModelRoute.perSecondCost`; `RequestLog.videoSeconds`). A model without a per-second price is refused (fail closed). If a status poll (or the cron sweep in `/api/cron/health`) first observes the job as `failed`, the charge is refunded exactly once as a `REFUND` ledger entry (claim of `VideoJob.refunded` and ledger write in one transaction; `ApiKey.spent` is reduced too). Polls and downloads are free.
+- **Content** streams through the normal pipeline (slots, Range / 206, CDN redirects followed once, credentials never sent cross-origin). Model masking applies to every video object.
+- **Upstream reality check (2026-10)**: OpenAI shut the Sora API down on 2026-09-24 (`GET /v1/models/sora-2` carries `shutdown_date`; `/v1/videos` is 404 upstream). `pnpm setup:live` therefore creates `sora-2` DISABLED. The video flow is covered end to end by `tests/gateway/live-providers.test.ts` against the mock upstream; a live-capable video provider only needs the `openai_videos` format and a `perSecondPrice`.
+
+**Pricing policy** (changed): route cost = upstream list price; the default sell price is **cost x 1.30** (`SELL_FACTOR` in `prisma/seed-data.ts`, `--markup` of `pnpm setup:live`); `official*` fields keep the vendor list price for display only, and the public price table shows a saving only when our price is below the official one.
+
+**Live tooling**: `pnpm setup:live [--markup 1.30]` (idempotent; enables OpenAI / Anthropic / fal / Replicate from the `LIVE_*` variables in `.env`, one encrypted key "live-1" each, upserts models + routes + prices, creates the `smart-fast` Anthropic->OpenAI failover demo model, disables models whose upstream `shutdown_date` has passed and prints a price table) and `pnpm e2e:live [--skip-video]` (real traffic against a running dev server: wire shapes, masking, translation, streaming, tool rounds, failover with a real upstream 401, native error shapes, exact metering/balance deltas; prints a pass/fail table with latency, charge, total upstream cost and profit).
 
 ### Health checks
 `src/gateway/health.ts` exports `checkProviderKey(providerKeyId)` (cheap call: `GET /models` or 1-token completion) writing `HealthCheck` rows and updating Provider.healthStatus/lastLatencyMs. Also derive health passively from RequestLog. Admin owns UI; cron `/api/cron/health` (Billing owns cron folder, but this one route is created by Gateway at `src/app/api/cron/health/route.ts`).
@@ -462,6 +482,7 @@ priceUSD = lc × effectiveMultiplier × (
   + cacheWriteTokens × (cacheWritePrice ?? inputPrice) + (outputTokens incl. reasoning) × outputPrice
   + audioIn × audioInputPrice + audioOut × audioOutputPrice ) / 1e6
   + imageCount × imagePrice + requestPrice + minutes × perMinutePrice + chars × perMillionChars / 1e6
+  + videoSeconds × perSecondPrice
 costUSD = same formula with route cost fields, lc applied, NO multipliers.
 profit = price - cost
 ```
@@ -518,6 +539,26 @@ For images: if `imagePrice` set bill per image, else bill token usage returned b
 - Load test script `scripts/loadtest.ts` (QA): 1000 concurrent streaming requests against mock upstream with a provider of 3 keys × 100 slots → verify no slot exceeds max, queueing works, all requests metered exactly once, balances correct.
 
 **Model control (what we show vs what we use):** public `Model.slug` is what customers see/call; each `ModelRoute` maps it to any provider + any `upstreamModel` (e.g. public `gpt-6-astra` → upstream `gpt-6.1-sol` for a cheap pool), restricted by `groupSlugs`/provider tags, weighted traffic split between routes, param overrides & output clamps per route, response model name masked. Admin model page shows this mapping clearly with margin per route.
+
+## 9c. Pricing transparency & ease of use (Phase 4 — added by lead)
+
+**Vocabulary (use EXACTLY these labels in UI; never "upstream/downstream"):**
+- **Official price** — the original provider's public list price for that exact model. Admin-editable; reference only (savings math). Visible to everyone.
+- **Your price** (customer UI) / **Customer price** (admin UI) — what we charge (after group + customer multipliers).
+- **Our cost** — what we pay our supplier (provider key/pool/self-hosted). Admin-only.
+- **Savings** = Official − Your price (green "−62% vs official"; if negative show neutral/amber "+15% vs official" — transparent, never hidden).
+- **Margin** = Customer price − Our cost (admin-only; red + warning when ≤ 0).
+A short glossary tooltip/explainer appears on admin Models pages and customer Models page.
+
+**Schema:** official prices for every billable unit (add `officialCacheWritePrice`, `officialImagePrice`, `officialRequestPrice`, `officialPerSecondPrice`, `officialPerMinutePrice`, `officialPerMillionChars`, `officialAudioInputPrice`, `officialAudioOutputPrice`); `Model.pricingMode` enum `FIXED | PERCENT_OF_OFFICIAL | MARKUP_OVER_COST` + `pricingValue Decimal?` (e.g. 30 → 30% of official, or +30% over primary route cost) — when not FIXED, sell prices are recomputed automatically on save/when official or route cost changes (admin can still override per field by switching to FIXED); `RequestLog.officialPrice Decimal` (what the request would cost at official prices — computed by the gateway pricing engine with the same usage) so savings are exact per request.
+
+**Customer:** Models & Pricing page and public /pricing: columns Official · Your price · Savings per unit (input/output/cached/image/second…); dashboard Overview + Usage: "You saved $X vs official prices" (range) and savings over time; Logs: Official / Charged / Saved columns + in detail sheet; playground per-run "saved $X". Onboarding checklist on overview (verify email → add balance → create key → make first request, each auto-ticks).
+
+**Admin ease of setup:** "Add model" guided flow (3 steps: choose provider → choose the real model from that provider's live `/models` list (Gateway helper `listUpstreamModels(providerId)`) or type it → prices prefilled from a built-in known-price catalog (`src/gateway/price-catalog.ts`) for official + cost → choose pricing rule (fixed / % of official / markup over cost) with live preview of Your price, Savings and Margin) ; bulk action "apply pricing rule to selected models"; "Quick start" checklist on admin overview (add provider key → test → add/enable models → set pricing → invite customers); inline margin & savings badges in model lists; loss warnings.
+
+**Funds protection (no bleeding supplier accounts):** credit **reservations** in the gateway — before any upstream call reserve `hold = est. input tokens × input price + effective max output × output price (+ flat/per-image/per-second parts)` against `available = balance + creditLimit − open holds` (also against key spendLimit and monthlySpendLimit); insufficient → `402 insufficient_balance` in native shape, upstream never contacted. If the client omits max_tokens/max_output_tokens, clamp it to what's affordable (≥ a sane minimum, ≤ model.maxOutput); if even the minimum isn't affordable → 402. Streaming: track accrued cost; when it reaches the hold, abort upstream and end the stream with a native error event (`insufficient_balance`), meter what was produced. Holds live in Redis (`hold:{userId}` hash, TTL safety) with in-memory fallback, released/settled at completion. Load test: N concurrent requests against a small balance never drives balance below −(creditLimit) by more than one request's rounding.
+**Video/per-second gaps (from Phase 3):** admin model + route editors must expose `perSecondPrice` / `perSecondCost` (and official per-second); customer Models page, public pricing and logs must show per-second prices and `videoSeconds`; capability badge `video`. Show models with an upstream shutdown date (e.g. from setup:live) with a "retiring <date>" badge in admin.
+**Admin credits:** "Add credit" dialog with type (Promotional credit / Refund / Correction → ledger types ADJUSTMENT/REFUND with metadata.kind) + reason; bulk "Grant credit" to selected customers from the customers table; customer billing history labels them clearly.
 
 ## 10. Hosting — Google Cloud (Foundation creates files, QA verifies `docker build`)
 - **One container** (`Dockerfile`, multi-stage, `output: 'standalone'` in next.config, non-root, `PORT` env honored) serves UI + gateway. Target **Cloud Run** (gen2, `--timeout=3600` for long streams, `--concurrency=80`, min-instances 1 to avoid cold starts on the API, CPU always allocated so post-response metering completes).

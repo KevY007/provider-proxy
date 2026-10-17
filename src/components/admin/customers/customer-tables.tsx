@@ -51,7 +51,7 @@ export function CustomerKeysTable({ keys }: { keys: CustomerDetail["keys"] }) {
                 <MoneyText value={k.spent} />
               </TableCell>
               <TableCell className="text-right">{k.spendLimit ? <MoneyText value={k.spendLimit} /> : <span className="text-muted-foreground">none</span>}</TableCell>
-              <TableCell>{timeAgo(k.lastUsedAt)}</TableCell>
+              <TableCell suppressHydrationWarning>{timeAgo(k.lastUsedAt)}</TableCell>
               <TableCell>{fmtDateTime(k.createdAt, false)}</TableCell>
               <TableCell className="text-right">
                 <ApiKeyActions id={k.id} name={k.name} status={k.status} />

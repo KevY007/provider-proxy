@@ -28,6 +28,7 @@ export const DOC_SECTIONS: DocSection[] = [
       { slug: "openai/embeddings", title: "Embeddings", description: "POST /v1/embeddings" },
       { slug: "openai/images", title: "Images", description: "POST /v1/images/generations" },
       { slug: "openai/audio", title: "Audio", description: "Speech, transcription and translation." },
+      { slug: "openai/videos", title: "Videos", description: "POST /v1/videos: create, poll, download." },
       { slug: "openai/moderations", title: "Moderations", description: "POST /v1/moderations" },
       { slug: "openai/models", title: "Models", description: "GET /v1/models" },
     ],

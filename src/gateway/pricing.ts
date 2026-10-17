@@ -11,6 +11,7 @@ import type { Usage } from "./types";
  *                          + cacheWrite1h x (cacheWrite1h ?? cacheWrite ?? in) + output x out
  *                          + audioIn x audioInputPrice + audioOut x audioOutputPrice ) / 1e6
  *   flat$         = images x imagePrice + requestPrice + minutes x perMinute + chars x perMillionChars / 1e6
+ *                   + videoSeconds x perSecond
  *   price         = multiplier x (tokens$ + flat$)        <- the group/user multiplier applies to everything the customer pays
  *   cost          = same formula with route cost fields, NO multiplier
  *   profit        = price - cost
@@ -34,6 +35,8 @@ export interface PriceTable {
   audioOutput: Decimal | null;
   perMinute: Decimal | null;
   perMillionChars: Decimal | null;
+  /** Video generation, USD per generated second. */
+  perSecond: Decimal | null;
 }
 
 export interface LongContext {
@@ -56,6 +59,7 @@ export function sellTable(m: {
   audioOutputPrice?: MoneyLike;
   perMinutePrice?: MoneyLike;
   perMillionChars?: MoneyLike;
+  perSecondPrice?: MoneyLike;
 }): PriceTable {
   return {
     input: toDecimal(m.inputPrice),
@@ -69,6 +73,7 @@ export function sellTable(m: {
     audioOutput: opt(m.audioOutputPrice),
     perMinute: opt(m.perMinutePrice),
     perMillionChars: opt(m.perMillionChars),
+    perSecond: opt(m.perSecondPrice),
   };
 }
 
@@ -85,6 +90,7 @@ export function costTable(r: {
   audioOutputCost?: MoneyLike;
   perMinuteCost?: MoneyLike;
   perMillionCharsCost?: MoneyLike;
+  perSecondCost?: MoneyLike;
 }): PriceTable {
   return {
     input: toDecimal(r.inputCost),
@@ -98,6 +104,7 @@ export function costTable(r: {
     audioOutput: opt(r.audioOutputCost),
     perMinute: opt(r.perMinuteCost),
     perMillionChars: opt(r.perMillionCharsCost),
+    perSecond: opt(r.perSecondCost),
   };
 }
 
@@ -143,6 +150,7 @@ function flatAmount(u: Usage, t: PriceTable, billRequest: boolean): Decimal {
   if (billRequest && t.request) sum = sum.plus(t.request);
   if (t.perMinute && u.audioSeconds > 0) sum = sum.plus(t.perMinute.times(u.audioSeconds).div(60));
   if (t.perMillionChars && u.characters > 0) sum = sum.plus(perM(u.characters, t.perMillionChars));
+  if (t.perSecond && u.videoSeconds > 0) sum = sum.plus(t.perSecond.times(u.videoSeconds));
   return sum;
 }
 

@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { appUrl, isProd } from "@/lib/env";
@@ -105,10 +105,16 @@ export async function getPendingTwoFactorSession(): Promise<AuthSession | null> 
   return { session, user, impersonatorId: session.impersonatorId };
 }
 
+/** `/login?next=<page the visitor asked for>` (the proxy forwards the original path in `x-pp-path`). */
+async function loginRedirectPath(fallbackNext?: string): Promise<string> {
+  const requested = (await headers()).get("x-pp-path") ?? fallbackNext;
+  return requested ? `/login?next=${encodeURIComponent(requested)}` : "/login";
+}
+
 /** For pages/layouts: returns the session or redirects to /login. */
 export async function requireUser(): Promise<AuthSession> {
   const s = await getSession();
-  if (!s) redirect("/login");
+  if (!s) redirect(await loginRedirectPath());
   return s;
 }
 
@@ -123,7 +129,7 @@ export interface RequireAdminOptions {
  */
 export async function requireAdmin(opts: RequireAdminOptions = {}): Promise<AuthSession> {
   const s = await getSession();
-  if (!s) redirect("/login?next=/admin");
+  if (!s) redirect(await loginRedirectPath("/admin"));
   const role = s.user.role;
   if (role === "CUSTOMER") redirect("/dashboard");
   if (opts.adminOnly && role !== "ADMIN") redirect("/admin");

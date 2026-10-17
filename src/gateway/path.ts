@@ -125,6 +125,26 @@ export function parsePath(pathname: string, method: string): ParsedPath {
     throw new GatewayError("not_found");
   }
 
+  // ---------------- Videos (OpenAI Sora-compatible): create / list / get / content / delete ----------------
+  if (p === "/v1/videos") {
+    if (m === "POST") return base({ endpoint: "/v1/videos", format: "openai_videos", op: "videos_create", capability: "video" });
+    if (m === "GET") return base({ endpoint: "/v1/videos", format: "openai_videos", op: "videos_list" });
+    throw methodNotAllowed(m, "GET, POST");
+  }
+  if (p.startsWith("/v1/videos/")) {
+    const parts = p.slice("/v1/videos/".length).split("/");
+    const id = decode(parts[0] ?? "");
+    const sub = parts[1];
+    if (!id || parts.length > 2) throw new GatewayError("not_found");
+    const v = (op: Operation, endpoint: string, allowed: string): ParsedPath => {
+      if (m !== allowed) throw methodNotAllowed(m, allowed);
+      return base({ endpoint, format: "openai_videos", op, videoId: id });
+    };
+    if (!sub) return m === "DELETE" ? v("videos_delete", "/v1/videos/{id}", "DELETE") : v("videos_get", "/v1/videos/{id}", "GET");
+    if (sub === "content") return v("videos_content", "/v1/videos/{id}/content", "GET");
+    throw new GatewayError("not_found", "Unknown endpoint. See the API reference for supported paths.");
+  }
+
   if (p.startsWith("/v1/")) {
     const key = p.slice("/v1/".length);
     const def = POST_ROUTES[key];

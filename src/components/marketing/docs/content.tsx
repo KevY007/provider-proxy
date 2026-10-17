@@ -24,6 +24,7 @@ const RENDER: Record<string, (ctx: DocCtx) => ReactNode> = {
   streaming: B.streaming,
   tools: B.tools,
   images: B.imagesGuide,
+  "openai/videos": B.videosGuide,
   "rate-limits": () => B.rateLimits(),
   billing: () => B.billing(),
   errors: () => B.errors(),
