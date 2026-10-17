@@ -77,6 +77,13 @@ enum ModelStatus {
   DISABLED
 }
 
+// §9c how a model's customer (sell) prices are derived
+enum PricingMode {
+  FIXED // admin types every customer price
+  PERCENT_OF_OFFICIAL // customer price = official price × pricingValue / 100
+  MARKUP_OVER_COST // customer price = primary route cost × (1 + pricingValue / 100)
+}
+
 enum RequestStatus {
   SUCCESS
   CLIENT_ERROR
@@ -327,6 +334,20 @@ model Model {
   officialInputPrice  Decimal? @db.Decimal(24, 12)
   officialOutputPrice Decimal? @db.Decimal(24, 12)
   officialCachedPrice Decimal? @db.Decimal(24, 12)
+  // §9c official prices for every other billable unit (same units as the sell fields above)
+  officialCacheWritePrice  Decimal? @db.Decimal(24, 12)
+  officialImagePrice       Decimal? @db.Decimal(24, 12)
+  officialRequestPrice     Decimal? @db.Decimal(24, 12)
+  officialAudioInputPrice  Decimal? @db.Decimal(24, 12)
+  officialAudioOutputPrice Decimal? @db.Decimal(24, 12)
+  officialPerMinutePrice   Decimal? @db.Decimal(24, 12)
+  officialPerMillionChars  Decimal? @db.Decimal(24, 12)
+  officialPerSecondPrice   Decimal? @db.Decimal(24, 12)
+
+  // §9c pricing rule; when not FIXED the sell prices above are recomputed automatically
+  pricingMode  PricingMode @default(FIXED)
+  pricingValue Decimal?    @db.Decimal(10, 4)
+  retiresAt    DateTime? // upstream shutdown date, shown as a "retiring" badge
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -411,7 +432,8 @@ model RequestLog {
   price            Decimal       @default(0) @db.Decimal(24, 12) // charged to customer
   cost             Decimal       @default(0) @db.Decimal(24, 12) // paid upstream
   profit           Decimal       @default(0) @db.Decimal(24, 12)
-  latencyMs        Int           @default(0)
+  officialPrice    Decimal       @default(0) @db.Decimal(24, 12) // §9c what this usage would cost at official prices (savings = officialPrice - price)
+  latencyMs       Int           @default(0)
   ttftMs           Int?
   queueMs          Int           @default(0) // §9b time spent waiting for an upstream slot
   attempts         Json          @default("[]") // [{providerId, providerKeyId, status, error, latencyMs}]
