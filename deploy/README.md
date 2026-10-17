@@ -281,6 +281,15 @@ compressed; request bodies are unlimited (`maxRequestBodyMb`, 0 = unlimited) and
   HTTP/1 request timeout is disabled so slow uploads are never cut, TCP keep-alive probes run on every connection, and a
   silent SSE stream gets a `: keep-alive` comment line every `streamHeartbeatSec` (default 15 s, 0 = off; admin
   setting). Heartbeats are only ever sent on an already-started SSE response.
+* **Upstream HTTP/2 is OPT-IN (default off).** `--use-http2` above only concerns the leg *client -> gateway*. The leg
+  *gateway -> provider* uses HTTP/1.1 keep-alive pools by default (a lost connection then costs exactly one
+  stream). To multiplex streams over one connection to a specific https upstream, set `"http2": true` in that
+  provider's **Settings (JSON)** (Admin > Providers > provider > Connection & settings). Leave it off unless you know
+  the provider speaks h2 well: a dropped h2 connection ends *every* stream running on it. Related provider settings:
+  `idleTimeoutSec` (cut a stream that is silent for N seconds; default never).
+* **New sticky objects.** Uploaded files / multipart uploads / Gemini upload sessions are recorded in
+  `UpstreamObject` (pinned to the upstream account that holds them, scoped to the owning customer). The older
+  `VideoJob` table is unchanged; it keeps serving video jobs.
 * **SIGTERM / deploys.** On SIGTERM the container stops accepting connections, sends HTTP/2 GOAWAY and
   `Connection: close`, lets every in-flight request and stream run to completion (bounded by
   `SHUTDOWN_DRAIN_SECONDS`, default 600), flushes the metering buffer and exits (code 143). During a rolling deploy

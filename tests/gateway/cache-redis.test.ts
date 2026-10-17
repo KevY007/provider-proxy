@@ -76,7 +76,8 @@ describe.skipIf(!up)("config invalidation over Redis pub/sub", () => {
     wire.length = 0;
     await cache.invalidateGatewayConfig("groups");
     await cache.invalidateGatewayConfig("users", "user_77");
-    expect(await until(() => wire.length >= 2)).toBe(true);
+    // the channel is shared with other test processes: wait for OUR two messages, not for any two
+    expect(await until(() => wire.includes("groups") && wire.includes("users:user_77"))).toBe(true);
     expect(wire).toEqual(expect.arrayContaining(["groups", "users:user_77"]));
   });
 

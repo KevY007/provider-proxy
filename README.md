@@ -54,7 +54,8 @@ streams get `: keep-alive` heartbeats; nothing is compressed (`Accept-Encoding: 
 decoded); request bodies have **no size limit** (`maxRequestBodyMb`, 0 = unlimited) and are streamed (multipart spooled to disk,
 JSON forwarded byte-identical except `model`); the Files APIs (OpenAI `/v1/files` + `/v1/uploads`, Anthropic `/v1/files`, Gemini
 resumable upload) are passed through with sticky routing and per-customer ownership. The container (`server.mjs`) serves HTTP/1.1
-and h2c on one port and drains gracefully on SIGTERM.
+and h2c on one port and drains gracefully on SIGTERM. Final reference with the scenario table, drain / big-body numbers, live check and
+deliberate deviations: [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md). Upstream HTTP/2 is opt-in per provider (`settings.http2`, default off).
 
 ```bash
 pnpm vitest run tests/gateway/chaos.test.ts tests/gateway/files.test.ts tests/gateway/bigbody.test.ts

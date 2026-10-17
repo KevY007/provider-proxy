@@ -6,6 +6,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { ProviderEditor } from "@/components/admin/providers/provider-editor";
 import { ProviderKeys } from "@/components/admin/providers/provider-keys";
 import { ProviderSidePanels } from "@/components/admin/providers/provider-side-panels";
+import { getPreset } from "@/gateway/providers/presets";
 import { requireAdmin } from "@/lib/auth/session";
 import { getProviderDetail } from "@/server/admin/providers-queries";
 
@@ -36,7 +37,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       />
       <div className="space-y-6">
         <ProviderKeys providerId={provider.id} keys={detail.keys} initialSlots={detail.slots} providerMaxConcurrency={provider.maxConcurrency} canEdit={canEdit} />
-        <ProviderEditor provider={provider} canEdit={canEdit} routeCount={detail.routes.length} keyCount={detail.keys.length} />
+        <ProviderEditor provider={provider} canEdit={canEdit} routeCount={detail.routes.length} keyCount={detail.keys.length} presetFormats={provider.preset === "custom" ? null : (getPreset(provider.preset)?.formats.slice() ?? null)} />
         <ProviderSidePanels checks={detail.checks} routes={detail.routes} />
       </div>
     </>
