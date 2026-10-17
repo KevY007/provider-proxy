@@ -1,0 +1,66 @@
+# Self-hosting on any Docker host: app + postgres + redis.
+#   cp .env.example .env   (fill in secrets)   then:
+#   docker compose -f docker-compose.prod.yml up -d --build
+name: providerproxy-prod
+
+services:
+  migrate:
+    build: .
+    working_dir: /prisma-cli
+    command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
+    environment:
+      DATABASE_URL: postgresql://proxy:${POSTGRES_PASSWORD:-proxy}@postgres:5432/proxy
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      DATABASE_URL: postgresql://proxy:${POSTGRES_PASSWORD:-proxy}@postgres:5432/proxy
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: proxy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-proxy}
+      POSTGRES_DB: proxy
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxy -d proxy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:
+  redisdata:
