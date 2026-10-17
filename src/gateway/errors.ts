@@ -27,6 +27,7 @@ export type GatewayErrorCode =
   | "upstream_overloaded"
   | "invalid_request"
   | "payload_too_large"
+  | "unsupported_media_type"
   | "not_found"
   | "method_not_allowed"
   | "client_closed"
@@ -62,6 +63,7 @@ export const ERROR_DEFS: Record<GatewayErrorCode, ErrorDef> = {
   upstream_overloaded: { status: 529, openaiType: "server_error", kind: "upstream", message: "The upstream provider is overloaded. Please retry shortly." },
   invalid_request: { status: 400, openaiType: "invalid_request_error", kind: "client", message: "Invalid request." },
   payload_too_large: { status: 413, openaiType: "invalid_request_error", kind: "client", message: "Request body is too large." },
+  unsupported_media_type: { status: 415, openaiType: "invalid_request_error", kind: "client", message: "Unsupported Content-Encoding or media type." },
   not_found: { status: 404, openaiType: "invalid_request_error", kind: "client", message: "Unknown endpoint." },
   method_not_allowed: { status: 405, openaiType: "invalid_request_error", kind: "client", message: "Method not allowed for this endpoint." },
   client_closed: { status: 499, openaiType: "invalid_request_error", kind: "cancelled", message: "Client closed the request." },
@@ -113,7 +115,7 @@ export function isGatewayError(e: unknown): e is GatewayError {
   return e instanceof GatewayError;
 }
 
-function anthropicTypeFor(status: number, code: GatewayErrorCode, override?: string): string {
+export function anthropicTypeFor(status: number, code?: GatewayErrorCode, override?: string): string {
   if (override) return override;
   if (code === "upstream_overloaded" || code === "no_available_provider") return "overloaded_error";
   switch (status) {
@@ -220,7 +222,7 @@ export function toGatewayError(e: unknown): GatewayError {
 }
 
 export function errorFormatFor(inbound: string): ErrorFormat {
-  if (inbound === "anthropic_messages") return "anthropic";
-  if (inbound === "gemini") return "gemini";
+  if (inbound === "anthropic_messages" || inbound === "anthropic_files") return "anthropic";
+  if (inbound === "gemini" || inbound === "gemini_files") return "gemini";
   return "openai";
 }

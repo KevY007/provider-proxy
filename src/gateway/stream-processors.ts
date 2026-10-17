@@ -1,6 +1,6 @@
 import { TextAcc, type StreamProcessor } from "./processor";
 import type { SseEvent } from "./sse";
-import type { Json, Usage } from "./types";
+import type { Json, JsonObject, Usage } from "./types";
 import { mergeUsage, usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponses } from "./usage";
 import { isObject, safeJsonParse } from "./util";
 import { emptyUsage } from "./types";
@@ -17,7 +17,37 @@ function rawBlock(ev: SseEvent): string {
   return ev.raw + "\n\n";
 }
 
+/**
+ * An upstream error event is forwarded VERBATIM (PLAN 9d.1b): the raw block goes out untouched unless scrubbing our
+ * identity (provider name / host / key / upstream model) changes its message.
+ */
+function errorBlock(ev: SseEvent, d: JsonObject, scrub: ((t: string) => string) | null, modified = false): string {
+  if (!scrub) return modified ? emit(ev, d) : rawBlock(ev);
+  let changed = modified;
+  const visit = (o: unknown, depth: number): void => {
+    if (depth > 4 || !isObject(o)) return;
+    for (const k of ["message", "detail"]) {
+      const v = o[k];
+      if (typeof v === "string") {
+        const t = scrub(v);
+        if (t !== v) {
+          o[k] = t;
+          changed = true;
+        }
+      }
+    }
+    if (isObject(o.error)) visit(o.error, depth + 1);
+    if (isObject(o.response)) visit(o.response, depth + 1);
+  };
+  visit(d, 0);
+  return changed ? emit(ev, d) : rawBlock(ev);
+}
+
 abstract class Base implements StreamProcessor {
+  protected scrub: ((t: string) => string) | null = null;
+  setScrub(fn: (t: string) => string): void {
+    this.scrub = fn;
+  }
   protected _usage: Usage = emptyUsage();
   protected sawUsage = false;
   protected text = new TextAcc();
@@ -81,9 +111,8 @@ export class OpenAIStreamPassthrough extends Base {
     const d = safeJsonParse<Json>(data);
     if (!isObject(d)) return [rawBlock(ev)];
     if (isObject(d.error)) {
-      // never forward raw upstream errors: the stream session emits a sanitized error event instead
       this.err = { status: Number(d.error.code) >= 400 ? Number(d.error.code) : 502, message: String(d.error.message ?? "upstream error"), type: String(d.error.type ?? "") };
-      return [];
+      return [errorBlock(ev, d, this.scrub, false)];
     }
     let modified = false;
     if (typeof d.id === "string") this.lastId = d.id;
@@ -175,11 +204,11 @@ export class ResponsesStreamPassthrough extends Base {
       this.done = true;
       const e = isObject(d.response) && isObject(d.response.error) ? d.response.error : {};
       this.err = { status: 502, message: String(e.message ?? "response failed"), type: String(e.code ?? "") };
+      return [errorBlock(ev, d, this.scrub, modified)];
     } else if (type === "error") {
       this.err = { status: 502, message: String(d.message ?? "upstream error"), type: String(d.code ?? "") };
-      return [];
+      return [errorBlock(ev, d, this.scrub, modified)];
     }
-    if (type === "response.failed") return []; // sanitized error event is emitted by the stream session
     return [modified ? emit(ev, d) : rawBlock(ev)];
   }
 }
@@ -223,7 +252,7 @@ export class AnthropicStreamPassthrough extends Base {
         const type = String(e.type ?? "api_error");
         const status = type === "overloaded_error" ? 529 : type === "rate_limit_error" ? 429 : type === "invalid_request_error" ? 400 : type === "authentication_error" ? 401 : 500;
         this.err = { status, message: String(e.message ?? "upstream error"), type };
-        return [];
+        return [errorBlock(ev, d, this.scrub, modified)];
       }
       default:
         break;
@@ -245,9 +274,10 @@ export class GeminiStreamPassthrough extends Base {
     if (!isObject(d)) return [rawBlock(ev)];
     if (isObject(d.error)) {
       this.err = { status: Number(d.error.code) >= 400 ? Number(d.error.code) : 502, message: String(d.error.message ?? "upstream error"), type: String(d.error.status ?? "") };
-      return [];
+      return [errorBlock(ev, d, this.scrub, false)];
     }
     let modified = false;
+    if (isObject(d.promptFeedback) && d.promptFeedback.blockReason) this.finished = true; // blocked prompt: the stream legitimately ends without a finishReason
     if (isObject(d.usageMetadata)) {
       // Gemini reports cumulative usage on every chunk: last one wins
       this._usage = usageFromGemini(d.usageMetadata);

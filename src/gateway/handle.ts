@@ -7,9 +7,13 @@ import { catalogResponse } from "./catalog";
 import { corsHeaders, failWith, logOutcome, newCtx, releaseAll, withCommon, type Ctx } from "./context";
 import { execute } from "./execute";
 import { GatewayError, toGatewayError } from "./errors";
+import { inboundBody, requestEncodings } from "./bodyin";
+import { fileRefPins, handleRaw } from "./files";
+import { scanTopLevel } from "./jsonscan";
 import { checkRpm, checkTpm } from "./limits";
-import { getField, parseMultipart } from "./multipart";
+import { MultipartError, getField, readMultipart } from "./multipart";
 import { guessErrorFormat, parsePath } from "./path";
+import { BodySpool, SpoolLimitError } from "./spool";
 import { effectiveMultiplier } from "./pricing";
 import { closeFunds, reserveFunds } from "./reserve";
 import { validateRequest } from "./validate";
@@ -23,8 +27,6 @@ import { videoContentPlan, videoDelete, videoGet, videoList } from "./video";
 
 export { guessErrorFormat, parsePath } from "./path";
 
-const MAX_JSON_BODY = 20 * 1024 * 1024;
-const MAX_MULTIPART_BODY = 50 * 1024 * 1024;
 const STREAMABLE = new Set<Operation>(["chat", "completions", "responses", "messages", "gemini_stream"]);
 
 /**
@@ -73,8 +75,8 @@ function preflight(ctx: Ctx): Response {
 }
 
 async function run(ctx: Ctx): Promise<Response> {
-  ctx.errorFormat = guessErrorFormat(ctx.url.pathname);
-  ctx.path = parsePath(ctx.url.pathname, ctx.req.method);
+  ctx.errorFormat = guessErrorFormat(ctx.url.pathname, ctx.req.headers);
+  ctx.path = parsePath(ctx.url.pathname, ctx.req.method, ctx.req.headers);
   ctx.errorFormat = ctx.path.errorFormat;
   if (ctx.req.signal.aborted) throw new GatewayError("client_closed");
 
@@ -90,6 +92,7 @@ async function run(ctx: Ctx): Promise<Response> {
     return withCommon(ctx, new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
   }
 
+  if (path.raw) return handleRaw(ctx);
   if (path.op.startsWith("responses_")) return dispatchResponsesLookup(ctx);
   if (path.op.startsWith("videos_") && path.op !== "videos_create") return dispatchVideoLookup(ctx);
 
@@ -121,58 +124,82 @@ async function acquireCustomerSlots(ctx: Ctx): Promise<void> {
 }
 
 // ------------------------------------------------------------------ body
-async function readLimited(req: Request, limit: number): Promise<Buffer> {
-  const declared = Number(req.headers.get("content-length"));
-  if (Number.isFinite(declared) && declared > limit) throw new GatewayError("payload_too_large", `Request body exceeds the ${Math.round(limit / 1048576)}MB limit.`);
-  const body = req.body;
-  if (!body) return Buffer.alloc(0);
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    let r: ReadableStreamReadResult<Uint8Array>;
-    try {
-      r = await reader.read();
-    } catch {
-      throw new GatewayError("client_closed");
-    }
-    if (r.done) break;
-    total += r.value.byteLength;
-    if (total > limit) {
-      reader.cancel().catch(() => undefined);
-      throw new GatewayError("payload_too_large", `Request body exceeds the ${Math.round(limit / 1048576)}MB limit.`);
-    }
-    chunks.push(r.value);
-  }
-  return Buffer.concat(chunks);
+/** maxRequestBodyMb (0 = unlimited) in bytes, or undefined. */
+function bodyLimit(ctx: Ctx): number | undefined {
+  const mb = ctx.snap?.settings.maxRequestBodyMb ?? 0;
+  return mb > 0 ? mb * 1024 * 1024 : undefined;
 }
 
+/** Map a failure while reading the request body onto the error the client should see. */
+function bodyReadError(ctx: Ctx, e: unknown): GatewayError {
+  if (e instanceof GatewayError) return e;
+  // (the rest of the oversized upload is not read: the HTTP server discards it after the answer, so the client can read the 413)
+  if (e instanceof SpoolLimitError) return new GatewayError("payload_too_large", `Request body exceeds the ${Math.round(e.limit / 1048576)}MB limit.`);
+  if (ctx.req.signal.aborted) return new GatewayError("client_closed");
+  if (e instanceof MultipartError) return new GatewayError("invalid_request", e.message);
+  if (requestEncodings(ctx.req.headers)) return new GatewayError("invalid_request", "Could not decode the request body. Check that it matches its Content-Encoding.", { internal: `body decode failed: ${String(e)}` });
+  // the connection broke while the body was still arriving
+  return new GatewayError("client_closed", undefined, { internal: `request body read failed: ${String(e)}` });
+}
+
+/**
+ * Read the request body: streamed (never `req.arrayBuffer()`), `Content-Encoding` decoded, optional size limit.
+ *  - multipart: spooled + scanned in one pass, file parts are never held in memory (see multipart.ts)
+ *  - JSON: spooled (memory for small bodies, a temp file beyond 8 MB), parsed once; the original bytes stay available
+ *    so the upstream request can carry them unchanged except for the members we modify (see jsonscan.ts)
+ */
 async function readBody(ctx: Ctx): Promise<void> {
   const path = ctx.path!;
   const req = ctx.req;
   const contentType = req.headers.get("content-type") ?? "";
   // POST /v1/videos takes JSON or multipart (input_reference file)
   const multipart = path.multipart || (path.op === "videos_create" && /multipart\/form-data/i.test(contentType));
+  const limit = bodyLimit(ctx);
+  const lenHeader = req.headers.get("content-length");
+  const declared = lenHeader === null || lenHeader.trim() === "" ? NaN : Number(lenHeader);
+  if (limit && !requestEncodings(req.headers) && Number.isFinite(declared) && declared > limit) {
+    throw new GatewayError("payload_too_large", `Request body exceeds the ${Math.round(limit / 1048576)}MB limit.`);
+  }
+  const stream = inboundBody(req); // 415 for an encoding we cannot decode
+
   if (multipart) {
-    const ct = contentType;
-    if (!/multipart\/form-data/i.test(ct)) throw new GatewayError("invalid_request", "Content-Type must be multipart/form-data.");
-    const buf = await readLimited(req, MAX_MULTIPART_BODY);
+    if (!/multipart\/form-data/i.test(contentType)) throw new GatewayError("invalid_request", "Content-Type must be multipart/form-data.");
     try {
-      ctx.form = await parseMultipart(buf, ct);
-    } catch {
-      throw new GatewayError("invalid_request", "Could not parse the multipart form body.");
+      const form = await readMultipart(stream, contentType, { maxBytes: limit });
+      ctx.form = form;
+      ctx.disposers.push(() => form.spool.dispose());
+    } catch (e) {
+      throw bodyReadError(ctx, e);
     }
     return;
   }
-  const buf = await readLimited(req, MAX_JSON_BODY);
-  if (!buf.length) {
+
+  let spool: BodySpool;
+  try {
+    spool = await BodySpool.fromStream(stream, { maxBytes: limit });
+  } catch (e) {
+    throw bodyReadError(ctx, e);
+  }
+  ctx.disposers.push(() => spool.dispose());
+  if (spool.size === 0) {
     if (path.op === "messages_count_tokens" || path.model) {
       ctx.body = {};
       return;
     }
     throw new GatewayError("invalid_request", "Request body is empty; expected a JSON object.");
   }
-  const parsed = safeJsonParse<Json>(buf.toString("utf8"));
+  let parsed: Json;
+  try {
+    const buf = await spool.toBuffer();
+    const scan = scanTopLevel(buf);
+    parsed = safeJsonParse<Json>(buf.toString("utf8"));
+    if (scan && isObject(parsed)) ctx.jsonRaw = { spool, scan };
+  } catch (e) {
+    if (e instanceof Error && /string longer than|Cannot create a string/i.test(e.message)) {
+      throw new GatewayError("payload_too_large", "This JSON body is too large to process (about 500 MB). Upload large attachments through the Files API instead.");
+    }
+    throw bodyReadError(ctx, e);
+  }
   if (!isObject(parsed)) throw new GatewayError("invalid_request", "Request body must be a valid JSON object.");
   ctx.body = parsed;
 
@@ -246,6 +273,18 @@ async function dispatch(ctx: Ctx): Promise<Response> {
     if (sticky && sticky.userId === ctx.auth!.user.id) {
       pinKeyId = sticky.providerKeyId;
       routes = routes.filter((r) => r.route.providerId === sticky.providerId);
+    }
+  }
+  // files referenced in the body (file_id / fileUri) live on one upstream account: the request goes there (or 404s for foreign ids)
+  const filePin = await fileRefPins(ctx);
+  if (filePin) {
+    if (pinKeyId && pinKeyId !== filePin.providerKeyId) {
+      throw new GatewayError("invalid_request", "The referenced file and the referenced previous response are stored on different upstream accounts.", { param: "file_id" });
+    }
+    pinKeyId = filePin.providerKeyId;
+    routes = routes.filter((r) => r.route.providerId === filePin.providerId);
+    if (!routes.length) {
+      throw new GatewayError("invalid_request", "The referenced file is stored with a provider that cannot serve this model. Upload the file again or use a different model.", { param: "file_id", internal: "file pin has no eligible route for this model" });
     }
   }
 

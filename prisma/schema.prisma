@@ -155,6 +155,7 @@ model User {
   payments   Payment[]
   redeemUses RedeemCodeUse[]
   videoJobs  VideoJob[]
+  upstreamObjects UpstreamObject[]
 
   @@index([role])
   @@index([status])
@@ -484,6 +485,28 @@ model VideoJob {
 
   @@index([userId, createdAt])
   @@index([status])
+}
+
+model UpstreamObject {
+  // A stateful object that lives on ONE upstream account (provider key): an uploaded file, a multipart upload in
+  // progress, a Gemini resumable-upload session. Later calls that reference it (file endpoints, `file_id` /
+  // `fileUri` inside chat / responses / messages / generateContent bodies) are pinned to that account, and every
+  // lookup is scoped to the owning customer (foreign or unknown ids answer 404). `upstreamId` is the id the
+  // customer sees (it is the upstream's own id; Gemini upload sessions use OUR opaque session id).
+  id            String   @id @default(cuid())
+  kind          String // "file" | "upload" | "gemini_upload"
+  upstreamId    String
+  providerId    String
+  providerKeyId String
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKeyId      String?
+  meta          Json? // last upstream object seen (file listing is served from here) / session details
+  createdAt     DateTime @default(now())
+
+  @@unique([kind, upstreamId, providerId])
+  @@index([userId, kind, createdAt])
+  @@index([providerKeyId])
 }
 
 // ----------------------------------------------------------------------------

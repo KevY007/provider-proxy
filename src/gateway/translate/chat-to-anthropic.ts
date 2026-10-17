@@ -301,6 +301,11 @@ export class AnthropicToChatStream implements StreamProcessor {
   private done = false;
   private err: { status: number; message: string; type?: string } | null = null;
 
+  private scrub: ((t: string) => string) | null = null;
+  setScrub(fn: (t: string) => string): void {
+    this.scrub = fn;
+  }
+
   constructor(
     private readonly publicModel: string,
     private readonly includeUsage: boolean,
@@ -409,7 +414,10 @@ export class AnthropicToChatStream implements StreamProcessor {
         const e = isObject(d.error) ? d.error : {};
         const type = String(e.type ?? "api_error");
         const status = type === "overloaded_error" ? 529 : type === "rate_limit_error" ? 429 : type === "invalid_request_error" ? 400 : type === "authentication_error" ? 401 : 500;
-        this.err = { status, message: String(e.message ?? "upstream error"), type };
+        const message = String(e.message ?? "upstream error");
+        this.err = { status, message, type };
+        // forwarded as an OpenAI error chunk (same type / message)
+        out.push(sseEvent({ error: { message: this.scrub ? this.scrub(message) : message, type, param: null, code: type } }));
         break;
       }
       default:

@@ -513,7 +513,7 @@ For images: if `imagePrice` set bill per image, else bill token usage returned b
 - All server actions re-check role; all admin mutations write AuditLog.
 - Login/signup/reset rate-limited per IP + email; generic error messages; email verification required before keys work (setting).
 - CSRF: server actions are same-origin; route handlers for UI use session + origin check.
-- Body size limits (JSON 20MB, multipart 50MB). Client disconnect aborts upstream request; partial stream still metered from received usage or tokenizer estimate (`usageEstimated=true`).
+- Body size: **unlimited by default** (`maxRequestBodyMb` setting, 0 = unlimited; the upstream's own limit applies, see 5c / 9d). Client disconnect aborts the upstream request; partial stream still metered from received usage or tokenizer estimate (`usageEstimated=true`).
 
 ## 9b. Concurrency slots, scale & model control (REQUIRED — added by lead; schema additions below are authoritative)
 
@@ -578,8 +578,62 @@ A short glossary tooltip/explainer appears on admin Models pages and customer Mo
 Tests: gzip-encoded upstream response → client receives correct plain body without content-encoding; gzip-encoded request body accepted; **1 GB multipart upload and 200 MB JSON prompt** round-trip through the mock with RSS growth bounded (assert < ~300 MB for multipart); Files API upload → reference in chat → download content, pinned to the same mock key; other customer 404.
 6. **Fidelity / chaos test suite** (`tests/gateway/chaos.test.ts` + `scripts/chaos.ts`), each format (OpenAI chat, Responses, Anthropic, Gemini, translated paths): upstream 429/500/529 pre-commit with all keys failing → client gets the same status + retry-after + native error body; upstream in-stream error event → passed verbatim; upstream RST/drop mid-stream → client connection is aborted (client observes a network error, NOT a clean end/[DONE]); client abort mid-stream → upstream request aborted within 100 ms (mock records the abort), RequestLog CANCELLED with partial usage, slots + credit holds released; slow trickle (1 token / 40 s) survives with heartbeats and no gateway-side timeout; gzip-compressed upstream response handled (5c); 1000 concurrent 2-min streams with heartbeats under a simulated SIGTERM drain → none truncated by us. No RequestLog lost in any case.
 
+### 9d.7 Implementation record (Phase 4b - what was built, decisions, measured evidence)
+
+**Code map.** `src/gateway/stream.ts` (stream engine: mirror semantics + heartbeats), `execute.ts` (failover, error mirroring, header
+passthrough), `headers.ts` (allow-list), `shape.ts` (`mirrorErrorFromUpstream`, JSON splice), `jsonscan.ts` + `spool.ts` +
+`multipart.ts` + `bodyin.ts` (streamed bodies), `files.ts` (Files APIs), `upstream.ts` (undici agent), `server.mjs` (h2c + drain),
+`scripts/chaos.ts`, `scripts/h2c-check.mjs`, tests `chaos.test.ts` / `files.test.ts` / `bigbody.test.ts` (+ `http-adapter.ts`, which
+serves `handle()` over a real socket the way Next does).
+
+**Decisions (where the principle needed a concrete rule).**
+1. *Stream end.* A stream is complete only when the upstream's terminal event arrived (`[DONE]`/`finish_reason`, `response.completed|incomplete|failed`,
+   Anthropic `message_stop`, Gemini `finishReason`/`blockReason`). Upstream error event -> forwarded verbatim (identity-scrubbed message only) and the stream
+   ends the way the upstream ended it. Upstream RST / clean close without terminal / stall past the optional idle cutoff / our own processor exception ->
+   the client stream is *errored*, which Next turns into `res.destroy()` (h1: no terminal chunk; h2: RST_STREAM) - no synthetic `[DONE]`/end/error event, translated
+   streams included (the old "finalize the Anthropic stream when [DONE] is missing" was removed; a translated stream is only closed when the upstream already sent its `finish_reason`).
+   The only gateway-authored event left is the funds guard's `insufficient_balance` (9c).
+2. *Commit point.* The response is committed on the first upstream output event. Before that, an error event as the FIRST event or a drop fails over to the next key (invisible
+   pooling); exhausted -> the last upstream's status/body (a first-event `overloaded_error` becomes HTTP 529 etc.). If the upstream answered 200 but stays silent for one heartbeat
+   interval the response is committed anyway so heartbeats can keep the client connection alive (`streamHeartbeatSec`, default 15, 0 = off; SSE only, never Gemini JSON-array streams).
+3. *Error mirroring.* After pool failover is exhausted, 408/429/5xx (incl. 529) are returned with the LAST upstream's real status, `retry-after`/`x-ratelimit-*`/`anthropic-ratelimit-*`/`x-should-retry`,
+   its request id as `x-upstream-request-id`, and its native error document rebuilt from whitelisted fields (type/code/param/message kept, message scrubbed of provider name, host, key, upstream model).
+   Deliberate exceptions: upstream 401/402/403 are OUR account problems (a 401 would make SDKs blame the customer's key) -> 503 `no_available_provider`; failures with no upstream answer
+   at all (connect error, reset before headers, headers timeout) have no status to mirror -> 502/504 native error (every SDK retries those exactly like a network error).
+   The gateway's own error code stays in `RequestLog.errorCode`.
+4. *Headers.* Allow-list only (`headers.ts`): rate-limit family, `retry-after`, `x-should-retry`, request id renamed, media headers on downloads, `x-goog-upload-*` on Gemini uploads. Never forwarded:
+   hop-by-hop, `content-encoding`/`content-length` of a decoded body, `set-cookie`, `server`, org/project ids, anything else. `Idempotency-Key` is forwarded unchanged and recorded in `RequestLog.attempts`.
+5. *Transport.* One undici agent: keep-alive 60 s (up to 600 s), TCP keep-alive probes from 30 s, connect timeout 15 s, `connections: 10000` per origin (a lower cap silently queued streams behind
+   the first 512 - found by the 1000-stream run), `headersTimeout`/`bodyTimeout` disabled in undici and enforced per request: headers timeout = `provider.timeoutMs` counted from the END of the request upload,
+   no body timeout, optional stream idle cutoff = `provider.settings.idleTimeoutSec` (else `settings.upstreamIdleTimeoutSec`, default 0 = never). HTTP/2 to the upstream is opt-in per provider
+   (`provider.settings.http2: true`, https origins only, ALPN): multiplexing shares one connection between streams, so a connection loss hits all of them - not on by default.
+6. *Compression.* `Accept-Encoding: identity` always; an upstream that compresses anyway is decoded by undici and `content-encoding`/`content-length` are never copied. Inbound `Content-Encoding` gzip/deflate/br/zstd is decoded
+   on the fly (corrupt data -> 400, other encodings -> 415).
+7. *Bodies.* `maxRequestBodyMb` (0 = unlimited). Request bodies are never `arrayBuffer()`-ed: they are spooled (memory up to 8 MB, then a temp file) while a streaming scanner records multipart part offsets / JSON top-level member offsets,
+   then forwarded as the customer's own bytes with only the changed members spliced (multipart `model`; JSON `model`, injected `stream_options` / output cap ...). Anything not expressible as a splice (translation, `paramOverrides`, deleted fields)
+   re-serialises. A request that is still arriving when the client leaves cancels the spool (file removed) and never reaches the upstream. JSON is parsed once (validation, funds estimate, usage fallback need it): peak RSS is about 3x the
+   body for a 200 MB prompt; multipart peaks at about 100 MB growth even for 1 GB. Raw Files uploads are streamed straight through (no spool, no failover: one attempt).
+8. *Files.* Formats `openai_files` / `anthropic_files` / `gemini_files` (a provider lists them in `formats`; `/v1/files` is told apart by the `anthropic-version` header). `UpstreamObject` (migration `files_and_sticky_objects`) stores kind
+   `file` | `upload` | `gemini_upload`, the owner and the upstream account; the file JSON is kept in `meta`, so listings come from our own records (a shared upstream account never leaks other customers' files). References
+   (`file_id` anywhere in a body, `fileData.fileUri`) pin the request to the owning account; another customer's id -> native 404; a customer's new uploads prefer the account that already holds their files; files spanning two accounts
+   in one request -> 400 with a clear message. Gemini's `x-goog-upload-url` is rewritten to the gateway (session id stored server-side, upstream URL origin-checked). Storage is free; an admin can price it with a hidden model slug `files`
+   (requestPrice / route requestCost). `VideoJob` keeps its own stickiness (not migrated).
+9. *Container.* `server.mjs` wraps Next's generated `server.js`: a first-bytes sniffer sends `PRI * HTTP/2.0` connections to `node:http2` and everything else to `node:http` (cleartext `http2.createServer` cannot do HTTP/1.1, and `allowHTTP1` needs TLS);
+   the h2 path replays the sniffed bytes through a duplex and normalises Next's expectations (headers object, status message). HTTP/1 request timeout disabled, keep-alive 620 s, headers timeout above it, 1 MB HTTP/2 window.
+   SIGTERM: stop accepting, GOAWAY / `Connection: close`, drain in-flight requests (<= `SHUTDOWN_DRAIN_SECONDS`, default 600), flush the meter (exit hook), exit 143. Cloud Run: `--use-http2 --timeout=3600 --no-cpu-throttling`.
+
+**Evidence** (all reproducible with the commands in README): `tests/gateway/chaos.test.ts` - 6 formats (OpenAI chat, Responses, Anthropic, Gemini, chat->Anthropic and Messages->chat translated) x {429/500/529 mirrored, good stream headers, gzip upstream,
+verbatim error event, RST + FIN mid-stream = client connection broken, drop before content -> 502, client abort -> upstream sees the abort 2-5 ms later, CANCELLED with partial usage billed}, plus non-stream aborts, a queued client leaving,
+multipart / Files uploads aborted mid-flight (spool file removed), heartbeats on silent and stalled streams, gzip request bodies, byte-identical JSON forwarding, "no RequestLog lost". `tests/gateway/bigbody.test.ts` - 1 GB multipart and
+200 MB JSON byte-identical at the upstream (sha-256), RSS growth ~100 MB / ~620 MB. `pnpm chaos --docker ...` - 1000 concurrent 120 s streams over the built container with SIGTERM at 40 s: 1000/1000 complete, new connection refused,
+exit 143 0.4 s after the last stream, 1000 RequestLogs, balance debit == sum of prices.
+
+**Not achievable / limits (stated plainly).** A TCP RST discards whatever the peer had not read yet, so after an upstream reset the client may lose the last few events (real providers behave the same). Cloud Run force-kills 10 s after SIGTERM:
+only graceful shutdowns (deploys, scale-in of idle instances, `docker stop -t`) are lossless. `connection: keep-alive` is sent on SSE responses (HTTP/1 only meaningful; Node drops it on h2). Windows cannot deliver SIGTERM to a child process,
+so the drain run needs Docker/Linux. In-memory slots/holds are per instance (Redis shares them across instances as before).
+
 ## 10. Hosting — Google Cloud (Foundation creates files, QA verifies `docker build`)
-- **One container** (`Dockerfile`, multi-stage, `output: 'standalone'` in next.config, non-root, `PORT` env honored) serves UI + gateway. Target **Cloud Run** (gen2, `--timeout=3600` for long streams, `--concurrency=80`, min-instances 1 to avoid cold starts on the API, CPU always allocated so post-response metering completes).
+- **One container** (`Dockerfile`, multi-stage, `output: 'standalone'` in next.config, non-root, `PORT` env honored, started by `server.mjs` = HTTP/1.1 + h2c on one port, see 9d.7) serves UI + gateway. Target **Cloud Run** (gen2, `--use-http2` so request bodies are not capped at 32 MB, `--timeout=3600` for long streams, `--concurrency=80`, min-instances 1 to avoid cold starts on the API, CPU always allocated so post-response metering completes).
 - **Cloud SQL for PostgreSQL** (connect via Cloud SQL connector unix socket: `DATABASE_URL=postgresql://USER:PASS@localhost/proxy?host=/cloudsql/PROJECT:REGION:INSTANCE`). **Memorystore Redis** via Serverless VPC connector (optional; app works without it).
 - **Secret Manager** for all secrets, mapped to env vars in Cloud Run.
 - **Migrations**: separate **Cloud Run Job** using the same image with command `pnpm prisma migrate deploy` (script `deploy/migrate.sh`).

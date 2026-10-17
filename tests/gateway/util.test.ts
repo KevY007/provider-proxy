@@ -219,7 +219,8 @@ describe("multipart passthrough", () => {
     const back = await parseMultipart(enc.body, enc.contentType);
     expect(back.fields.find((f) => f.name === "model")?.value).toBe("up-model");
     expect(back.fields.find((f) => f.name === "prompt")?.value).toBe("a cat");
-    expect([...back.files[0].data]).toEqual([1, 2, 3, 4]);
+    expect([...(await back.spool.slice(back.files[0].start, back.files[0].end))]).toEqual([1, 2, 3, 4]);
+    expect(back.files[0].size).toBe(4);
     expect(back.files[0].type).toBe("image/png");
   });
 });
@@ -309,7 +310,7 @@ describe("provider presets", () => {
       expect(ids).toContain(id);
     }
     expect(new Set(ids).size).toBe(ids.length);
-    expect(getPreset("anthropic")).toMatchObject({ authStyle: "X_API_KEY", baseUrl: "https://api.anthropic.com", formats: ["anthropic_messages"] });
+    expect(getPreset("anthropic")).toMatchObject({ authStyle: "X_API_KEY", baseUrl: "https://api.anthropic.com", formats: ["anthropic_messages", "anthropic_files"] });
     expect(getPreset("google")).toMatchObject({ authStyle: "X_GOOG_API_KEY" });
     expect(getPreset("azure")?.authStyle).toBe("AZURE_API_KEY");
     expect(getPreset("codex-everywhere")?.settings).toMatchObject({ anthropicBaseUrl: "https://codex-everywhere.com", geminiBaseUrl: "https://codex-everywhere.com/v1beta" });

@@ -29,6 +29,8 @@ export interface StreamProcessor {
    * normal ending. `errorEvent` is the serialized native error event (already in the inbound format).
    */
   abortEvents?(errorEvent: string): string[];
+  /** Identity scrubber for text the upstream wrote into an error event we forward (provider / host / key / upstream model). */
+  setScrub?(fn: (text: string) => string): void;
 }
 
 /** Bounded text accumulator. */

@@ -37,7 +37,38 @@ export type Operation =
   | "model_get"
   | "model_info"
   | "gemini_models_list"
-  | "gemini_model_get";
+  | "gemini_model_get"
+  // Files APIs (PLAN 5c): OpenAI /v1/files + /v1/uploads, Anthropic /v1/files, Gemini /upload/v1beta/files + /v1beta/files
+  | "files_create"
+  | "files_list"
+  | "files_get"
+  | "files_delete"
+  | "files_content"
+  | "uploads_create"
+  | "uploads_part"
+  | "uploads_complete"
+  | "uploads_cancel"
+  | "gfiles_upload"
+  | "gfiles_list"
+  | "gfiles_get"
+  | "gfiles_delete";
+
+/** Operations served by the generic raw passthrough (no model, streamed body, stateful objects). */
+export const RAW_OPS: ReadonlySet<Operation> = new Set<Operation>([
+  "files_create",
+  "files_list",
+  "files_get",
+  "files_delete",
+  "files_content",
+  "uploads_create",
+  "uploads_part",
+  "uploads_complete",
+  "uploads_cancel",
+  "gfiles_upload",
+  "gfiles_list",
+  "gfiles_get",
+  "gfiles_delete",
+]);
 
 export interface ParsedPath {
   /** Label stored in RequestLog.endpoint, e.g. "/v1/chat/completions", "/v1beta/models:generateContent". */
@@ -61,6 +92,10 @@ export interface ParsedPath {
   pathStream: boolean;
   /** Body is multipart/form-data. */
   multipart: boolean;
+  /** Generic raw passthrough op (Files APIs): no model, the body is streamed untouched. */
+  raw?: boolean;
+  /** Files APIs: the id the customer used (file id / upload id / Gemini `files/xyz`). */
+  objectId?: string;
 }
 
 /** Normalised token / unit usage of one request. inputTokens is the TOTAL prompt size (cached + cache-write included). */
@@ -106,6 +141,8 @@ export interface AttemptRecord {
   status: number; // upstream http status, 0 = network error / timeout
   error?: string;
   latencyMs: number;
+  /** The client's Idempotency-Key, forwarded upstream unchanged (no gateway-side dedupe, PLAN 9d). */
+  idempotencyKey?: string;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

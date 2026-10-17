@@ -1,6 +1,10 @@
 import type { Candidate } from "./select";
-import { GatewayError, errorFormatFor, geminiStatusFor, type GatewayErrorCode } from "./errors";
-import { encodeMultipart, type ParsedForm } from "./multipart";
+import { GatewayError, anthropicTypeFor, errorFormatFor, geminiStatusFor, type GatewayErrorCode } from "./errors";
+import { pickForwardHeaders, type HeaderSource } from "./headers";
+import { spliceTopLevel, type TopLevelScan } from "./jsonscan";
+import { multipartSegments, type ParsedForm } from "./multipart";
+import { BodySpool, type Segment } from "./spool";
+import type { UpstreamBody } from "./upstream";
 import { buildUpstreamHeaders, buildUpstreamUrl, providerSettings, upstreamOp } from "./providers/adapters";
 import { chatRequestToMessages, messagesRequestToChat } from "./translate";
 import type { ErrorFormat, InboundFormat, Json, JsonObject, Operation, ParsedPath, Usage } from "./types";
@@ -19,6 +23,8 @@ export interface PrepareInput {
   cand: Candidate;
   model: ModelRec;
   body: JsonObject | null;
+  /** The customer's JSON bytes: forwarded byte-identical except the top-level members that change. */
+  jsonRaw?: { spool: BodySpool; scan: TopLevelScan } | null;
   form: ParsedForm | null;
   stream: boolean;
   inboundHeaders: Headers;
@@ -37,9 +43,25 @@ export interface Prepared {
   url: string;
   method: string;
   headers: Record<string, string>;
-  body: string | Buffer | null;
+  /** Buffers / strings can be re-sent on failover; a stream body (large spooled uploads) is created fresh per attempt. */
+  body: UpstreamBody;
   upstreamFormat: InboundFormat;
   upstreamOp: Operation;
+}
+
+/** Spliced body -> a Buffer when small and in memory, else a fresh stream with an explicit content-length. */
+function spliceBody(spool: BodySpool, segments: Segment[]): { body: UpstreamBody; length: number } {
+  const length = BodySpool.lengthOf(segments);
+  const buf = spool.inlineBuffer(segments);
+  return { body: buf ?? spool.stream(segments), length };
+}
+
+/** Top-level members whose value differs between the customer's body and the body we want to send (null = not expressible as a splice). */
+function topLevelChanges(orig: JsonObject, next: JsonObject): Record<string, unknown> | null {
+  const changes: Record<string, unknown> = {};
+  for (const k of Object.keys(orig)) if (!(k in next)) return null; // deletion
+  for (const [k, v] of Object.entries(next)) if (!(k in orig) || orig[k] !== v) changes[k] = v;
+  return changes;
 }
 
 /** Clamp / set the output-token cap for the upstream format. */
@@ -50,7 +72,10 @@ function applyOutputClamp(obj: JsonObject, format: InboundFormat, op: Operation,
   } else if (format === "gemini") {
     if (op === "gemini_generate" || op === "gemini_stream") {
       const snake = !isObject(obj.generationConfig) && isObject(obj.generation_config);
-      const gc = snake ? (obj.generation_config as JsonObject) : isObject(obj.generationConfig) ? obj.generationConfig : (obj.generationConfig = {});
+      // copy before changing: `obj` shares nested objects with the customer's body (and the splice logic compares them)
+      const gc: JsonObject = { ...(snake ? (obj.generation_config as JsonObject) : isObject(obj.generationConfig) ? obj.generationConfig : {}) };
+      if (snake) obj.generation_config = gc;
+      else obj.generationConfig = gc;
       const field = snake ? "max_output_tokens" : "maxOutputTokens";
       const cur = gc[field];
       gc[field] = typeof cur === "number" ? Math.min(cur, limit) : limit;
@@ -83,13 +108,15 @@ export function prepareUpstream(i: PrepareInput): Prepared {
   const op = upstreamOp(path.op, upFormat);
   const ps = providerSettings(provider);
   const tokensParam = maxTokensParamFor(provider);
-  let body: string | Buffer | null = null;
+  let body: UpstreamBody = null;
+  let bodyLength: number | null = null;
   let contentType: string | null = null;
 
   if (i.form) {
-    const enc = encodeMultipart(i.form, { model: route.upstreamModel });
-    body = enc.body;
-    contentType = enc.contentType;
+    // the customer's multipart bytes, forwarded as they are (same boundary / order); only `model` is replaced
+    const segs = multipartSegments(i.form, { model: route.upstreamModel });
+    ({ body, length: bodyLength } = spliceBody(i.form.spool, segs));
+    contentType = i.form.contentType;
   } else if (i.body) {
     let obj: JsonObject;
     switch (plan.mode) {
@@ -128,7 +155,15 @@ export function prepareUpstream(i: PrepareInput): Prepared {
       const known = route.maxOutputTokens ?? model.maxOutput;
       obj.max_tokens = known ? Math.min(i.fillOutput ?? known, known) : Math.min(i.fillOutput ?? 4096, 4096);
     }
-    body = JSON.stringify(obj);
+    // Native passthrough: keep the customer's bytes and only splice the members that changed (model, injected caps ...).
+    // Anything else (translation, overrides, deletions, big replacements) re-serialises.
+    let spliced: Segment[] | null = null;
+    if (i.jsonRaw && plan.mode === "native" && Object.keys(route.paramOverrides).length === 0 && i.body) {
+      const changes = topLevelChanges(i.body, obj);
+      if (changes) spliced = spliceTopLevel(i.jsonRaw.scan, i.jsonRaw.spool.size, changes);
+    }
+    if (spliced && i.jsonRaw) ({ body, length: bodyLength } = spliceBody(i.jsonRaw.spool, spliced));
+    else body = JSON.stringify(obj);
   }
 
   const method =
@@ -138,10 +173,12 @@ export function prepareUpstream(i: PrepareInput): Prepared {
         ? "DELETE"
         : "POST";
   const hasBody = body !== null;
+  const headers = buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: i.stream, keyExtra: key.extra, inbound: i.inboundHeaders, contentType, hasBody, op });
+  if (body !== null && typeof body === "object" && !(body instanceof Uint8Array) && bodyLength !== null) headers["content-length"] = String(bodyLength);
   return {
     url: buildUpstreamUrl({ provider, format: upFormat, op, upstreamModel: route.upstreamModel, stream: i.stream, keyExtra: key.extra, responseId: i.responseId, videoId: i.videoId, query: i.query, secret: i.secret }),
     method,
-    headers: buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: i.stream, keyExtra: key.extra, inbound: i.inboundHeaders, contentType, hasBody, op }),
+    headers,
     body,
     upstreamFormat: upFormat,
     upstreamOp: op,
@@ -268,12 +305,15 @@ const safeId = (v: unknown): string | null => (typeof v === "string" && /^[\w.\-
 const genericClientMessage = (status: number): string =>
   status === 404 ? "The requested resource was not found." : status === 413 ? "The request is too large." : status === 429 ? "Rate limit exceeded." : "The request was rejected as invalid.";
 
+/** Default OpenAI-style error `type` when the upstream document did not carry a usable one. */
+const openaiTypeFor = (status: number): string => (status === 429 ? "rate_limit_error" : status >= 500 ? "server_error" : "invalid_request_error");
+
 /** Rebuild an upstream error JSON in the inbound format from whitelisted, scrubbed fields only. */
 function sanitizedErrorBody(parsed: JsonObject, format: ErrorFormat, status: number, message: string): string {
   const e = isObject(parsed.error) ? parsed.error : parsed;
-  if (format === "anthropic") return JSON.stringify({ type: "error", error: { type: safeId(e.type) ?? "invalid_request_error", message } });
+  if (format === "anthropic") return JSON.stringify({ type: "error", error: { type: safeId(e.type) ?? (status >= 400 && status < 500 && status !== 429 ? "invalid_request_error" : anthropicTypeFor(status)), message } });
   if (format === "gemini") return JSON.stringify({ error: { code: status, message, status: safeId(e.status) ?? geminiStatusFor(status) } });
-  return JSON.stringify({ error: { message, type: safeId(e.type) ?? "invalid_request_error", code: safeId(e.code), param: safeId(e.param) } });
+  return JSON.stringify({ error: { message, type: safeId(e.type) ?? openaiTypeFor(status), code: safeId(e.code), param: safeId(e.param) } });
 }
 
 /**
@@ -302,6 +342,53 @@ export function clientErrorFromUpstream(
     ...(sameShape ? { passthroughBody: sanitizedErrorBody(doc as JsonObject, errorFormatFor(inboundFormat), status, msg) } : {}),
     upstreamStatus: status,
   });
+}
+
+/**
+ * The error the CLIENT gets when every pre-commit attempt failed with an upstream HTTP error (PLAN 9d.1a): the LAST
+ * upstream's real status, its retry-after / rate-limit headers, its request id (as `x-upstream-request-id`) and its
+ * native error document (type / code / message kept, only our identity scrubbed). The gateway `code` is only used
+ * for our own RequestLog; the body the client reads is the upstream's.
+ */
+export function mirrorErrorFromUpstream(
+  status: number,
+  bodyText: string,
+  headers: HeaderSource | Record<string, string>,
+  inboundFormat: InboundFormat,
+  upstreamFormat: InboundFormat,
+  scrub: ScrubContext,
+  opts: { rateLimits: boolean },
+): GatewayError {
+  const parsed = safeJsonParse<Json>(bodyText);
+  const doc = Array.isArray(parsed) && isObject(parsed[0]) ? parsed[0] : parsed;
+  const sameShape = (inboundFormat === upstreamFormat || (inboundFormat.startsWith("openai_") && upstreamFormat.startsWith("openai_"))) && isObject(doc) && (isObject(doc.error) || doc.type === "error");
+  const raw = extractErrorMessage(bodyText).replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  const msg = scrubText(raw || genericUpstreamMessage(status), scrub).slice(0, 1000);
+  const code: GatewayErrorCode = status === 429 ? "rate_limited" : status === 529 ? "upstream_overloaded" : status === 504 || status === 408 ? "upstream_timeout" : "upstream_error";
+  const fwd =
+    typeof (headers as HeaderSource).forEach === "function"
+      ? pickForwardHeaders(headers as HeaderSource, { rateLimits: opts.rateLimits })
+      : (headers as Record<string, string>);
+  return new GatewayError(code, msg, {
+    status,
+    kind: "upstream",
+    headers: fwd,
+    internal: `upstream ${status}: ${bodyText.slice(0, 2000)}`,
+    upstreamStatus: status,
+    ...(sameShape ? { passthroughBody: sanitizedErrorBody(doc as JsonObject, errorFormatFor(inboundFormat), status, msg) } : {}),
+    ...(status === 529 ? { anthropicType: "overloaded_error" } : {}),
+    ...(status === 429 ? { anthropicType: "rate_limit_error" } : {}),
+  });
+}
+
+const genericUpstreamMessage = (status: number): string =>
+  status === 429 ? "Rate limit exceeded. Please retry later." : status === 529 ? "The upstream provider is overloaded. Please retry shortly." : status === 504 || status === 408 ? "The upstream provider timed out." : "The upstream provider returned an error.";
+
+/** The upstream error document equivalent of an in-stream error event (used when a stream fails before the response was committed). */
+export function inbandErrorDocument(upstreamFormat: InboundFormat, e: { status: number; message: string; type?: string }): string {
+  if (upstreamFormat === "anthropic_messages") return JSON.stringify({ type: "error", error: { type: e.type || anthropicTypeFor(e.status), message: e.message } });
+  if (upstreamFormat === "gemini") return JSON.stringify({ error: { code: e.status, message: e.message, status: e.type || geminiStatusFor(e.status) } });
+  return JSON.stringify({ error: { message: e.message, type: e.type || openaiTypeFor(e.status), code: null, param: null } });
 }
 
 const RL_HEADERS = /^(retry-after|retry-after-ms|x-ratelimit-.+|anthropic-ratelimit-.+|ratelimit-.+)$/i;

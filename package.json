@@ -19,6 +19,7 @@
     "setup:live": "tsx scripts/setup-live-providers.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
     "loadtest": "tsx scripts/loadtest.ts",
+    "chaos": "tsx scripts/chaos.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

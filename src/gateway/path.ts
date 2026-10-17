@@ -55,7 +55,7 @@ function decode(s: string): string {
  * Parse a request path into format + operation. Throws GatewayError(not_found | method_not_allowed).
  * Pure: no I/O.
  */
-export function parsePath(pathname: string, method: string): ParsedPath {
+export function parsePath(pathname: string, method: string, headers?: Headers): ParsedPath {
   const m = method.toUpperCase();
   const p = normalizePath(pathname);
 
@@ -68,6 +68,65 @@ export function parsePath(pathname: string, method: string): ParsedPath {
     multipart: false,
     ...over,
   });
+
+  // ---------------- Files APIs (raw passthrough, PLAN 5c) ----------------
+  const raw = (over: Partial<ParsedPath> & Pick<ParsedPath, "endpoint" | "format" | "op">): ParsedPath => base({ raw: true, ...over });
+
+  // Gemini: resumable upload (/upload/v1beta/files) + file resources (/v1beta/files)
+  if (p === "/upload/v1beta/files") {
+    if (m !== "POST" && m !== "PUT") throw methodNotAllowed(m, "POST");
+    return raw({ endpoint: "/upload/v1beta/files", format: "gemini_files", op: "gfiles_upload", errorFormat: "gemini" });
+  }
+  if (p === "/v1beta/files") {
+    if (m !== "GET") throw methodNotAllowed(m, "GET");
+    return raw({ endpoint: "/v1beta/files", format: "gemini_files", op: "gfiles_list", errorFormat: "gemini" });
+  }
+  if (p.startsWith("/v1beta/files/")) {
+    const id = decode(p.slice("/v1beta/files/".length));
+    if (!id || id.includes("/")) throw new GatewayError("not_found");
+    if (m === "GET") return raw({ endpoint: "/v1beta/files/{id}", format: "gemini_files", op: "gfiles_get", errorFormat: "gemini", objectId: `files/${id}` });
+    if (m === "DELETE") return raw({ endpoint: "/v1beta/files/{id}", format: "gemini_files", op: "gfiles_delete", errorFormat: "gemini", objectId: `files/${id}` });
+    throw methodNotAllowed(m, "GET, DELETE");
+  }
+
+  // OpenAI + Anthropic: /v1/files (the Anthropic Files API is told apart by its anthropic-version header)
+  if (p === "/v1/files" || p.startsWith("/v1/files/")) {
+    const anthropic = !!headers?.get("anthropic-version");
+    const format = anthropic ? ("anthropic_files" as const) : ("openai_files" as const);
+    const errorFormat: ErrorFormat = anthropic ? "anthropic" : "openai";
+    if (p === "/v1/files") {
+      if (m === "POST") return raw({ endpoint: "/v1/files", format, op: "files_create", errorFormat });
+      if (m === "GET") return raw({ endpoint: "/v1/files", format, op: "files_list", errorFormat });
+      throw methodNotAllowed(m, "GET, POST");
+    }
+    const parts = p.slice("/v1/files/".length).split("/");
+    const id = decode(parts[0] ?? "");
+    if (!id || parts.length > 2) throw new GatewayError("not_found");
+    if (parts.length === 2) {
+      if (parts[1] !== "content") throw new GatewayError("not_found");
+      if (m !== "GET") throw methodNotAllowed(m, "GET");
+      return raw({ endpoint: "/v1/files/{id}/content", format, op: "files_content", errorFormat, objectId: id });
+    }
+    if (m === "GET") return raw({ endpoint: "/v1/files/{id}", format, op: "files_get", errorFormat, objectId: id });
+    if (m === "DELETE") return raw({ endpoint: "/v1/files/{id}", format, op: "files_delete", errorFormat, objectId: id });
+    throw methodNotAllowed(m, "GET, DELETE");
+  }
+  // OpenAI multipart uploads (files larger than a single request): create -> parts -> complete | cancel
+  if (p === "/v1/uploads" || p.startsWith("/v1/uploads/")) {
+    if (p === "/v1/uploads") {
+      if (m !== "POST") throw methodNotAllowed(m, "POST");
+      return raw({ endpoint: "/v1/uploads", format: "openai_files", op: "uploads_create" });
+    }
+    const parts = p.slice("/v1/uploads/".length).split("/");
+    const id = decode(parts[0] ?? "");
+    const sub = parts[1];
+    if (!id || parts.length !== 2) throw new GatewayError("not_found");
+    if (m !== "POST") throw methodNotAllowed(m, "POST");
+    if (sub === "parts") return raw({ endpoint: "/v1/uploads/{id}/parts", format: "openai_files", op: "uploads_part", objectId: id });
+    if (sub === "complete") return raw({ endpoint: "/v1/uploads/{id}/complete", format: "openai_files", op: "uploads_complete", objectId: id });
+    if (sub === "cancel") return raw({ endpoint: "/v1/uploads/{id}/cancel", format: "openai_files", op: "uploads_cancel", objectId: id });
+    throw new GatewayError("not_found");
+  }
 
   // ---------------- Gemini surface ----------------
   if (p === "/v1beta/models") {
@@ -176,9 +235,10 @@ function methodNotAllowed(got: string, allowed: string): GatewayError {
 }
 
 /** Best-effort error format when the path could not be parsed (so even 404s match the client's SDK). */
-export function guessErrorFormat(pathname: string): ErrorFormat {
+export function guessErrorFormat(pathname: string, headers?: Headers): ErrorFormat {
   const p = normalizePath(pathname);
-  if (p.startsWith("/v1beta/models")) return "gemini";
+  if (p.startsWith("/v1beta/") || p.startsWith("/upload/v1beta/")) return "gemini";
   if (p.startsWith("/v1/messages")) return "anthropic";
+  if (p.startsWith("/v1/files") && headers?.get("anthropic-version")) return "anthropic";
   return "openai";
 }

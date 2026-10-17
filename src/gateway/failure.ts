@@ -10,10 +10,22 @@ export interface Failure {
   retryAfterSec?: number;
   rlHeaders?: Record<string, string>;
   internal: string;
+  /**
+   * The upstream's own HTTP error, prepared for the client (PLAN 9d.1a): real status, retry-after / rate-limit headers,
+   * request id and native error document (identity scrubbed). Present for 408 / 429 / 5xx answers (and for an error
+   * event that arrived before the stream was committed).
+   */
+  mirror?: GatewayError;
 }
 
-/** Customer-facing error once attempts are exhausted (never reveals upstream identity). */
+/**
+ * Error returned to the client once every pre-commit attempt failed. An upstream HTTP error is MIRRORED (status, headers,
+ * error document of the LAST upstream answer); only failures without an upstream answer (connect error, timeout, no
+ * usable key) and our own credential problems (401 / 402 / 403 from the upstream account, which would be misread as
+ * the customer's key being wrong) get a gateway-authored native error.
+ */
 export function finalError(f: Failure, settings: Pick<SettingValues, "passUpstreamRateLimits">): GatewayError {
+  if (f.mirror) return f.mirror;
   let code: GatewayErrorCode;
   let opts: ConstructorParameters<typeof GatewayError>[2] = { internal: `${f.status || "network"} ${f.fk}: ${f.internal}`.slice(0, 4000), upstreamStatus: f.status || undefined };
   switch (f.fk) {

@@ -212,6 +212,11 @@ export class ChatToAnthropicStream implements StreamProcessor {
   private closed = false;
   private err: { status: number; message: string; type?: string } | null = null;
 
+  private scrub: ((t: string) => string) | null = null;
+  setScrub(fn: (t: string) => string): void {
+    this.scrub = fn;
+  }
+
   constructor(private readonly publicModel: string) {}
 
   private start(out: string[]): void {
@@ -258,8 +263,12 @@ export class ChatToAnthropicStream implements StreamProcessor {
     const d = safeJsonParse<Json>(ev.data);
     if (!isObject(d)) return [];
     if (isObject(d.error)) {
-      this.err = { status: Number(d.error.code) >= 400 ? Number(d.error.code) : 502, message: String(d.error.message ?? "upstream error"), type: String(d.error.type ?? "") };
-      return [];
+      // the upstream's error is forwarded as an Anthropic error event (same status class, same message)
+      const status = Number(d.error.code) >= 400 ? Number(d.error.code) : 502;
+      const message = String(d.error.message ?? "upstream error");
+      this.err = { status, message, type: String(d.error.type ?? "") };
+      const type = status === 400 || status === 422 ? "invalid_request_error" : status === 401 ? "authentication_error" : status === 403 ? "permission_error" : status === 404 ? "not_found_error" : status === 413 ? "request_too_large" : status === 429 ? "rate_limit_error" : status === 529 ? "overloaded_error" : "api_error";
+      return [sseEvent({ type: "error", error: { type, message: this.scrub ? this.scrub(message) : message } }, "error")];
     }
     const out: string[] = [];
     if (typeof d.id === "string" && !this.started) this.id = `msg_${d.id.replace(/^chatcmpl-/, "")}`;
@@ -323,8 +332,10 @@ export class ChatToAnthropicStream implements StreamProcessor {
   }
 
   onEnd(): string[] {
-    // upstream closed without [DONE]: still terminate the Anthropic stream cleanly if it had started
-    return this.started && !this.closed && !this.err ? this.finalize() : [];
+    // The upstream closed. When it had already sent its finish_reason (only the [DONE] sentinel is missing) the Anthropic
+    // stream is closed properly; WITHOUT a finish_reason the stream is cut short and nothing is invented (the session
+    // then drops the client connection, PLAN 9d).
+    return this.started && !this.closed && !this.err && this.finish !== null ? this.finalize() : [];
   }
   usage(): Usage | null {
     return this.sawUsage ? this._usage : null;
