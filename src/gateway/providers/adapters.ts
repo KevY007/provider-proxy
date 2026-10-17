@@ -1,0 +1,219 @@
+import type { InboundFormat, JsonObject, Operation } from "../types";
+
+/**
+ * Provider adapters: URL + header construction for every upstream wire surface.
+ * (Body shaping lives in the pipeline: model substitution, paramOverrides, translators.)
+ *
+ * URL conventions (docs/FOUNDATION.md):
+ *   - OpenAI-compatible: provider.baseUrl INCLUDES the version segment (".../v1") and we append "/chat/completions" etc.
+ *   - Google: baseUrl is the origin. Native: <origin>/v1beta/models/{m}:{action}; OpenAI-compat: <origin>/v1beta/openai/*.
+ *   - Anthropic: settings.anthropicBaseUrl (origin) else baseUrl (a trailing "/v1" is stripped); we append "/v1/messages".
+ *   - Gemini on non-Google providers: settings.geminiBaseUrl (origin or origin + "/v1beta"; "/v1beta" is stripped).
+ *   - Azure: baseUrl is the resource origin; deployment = key.extra.deployments[model] ?? upstreamModel.
+ */
+export interface AdapterProvider {
+  slug: string;
+  preset: string;
+  baseUrl: string;
+  authStyle: "BEARER" | "X_API_KEY" | "X_GOOG_API_KEY" | "AZURE_API_KEY" | "QUERY_KEY";
+  tags: readonly string[];
+  extraHeaders: Record<string, string>;
+  settings: JsonObject;
+}
+
+export interface UpstreamTarget {
+  url: string;
+  headers: Record<string, string>;
+}
+
+type Surface = "openai" | "anthropic" | "gemini";
+
+export function surfaceOf(format: InboundFormat): Surface {
+  if (format === "anthropic_messages") return "anthropic";
+  if (format === "gemini") return "gemini";
+  return "openai";
+}
+
+const trimSlash = (s: string) => s.replace(/\/+$/, "");
+
+const OPENAI_SUFFIX: Partial<Record<Operation, string>> = {
+  chat: "/chat/completions",
+  completions: "/completions",
+  responses: "/responses",
+  embeddings: "/embeddings",
+  images_generations: "/images/generations",
+  images_edits: "/images/edits",
+  images_variations: "/images/variations",
+  audio_speech: "/audio/speech",
+  audio_transcriptions: "/audio/transcriptions",
+  audio_translations: "/audio/translations",
+  moderations: "/moderations",
+};
+
+const GEMINI_ACTION: Partial<Record<Operation, string>> = {
+  gemini_generate: "generateContent",
+  gemini_stream: "streamGenerateContent",
+  gemini_count_tokens: "countTokens",
+  gemini_embed: "embedContent",
+  gemini_batch_embed: "batchEmbedContents",
+};
+
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
+
+export interface UrlInput {
+  provider: AdapterProvider;
+  /** Wire format spoken to the upstream (after translation). */
+  format: InboundFormat;
+  op: Operation;
+  upstreamModel: string;
+  stream: boolean;
+  keyExtra?: JsonObject;
+  /** For Responses lookups: response id. */
+  responseId?: string;
+  /** Secret, only used for QUERY_KEY auth. */
+  secret?: string;
+}
+
+/** Operation as seen on the upstream wire (translated chat <-> messages share the "chat"/"messages" ops). */
+export function upstreamOp(inboundOp: Operation, upstream: InboundFormat): Operation {
+  if (inboundOp === "chat" && upstream === "anthropic_messages") return "messages";
+  if (inboundOp === "messages" && upstream === "openai_chat") return "chat";
+  if (inboundOp === "messages_count_tokens" && upstream === "openai_chat") return "chat";
+  return inboundOp;
+}
+
+export function buildUpstreamUrl(i: UrlInput): string {
+  const { provider: p, format, op } = i;
+  const s = p.settings;
+  let url: string;
+
+  if (format === "anthropic_messages") {
+    const root = trimSlash(str(s.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "");
+    url = `${root}/v1/messages${op === "messages_count_tokens" ? "/count_tokens" : ""}`;
+  } else if (format === "gemini") {
+    const root = trimSlash(str(s.geminiBaseUrl) ?? p.baseUrl).replace(/\/v1(beta)?$/, "");
+    const action = GEMINI_ACTION[op];
+    if (!action) throw new Error(`no gemini action for op ${op}`);
+    const m = i.upstreamModel.replace(/^models\//, "");
+    url = `${root}/v1beta/models/${encodeURIComponent(m)}:${action}`;
+    if (op === "gemini_stream") url += "?alt=sse";
+  } else if (p.preset === "azure" || p.authStyle === "AZURE_API_KEY") {
+    const root = trimSlash(p.baseUrl);
+    const version = str(s.azureApiVersion) ?? "2025-04-01-preview";
+    if (op === "responses" || op.startsWith("responses_")) {
+      const id = i.responseId ? `/${encodeURIComponent(i.responseId)}` : "";
+      const tail = op === "responses_cancel" ? "/cancel" : op === "responses_input_items" ? "/input_items" : "";
+      url = `${root}/openai/v1/responses${id}${tail}?api-version=${encodeURIComponent(str(s.azureResponsesApiVersion) ?? "preview")}`;
+    } else {
+      const deployments = (i.keyExtra?.deployments ?? {}) as Record<string, string>;
+      const deployment = deployments[i.upstreamModel] ?? i.upstreamModel;
+      const suffix = OPENAI_SUFFIX[op];
+      if (!suffix) throw new Error(`no azure path for op ${op}`);
+      url = `${root}/openai/deployments/${encodeURIComponent(deployment)}${suffix}?api-version=${encodeURIComponent(version)}`;
+    }
+  } else {
+    // OpenAI-compatible surface
+    let root: string;
+    if (p.preset === "google") root = `${trimSlash(p.baseUrl).replace(/\/v1(beta)?$/, "")}/v1beta/openai`;
+    else root = trimSlash(str(s.openaiBaseUrl) ?? p.baseUrl);
+    if (op.startsWith("responses_")) {
+      const id = encodeURIComponent(i.responseId ?? "");
+      const tail = op === "responses_cancel" ? "/cancel" : op === "responses_input_items" ? "/input_items" : "";
+      url = `${root}/responses/${id}${tail}`;
+    } else {
+      const suffix = OPENAI_SUFFIX[op];
+      if (!suffix) throw new Error(`no openai path for op ${op}`);
+      url = `${root}${suffix}`;
+    }
+  }
+
+  if (p.authStyle === "QUERY_KEY" && i.secret) {
+    url += (url.includes("?") ? "&" : "?") + `key=${encodeURIComponent(i.secret)}`;
+  }
+  return url;
+}
+
+export interface HeaderInput {
+  provider: AdapterProvider;
+  format: InboundFormat;
+  secret: string;
+  stream: boolean;
+  keyExtra?: JsonObject;
+  /** Headers of the inbound customer request (only whitelisted ones are forwarded). */
+  inbound?: Headers;
+  /** multipart: pass the original content-type (with boundary); otherwise JSON. */
+  contentType?: string | null;
+  hasBody?: boolean;
+  /** Anthropic-version header chosen by the caller (inbound value or default). */
+}
+
+function authHeaders(provider: AdapterProvider, surface: Surface, secret: string): Record<string, string> {
+  const bearer = { authorization: `Bearer ${secret}` };
+  switch (provider.authStyle) {
+    case "QUERY_KEY":
+      return {};
+    case "AZURE_API_KEY":
+      return { "api-key": secret };
+    case "X_API_KEY":
+      return surface === "gemini" ? { "x-api-key": secret, "x-goog-api-key": secret } : { "x-api-key": secret };
+    case "X_GOOG_API_KEY":
+      return surface === "openai" ? { ...bearer, "x-goog-api-key": secret } : { "x-goog-api-key": secret };
+    case "BEARER":
+    default:
+      // relays often accept only one style per surface: send the native one in addition to Bearer
+      if (surface === "anthropic") return { ...bearer, "x-api-key": secret };
+      if (surface === "gemini") return { ...bearer, "x-goog-api-key": secret };
+      return bearer;
+  }
+}
+
+export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
+  const { provider: p } = i;
+  const surface = surfaceOf(i.format);
+  const h: Record<string, string> = {
+    accept: i.stream ? "text/event-stream" : "application/json",
+    "user-agent": "ProviderProxy/1.0",
+  };
+  if (i.hasBody !== false) h["content-type"] = i.contentType || "application/json";
+
+  if (surface === "anthropic") {
+    h["anthropic-version"] = i.inbound?.get("anthropic-version") || str(p.settings.anthropicVersion) || "2023-06-01";
+    const beta = i.inbound?.get("anthropic-beta");
+    if (beta) h["anthropic-beta"] = beta;
+  }
+  if (surface === "openai") {
+    const beta = i.inbound?.get("openai-beta");
+    if (beta) h["openai-beta"] = beta;
+    const org = str(i.keyExtra?.organization) ?? str(i.keyExtra?.org);
+    const project = str(i.keyExtra?.project);
+    if (org) h["openai-organization"] = org;
+    if (project) h["openai-project"] = project;
+  }
+  // test hook: let load tests steer the mock upstream (x-mock-delay-ms ...) - only for providers tagged "mock"
+  if (i.inbound && p.tags.includes("mock")) {
+    i.inbound.forEach((v, k) => {
+      if (k.startsWith("x-mock-")) h[k] = v;
+    });
+  }
+
+  Object.assign(h, p.extraHeaders);
+  const extraKeyHeaders = i.keyExtra?.headers;
+  if (extraKeyHeaders && typeof extraKeyHeaders === "object") {
+    for (const [k, v] of Object.entries(extraKeyHeaders as Record<string, unknown>)) if (typeof v === "string") h[k.toLowerCase()] = v;
+  }
+  // auth last: admin extraHeaders can never clobber the credential
+  Object.assign(h, authHeaders(p, surface, i.secret));
+  return h;
+}
+
+/** Typed accessors for Provider.settings. */
+export function providerSettings(p: { settings: JsonObject }) {
+  const s = p.settings;
+  return {
+    stripFields: Array.isArray(s.stripFields) ? (s.stripFields as unknown[]).filter((x): x is string => typeof x === "string") : [],
+    forceStreamUsage: s.forceStreamUsage !== false,
+    maxTokensParam: s.maxTokensParam === "max_completion_tokens" ? ("max_completion_tokens" as const) : s.maxTokensParam === "max_tokens" ? ("max_tokens" as const) : undefined,
+  };
+}
