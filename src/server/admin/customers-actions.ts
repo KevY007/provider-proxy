@@ -8,6 +8,7 @@ import { audit } from "@/lib/audit";
 import { createSession, revokeAllSessions } from "@/lib/auth/session";
 import { RESET_TOKEN_TTL_MS, createVerificationToken, grantTrialCredit } from "@/lib/auth/service";
 import { db } from "@/lib/db";
+import { formatUSD } from "@/lib/money";
 import { emailTemplates, sendTemplate } from "@/lib/email";
 import { adminAction, ActionFail, parseInput } from "./action";
 import { adjustBalanceSchema, canManageTarget, customerSettingsSchema } from "./customers-calc";
@@ -119,7 +120,7 @@ export async function adjustCustomerBalance(input: unknown) {
     try {
       const res = await mod.adminAdjustBalance(admin.id, d.userId, d.amount, d.reason);
       await invalidateGatewayConfig("users", d.userId);
-      return { message: `Balance adjusted. New balance: $${res.balance.toFixed(4)}` };
+      return { message: `Balance adjusted. New balance: ${formatUSD(res.balance)}` };
     } catch (err) {
       if (err instanceof Error && err.name === "LedgerError") throw new ActionFail(err.message, { amount: err.message });
       throw err;

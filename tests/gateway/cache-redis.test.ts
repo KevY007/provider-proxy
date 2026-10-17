@@ -57,7 +57,9 @@ describe.skipIf(!up)("config invalidation over Redis pub/sub", () => {
     await other.publish("config:invalidate", "users:user_1");
     await other.publish("config:invalidate", "models");
     await other.publish("config:invalidate", "provider:prov_9"); // alias spelling used by other agents
-    expect(await until(() => seen.length >= 4)).toBe(true);
+    // other processes (dev servers, other agents) share this Redis: wait for OUR four messages, not for any four
+    const gotAll = () => ["apiKeys", "users", "models", "providers"].every((scope) => seen.some(([s]) => s === scope));
+    expect(await until(gotAll)).toBe(true);
     expect(seen).toEqual(expect.arrayContaining([["apiKeys", "key_abc"], ["users", "user_1"], ["models", undefined], ["providers", "prov_9"]]));
   });
 

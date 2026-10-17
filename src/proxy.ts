@@ -9,6 +9,8 @@ import { NextResponse, type NextRequest } from "next/server";
  * Intentionally does NOT match /v1/*, /v1beta/*, /api/* (the gateway authenticates by API key).
  */
 const SESSION_COOKIE = "pp_session";
+/** Request header carrying the original path+query (see requireUser in lib/auth/session.ts). */
+const REQUEST_PATH_HEADER = "x-pp-path";
 const THIRTY_DAYS = 30 * 24 * 60 * 60;
 
 export function proxy(request: NextRequest) {
@@ -22,7 +24,10 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(url);
   }
 
-  const res = NextResponse.next();
+  // let requireUser()/requireAdmin() send an expired-session visitor back to the exact page they asked for
+  const forwarded = new Headers(request.headers);
+  forwarded.set(REQUEST_PATH_HEADER, pathname + search);
+  const res = NextResponse.next({ request: { headers: forwarded } });
   // rolling cookie lifetime (DB expiry is rolled in getSession)
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

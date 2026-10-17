@@ -89,6 +89,8 @@ interface MockState {
   byPath: Map<string, number>;
   last: Map<string, LastRequest>;
   responses: Map<string, Obj>;
+  /** fal / Replicate / video job state (created lazily) */
+  extras?: MockExtras;
 }
 
 function createState(): MockState {
@@ -132,6 +134,7 @@ function resetState(state: MockState): void {
   state.byPath = new Map();
   state.last = new Map();
   state.responses = new Map();
+  state.extras = undefined;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1137,12 +1140,351 @@ function handleGeminiModels(ctx: Ctx, model?: string): void {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// fal.ai / Replicate / OpenAI-style videos (for the live-provider adapters)
+//
+//   fal sync   : POST /fal/<model>                       (Authorization: Key <k>)   -> { images: [{ url }] }
+//   fal queue  : POST /fal-queue/<model>                 -> { request_id, status_url, response_url }
+//                GET  /fal-queue/<app>/requests/<id>/status -> IN_QUEUE, IN_PROGRESS, COMPLETED
+//                GET  /fal-queue/<app>/requests/<id>        -> result
+//   Replicate  : POST /replicate/v1/models/<owner>/<name>/predictions  (Authorization: Bearer <t>, Prefer: wait)
+//                POST /replicate/v1/predictions {version,input} ; GET /replicate/v1/predictions/<id> ; GET .../account
+//   videos     : POST /v1/videos, GET /v1/videos[/<id>[/content]], DELETE /v1/videos/<id>   (Bearer)
+//   images     : GET /__mock/img/<n>.png  (no auth; what the fal/Replicate result URLs point to)
+// Prompt markers: [[sync504]] fal sync answers 504 (adapter falls back to the queue) · [[slowpred]] Replicate does not
+// finish within Prefer: wait · [[predfail]] / [[prednsfw]] Replicate failure · [[vidfail]] video ends failed ·
+// [[delay:N]] sleeps N ms · [[fal422]] / [[pred422]] validation errors. Fault keys work as everywhere else.
+// ---------------------------------------------------------------------------------------------------------------------
+
+interface MockVideo {
+  id: string;
+  model: string;
+  prompt: string;
+  seconds: string;
+  size: string;
+  polls: number;
+  fail: boolean;
+  redirect: boolean;
+  createdAt: number;
+  deleted: boolean;
+}
+interface MockQueueJob {
+  id: string;
+  app: string;
+  model: string;
+  input: Obj;
+  polls: number;
+}
+interface MockPrediction {
+  id: string;
+  model: string;
+  version: string | null;
+  input: Obj;
+  polls: number;
+  mode: "ok" | "fail" | "nsfw";
+}
+interface MockExtras {
+  videos: Map<string, MockVideo>;
+  falJobs: Map<string, MockQueueJob>;
+  predictions: Map<string, MockPrediction>;
+}
+
+const MOCK_PNG = Buffer.from(PNG_1X1, "base64");
+const MOCK_MP4 = Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypmp42"), Buffer.alloc(4096, 0x61)]);
+
+const originOf = (ctx: Ctx) => `http://${ctx.req.headers.host ?? "127.0.0.1"}`;
+
+function extraMarkers(src: string) {
+  return {
+    delay: Number(/\[\[delay:(\d+)\]\]/.exec(src)?.[1] ?? 0),
+    sync504: /\[\[sync504\]\]/.test(src),
+    slowpred: /\[\[slowpred\]\]/.test(src),
+    predfail: /\[\[predfail\]\]/.test(src),
+    prednsfw: /\[\[prednsfw\]\]/.test(src),
+    vidfail: /\[\[vidfail\]\]/.test(src),
+    vidredirect: /\[\[vidredirect\]\]/.test(src),
+    fal422: /\[\[fal422\]\]/.test(src),
+    pred422: /\[\[pred422\]\]/.test(src),
+  };
+}
+
+type ExtraKind = "fal" | "fal-queue" | "replicate" | "videos" | "img";
+
+function extraKindOf(path: string): ExtraKind | null {
+  if (path.startsWith("/fal-queue/")) return "fal-queue";
+  if (path.startsWith("/fal/")) return "fal";
+  if (path.startsWith("/replicate/")) return "replicate";
+  if (path === "/v1/videos" || path.startsWith("/v1/videos/")) return "videos";
+  if (path.startsWith("/__mock/img/") || path.startsWith("/__mock/media/")) return "img";
+  return null;
+}
+
+/** Errors in each vendor's own shape. */
+function extraError(ctx: Ctx, kind: ExtraKind, status: number, message: string, headers: Record<string, string> = {}): void {
+  if (kind === "videos") {
+    const map: Record<number, ErrKind> = { 400: "invalid_request", 401: "auth", 404: "not_found", 429: "rate_limit", 500: "server" };
+    return sendError(ctx, map[status] ?? "server", message, headers);
+  }
+  if (kind === "replicate") {
+    const title = status === 401 ? "Unauthenticated" : status === 404 ? "The specified resource does not exist" : status === 422 ? "Invalid version or not permitted" : status === 429 ? "Request was throttled" : "Error";
+    return sendJson(ctx, status, { title, detail: message, status }, headers);
+  }
+  // fal: { detail: "..." } or { detail: [{ loc, msg, type }] } for validation
+  if (status === 422) return sendJson(ctx, 422, { detail: [{ loc: ["body", "prompt"], msg: message, type: "value_error" }] }, headers);
+  sendJson(ctx, status, { detail: message }, headers);
+}
+
+/** Send bytes with Range support (206 + content-range), like a CDN would. */
+function sendBytes(ctx: Ctx, data: Buffer, type: string): void {
+  const res = ctx.res;
+  if (res.headersSent || res.destroyed) return;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(ctx.req.headers.range ?? ""));
+  if (range && (range[1] || range[2])) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, data.length - Number(range[2]));
+    const end = range[1] && range[2] ? Math.min(Number(range[2]), data.length - 1) : data.length - 1;
+    res.writeHead(206, { "content-type": type, "content-length": end - start + 1, "content-range": `bytes ${start}-${end}/${data.length}`, "accept-ranges": "bytes" });
+    return void res.end(data.subarray(start, end + 1));
+  }
+  res.writeHead(200, { "content-type": type, "content-length": data.length, "accept-ranges": "bytes" });
+  res.end(data);
+}
+
+function falImageResult(ctx: Ctx, input: Obj): Obj {
+  const n = Math.min(4, Math.max(1, Math.floor(Number(input.num_images ?? 1)) || 1));
+  const size = isObj(input.image_size) ? input.image_size : null;
+  return {
+    images: Array.from({ length: n }, (_, i) => ({
+      url: `${originOf(ctx)}/__mock/img/${rid()}-${i}.png`,
+      width: Number(size?.width ?? 1024),
+      height: Number(size?.height ?? 1024),
+      content_type: "image/png",
+    })),
+    timings: { inference: 0.4 },
+    seed: Number(input.seed ?? 42),
+    has_nsfw_concepts: Array.from({ length: n }, () => false),
+    prompt: String(input.prompt ?? ""),
+  };
+}
+
+async function handleExtra(ctx: Ctx, kind: ExtraKind, raw: Buffer): Promise<void> {
+  const { req, path } = ctx;
+  const method = (req.method ?? "GET").toUpperCase();
+  const ex = (ctx.state.extras ??= { videos: new Map(), falJobs: new Map(), predictions: new Map() });
+
+  // unauthenticated static bytes (what result URLs / CDN redirects point to)
+  if (kind === "img") {
+    const res = ctx.res;
+    if (res.headersSent || res.destroyed) return;
+    if (path.startsWith("/__mock/media/")) return sendBytes(ctx, MOCK_MP4, "video/mp4");
+    res.writeHead(200, { "content-type": "image/png", "content-length": MOCK_PNG.length });
+    return void res.end(MOCK_PNG);
+  }
+
+  // ---- auth: fal = "Key", Replicate/videos = "Bearer"
+  const auth = typeof req.headers.authorization === "string" ? req.headers.authorization : "";
+  const m = /^(Key|Bearer)\s+(.+)$/i.exec(auth);
+  const wantScheme = kind === "fal" || kind === "fal-queue" ? "key" : "bearer";
+  if (!m) return extraError(ctx, kind, 401, kind === "videos" ? authMessage("openai") : "missing credentials");
+  const cred = m[2].trim();
+  if (m[1].toLowerCase() !== wantScheme) return extraError(ctx, kind, 401, `wrong auth scheme '${m[1]}' (expected ${wantScheme})`);
+  if (cred.includes("slow") && !(await sleep(ctx, 1500))) return;
+  if (cred.includes("bad")) return extraError(ctx, kind, 401, kind === "fal" || kind === "fal-queue" ? "invalid key credentials" : "Incorrect API key provided.");
+  if (cred.includes("fail429")) return extraError(ctx, kind, 429, "Rate limit exceeded (mock fail429 key).", { "retry-after": "2" });
+  if (cred.includes("fail500")) return extraError(ctx, kind, 500, "Internal server error (mock fail500 key).");
+
+  let body: Obj = {};
+  let multipart: Multipart | null = null;
+  if (method === "POST") {
+    try {
+      const parsed = parseBody(raw, String(req.headers["content-type"] ?? ""));
+      body = parsed.json ?? {};
+      multipart = parsed.multipart;
+    } catch (e) {
+      return extraError(ctx, kind, 400, e instanceof BadBody ? e.message : "Invalid request body");
+    }
+  }
+
+  // ---------------------------------------------------------------- fal sync
+  if (kind === "fal") {
+    if (method === "GET" && path === "/fal/__ping") return sendJson(ctx, 200, { ok: true });
+    if (method !== "POST") return extraError(ctx, kind, 405, "Method not allowed");
+    const model = path.slice("/fal/".length);
+    const prompt = String(body.prompt ?? "");
+    const mk = extraMarkers(prompt);
+    if (!prompt) return extraError(ctx, kind, 422, "field required");
+    if (mk.fal422) return extraError(ctx, kind, 422, "image_size is not valid for this model");
+    if (mk.delay && !(await sleep(ctx, mk.delay))) return;
+    if (mk.sync504) return extraError(ctx, kind, 504, "Gateway timeout");
+    void model;
+    return sendJson(ctx, 200, falImageResult(ctx, body));
+  }
+
+  // ---------------------------------------------------------------- fal queue
+  if (kind === "fal-queue") {
+    const jobRe = /^\/fal-queue\/(.+?)\/requests\/([^/]+)(?:\/(status|cancel))?$/.exec(path);
+    if (jobRe) {
+      const job = ex.falJobs.get(jobRe[2]);
+      if (!job) return sendJson(ctx, 404, jobRe[3] === "status" ? { status: "NOT_FOUND" } : { detail: "Request not found" });
+      if (jobRe[3] === "cancel") return sendJson(ctx, 200, { status: "CANCELLATION_REQUESTED" });
+      if (jobRe[3] === "status") {
+        job.polls++;
+        const status = job.polls <= 1 ? "IN_QUEUE" : job.polls === 2 ? "IN_PROGRESS" : "COMPLETED";
+        return sendJson(ctx, 200, { status, request_id: job.id, ...(status === "IN_QUEUE" ? { queue_position: 0 } : {}) });
+      }
+      if (job.polls < 3) return sendJson(ctx, 400, { detail: "Request is still in progress" });
+      if (/video|kling|veo|wan/.test(job.model)) {
+        if (extraMarkers(String(job.input.prompt ?? "")).vidfail) return sendJson(ctx, 422, { detail: [{ loc: ["body", "prompt"], msg: "Content policy violation", type: "content_policy_violation" }] });
+        return sendJson(ctx, 200, { video: { url: `${originOf(ctx)}/__mock/media/fal-${job.id}.mp4`, content_type: "video/mp4", file_name: "out.mp4" }, seed: 1 });
+      }
+      return sendJson(ctx, 200, falImageResult(ctx, job.input));
+    }
+    if (method !== "POST") return extraError(ctx, "fal", 405, "Method not allowed");
+    const model = path.slice("/fal-queue/".length);
+    if (!String(body.prompt ?? "")) return extraError(ctx, "fal", 422, "field required");
+    const id = randomUUID();
+    const app = model.split("/").slice(0, 2).join("/");
+    ex.falJobs.set(id, { id, app, model, input: body, polls: 0 });
+    const o = originOf(ctx);
+    return sendJson(ctx, 200, {
+      request_id: id,
+      response_url: `${o}/fal-queue/${app}/requests/${id}`,
+      status_url: `${o}/fal-queue/${app}/requests/${id}/status`,
+      cancel_url: `${o}/fal-queue/${app}/requests/${id}/cancel`,
+    });
+  }
+
+  // ---------------------------------------------------------------- Replicate
+  if (kind === "replicate") {
+    const base = "/replicate/v1";
+    const predObj = (p: MockPrediction, status: "starting" | "processing" | "succeeded" | "failed"): Obj => {
+      const o = originOf(ctx);
+      const n = Math.min(4, Math.max(1, Math.floor(Number(p.input.num_outputs ?? 1)) || 1));
+      return {
+        id: p.id,
+        model: p.model,
+        version: p.version ?? "mockversion",
+        input: p.input,
+        logs: "",
+        output: status === "succeeded" ? Array.from({ length: n }, (_, i) => `${o}/__mock/img/${p.id}-${i}.png`) : null,
+        data_removed: false,
+        error: status === "failed" ? (p.mode === "nsfw" ? "NSFW content detected. Try a different prompt." : "CUDA out of memory (mock)") : null,
+        status,
+        created_at: new Date().toISOString(),
+        urls: { get: `${o}${base}/predictions/${p.id}`, cancel: `${o}${base}/predictions/${p.id}/cancel`, stream: `${o}${base}/predictions/${p.id}/stream` },
+        metrics: status === "succeeded" ? { predict_time: 0.5 } : {},
+      };
+    };
+    if (method === "GET" && path === `${base}/account`) return sendJson(ctx, 200, { type: "organization", username: "mock", name: null, avatar_url: null, github_url: null });
+    const predRe = /^\/replicate\/v1\/predictions\/([^/]+)(?:\/(cancel))?$/.exec(path);
+    if (predRe) {
+      const p = ex.predictions.get(predRe[1]);
+      if (!p) return extraError(ctx, kind, 404, "The requested resource could not be found.");
+      if (predRe[2] === "cancel") return sendJson(ctx, 200, predObj(p, "failed"));
+      p.polls++;
+      if (p.mode !== "ok") return sendJson(ctx, 200, predObj(p, "failed"));
+      return sendJson(ctx, 200, predObj(p, p.polls >= 2 ? "succeeded" : "processing"));
+    }
+    const modelRe = /^\/replicate\/v1\/models\/([^/]+)\/([^/]+)\/predictions$/.exec(path);
+    if (method === "POST" && (modelRe || path === `${base}/predictions`)) {
+      const input = isObj(body.input) ? body.input : null;
+      if (!input) return extraError(ctx, kind, 422, "input: Field required");
+      const prompt = String(input.prompt ?? "");
+      const mk = extraMarkers(prompt);
+      if (mk.pred422) return extraError(ctx, kind, 422, "aspect_ratio must be one of the allowed values");
+      if (mk.delay && !(await sleep(ctx, mk.delay))) return;
+      const model = modelRe ? `${modelRe[1]}/${modelRe[2]}` : "pinned/version";
+      const version = path === `${base}/predictions` ? String(body.version ?? "") : null;
+      if (path === `${base}/predictions` && !version) return extraError(ctx, kind, 422, "version: Field required");
+      const p: MockPrediction = { id: rid(), model, version, input, polls: 0, mode: mk.prednsfw ? "nsfw" : mk.predfail ? "fail" : "ok" };
+      ex.predictions.set(p.id, p);
+      const wait = /wait/i.test(String(req.headers.prefer ?? ""));
+      if (wait && !mk.slowpred) {
+        if (p.mode !== "ok") return sendJson(ctx, 201, predObj(p, "failed"));
+        return sendJson(ctx, 201, predObj(p, "succeeded"));
+      }
+      return sendJson(ctx, 201, predObj(p, "starting"));
+    }
+    return extraError(ctx, kind, 404, `Unknown request URL: ${method} ${path}`);
+  }
+
+  // ---------------------------------------------------------------- videos (OpenAI Sora shape)
+  const vidObj = (v: MockVideo): Obj => {
+    const done = v.polls >= 2;
+    const failed = done && v.fail;
+    const status = failed ? "failed" : done ? "completed" : v.polls === 1 ? "in_progress" : "queued";
+    return {
+      id: v.id,
+      object: "video",
+      model: v.model,
+      status,
+      progress: done ? (failed ? 0 : 100) : v.polls === 1 ? 50 : 0,
+      created_at: Math.floor(v.createdAt / 1000),
+      completed_at: done && !failed ? nowSec() : null,
+      expires_at: done && !failed ? nowSec() + 3600 : null,
+      error: failed ? { code: "moderation_blocked", message: "Your request was blocked by our moderation system." } : null,
+      remixed_from_video_id: null,
+      seconds: v.seconds,
+      size: v.size,
+    };
+  };
+  if (path === "/v1/videos") {
+    if (method === "GET") {
+      const data = [...ex.videos.values()].filter((v) => !v.deleted).map(vidObj);
+      return sendJson(ctx, 200, { object: "list", data, first_id: data[0]?.id ?? null, last_id: data[data.length - 1]?.id ?? null, has_more: false });
+    }
+    const fields: Record<string, unknown> = multipart ? { ...multipart.fields } : body;
+    const model = asStr(fields.model);
+    const prompt = asStr(fields.prompt);
+    if (!model) return sendError(ctx, "invalid_request", "Missing required parameter: 'model'.");
+    if (!prompt) return sendError(ctx, "invalid_request", "Missing required parameter: 'prompt'.");
+    const seconds = fields.seconds === undefined ? "4" : String(fields.seconds);
+    if (!["4", "8", "12"].includes(seconds)) return sendError(ctx, "invalid_request", "Invalid value for 'seconds': must be one of 4, 8, 12.");
+    const mk = extraMarkers(prompt);
+    if (mk.delay && !(await sleep(ctx, mk.delay))) return;
+    const v: MockVideo = {
+      id: `video_mock_${rid()}`,
+      model,
+      prompt,
+      seconds,
+      size: asStr(fields.size) ?? "720x1280",
+      polls: 0,
+      fail: mk.vidfail,
+      redirect: mk.vidredirect,
+      createdAt: Date.now(),
+      deleted: false,
+    };
+    ex.videos.set(v.id, v);
+    return sendJson(ctx, 200, vidObj(v));
+  }
+  const vm = /^\/v1\/videos\/([^/]+)(?:\/(content))?$/.exec(path);
+  const v = vm ? ex.videos.get(decodeURIComponent(vm[1])) : undefined;
+  if (!vm || !v || v.deleted) return sendError(ctx, "not_found", `Video with id '${vm?.[1] ?? ""}' not found.`);
+  if (method === "DELETE") {
+    v.deleted = true;
+    return sendJson(ctx, 200, { id: v.id, object: "video.deleted", deleted: true });
+  }
+  if (vm[2] === "content") {
+    if (v.polls < 2 || v.fail) return sendError(ctx, "not_found", "The video content is not available.");
+    if (v.redirect && !ctx.url.searchParams.get("variant")) {
+      ctx.res.writeHead(302, { location: `${originOf(ctx)}/__mock/media/${v.id}.mp4` });
+      return void ctx.res.end();
+    }
+    const variant = ctx.url.searchParams.get("variant") ?? "video";
+    const isVideo = variant === "video";
+    const data = isVideo ? MOCK_MP4 : MOCK_PNG;
+    const type = isVideo ? "video/mp4" : variant === "thumbnail" ? "image/webp" : "image/jpeg";
+    return sendBytes(ctx, data, type);
+  }
+  v.polls++;
+  return sendJson(ctx, 200, vidObj(v));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // auth & dispatch
 // ---------------------------------------------------------------------------------------------------------------------
 
 function bearer(req: http.IncomingMessage): string | null {
   const h = req.headers.authorization;
-  const m = typeof h === "string" ? /^Bearer\s+(.+)$/i.exec(h) : null;
+  const m = typeof h === "string" ? /^(?:Bearer|Key)\s+(.+)$/i.exec(h) : null;
   return m ? m[1].trim() : null;
 }
 const hdr = (req: http.IncomingMessage, name: string): string | null => {
@@ -1170,6 +1512,9 @@ const RESPONSES_RE = /^\/v1\/responses\/([^/]+)(?:\/(cancel|input_items))?$/;
 async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   const { req, path, surface } = ctx;
   const method = (req.method ?? "GET").toUpperCase();
+
+  const extraKind = extraKindOf(path);
+  if (extraKind) return handleExtra(ctx, extraKind, raw);
 
   // 404 for unknown paths before auth (so a typo is obvious)
   const gem = GEMINI_RE.exec(path);

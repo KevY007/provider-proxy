@@ -10,6 +10,9 @@ import type { InboundFormat, JsonObject, Operation } from "../types";
  *   - Anthropic: settings.anthropicBaseUrl (origin) else baseUrl (a trailing "/v1" is stripped); we append "/v1/messages".
  *   - Gemini on non-Google providers: settings.geminiBaseUrl (origin or origin + "/v1beta"; "/v1beta" is stripped).
  *   - Azure: baseUrl is the resource origin; deployment = key.extra.deployments[model] ?? upstreamModel.
+ *   - fal.ai: auth is "Authorization: Key <key>" (applied here, keyed on preset); the request itself is built by the
+ *     fal driver (providers/fal.ts). Replicate uses plain Bearer auth and its own driver (providers/replicate.ts).
+ *   - Videos (OpenAI Sora shape): ${root}/videos[/{id}[/content?variant=]] on OpenAI-compatible providers.
  */
 export interface AdapterProvider {
   slug: string;
@@ -72,6 +75,9 @@ export interface UrlInput {
   keyExtra?: JsonObject;
   /** For Responses lookups: response id. */
   responseId?: string;
+  /** For video lookups: the UPSTREAM video id, plus a raw query string (e.g. "variant=thumbnail"). */
+  videoId?: string;
+  query?: string;
   /** Secret, only used for QUERY_KEY auth. */
   secret?: string;
 }
@@ -122,6 +128,12 @@ export function buildUpstreamUrl(i: UrlInput): string {
       const id = encodeURIComponent(i.responseId ?? "");
       const tail = op === "responses_cancel" ? "/cancel" : op === "responses_input_items" ? "/input_items" : "";
       url = `${root}/responses/${id}${tail}`;
+    } else if (op === "videos_create" || op === "videos_list") {
+      url = `${root}/videos`;
+    } else if (op.startsWith("videos_")) {
+      const id = encodeURIComponent(i.videoId ?? "");
+      url = `${root}/videos/${id}${op === "videos_content" ? "/content" : ""}`;
+      if (op === "videos_content" && i.query) url += `?${i.query}`;
     } else {
       const suffix = OPENAI_SUFFIX[op];
       if (!suffix) throw new Error(`no openai path for op ${op}`);
@@ -146,10 +158,13 @@ export interface HeaderInput {
   /** multipart: pass the original content-type (with boundary); otherwise JSON. */
   contentType?: string | null;
   hasBody?: boolean;
-  /** Anthropic-version header chosen by the caller (inbound value or default). */
+  /** Upstream operation (video content requests accept any media type and forward Range). */
+  op?: Operation;
 }
 
 function authHeaders(provider: AdapterProvider, surface: Surface, secret: string): Record<string, string> {
+  // fal.ai wants "Authorization: Key <id:secret>" regardless of the stored authStyle
+  if (provider.preset === "fal") return { authorization: `Key ${secret}` };
   const bearer = { authorization: `Bearer ${secret}` };
   switch (provider.authStyle) {
     case "QUERY_KEY":
@@ -177,6 +192,11 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
     "user-agent": "ProviderProxy/1.0",
   };
   if (i.hasBody !== false) h["content-type"] = i.contentType || "application/json";
+  if (i.op === "videos_content") {
+    h.accept = "*/*";
+    const range = i.inbound?.get("range");
+    if (range) h.range = range;
+  }
 
   if (surface === "anthropic") {
     h["anthropic-version"] = i.inbound?.get("anthropic-version") || str(p.settings.anthropicVersion) || "2023-06-01";

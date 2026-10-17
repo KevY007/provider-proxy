@@ -202,7 +202,7 @@ export function ProviderKeys({
                       </TableCell>
                       <TableCell>
                         <StatusBadge status={k.status} />
-                        {cooling && <div className="mt-1 text-xs text-amber-500">cooldown until {new Date(k.cooldownUntil!).toLocaleTimeString()}</div>}
+                        {cooling && <div className="mt-1 text-xs text-amber-500" suppressHydrationWarning>cooldown until {new Date(k.cooldownUntil!).toLocaleTimeString()}</div>}
                       </TableCell>
                       <TableCell className="tabular-nums">
                         {k.weight} / {k.priority}
@@ -222,7 +222,7 @@ export function ProviderKeys({
                           </div>
                         )}
                       </TableCell>
-                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{ago(k.lastUsedAt)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-muted-foreground" suppressHydrationWarning>{ago(k.lastUsedAt)}</TableCell>
                       <TableCell className="text-right text-xs tabular-nums">
                         {formatNumber(k.totalRequests)} req
                         <div className="text-muted-foreground">

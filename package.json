@@ -16,6 +16,8 @@
     "db:studio": "prisma studio",
     "mock:upstream": "tsx scripts/mock-upstream.ts",
     "e2e": "tsx scripts/e2e.ts",
+    "setup:live": "tsx scripts/setup-live-providers.ts",
+    "e2e:live": "tsx scripts/e2e-live.ts",
     "loadtest": "tsx scripts/loadtest.ts",
     "postinstall": "prisma generate"
   },

@@ -1,9 +1,12 @@
 /**
  * Static seed data: provider presets (no secrets, created DISABLED) and the model catalog with
- * official prices. Sell prices default to official x SELL_FACTOR (a sane placeholder the admin
- * will tune); route cost = official price. Prices are USD per 1M tokens unless stated.
+ * official prices. Pricing policy is PROFITABLE by default: route cost = the upstream list price and the
+ * public sell price = route cost x SELL_FACTOR (30% margin); `official*` fields keep the vendor list price
+ * for reference only. Prices are USD per 1M tokens unless stated.
  */
-export const SELL_FACTOR = "0.5";
+export const SELL_FACTOR = "1.3";
+/** Former default (official x 0.5): seed re-prices rows still carrying it so a dev DB never sells below cost. */
+export const LEGACY_SELL_FACTOR = "0.5";
 
 export type Fmt =
   | "openai_chat"
@@ -13,6 +16,7 @@ export type Fmt =
   | "openai_images"
   | "openai_audio"
   | "openai_moderations"
+  | "openai_videos"
   | "anthropic_messages"
   | "gemini";
 
@@ -36,7 +40,7 @@ export const PROVIDERS: ProviderSeed[] = [
     preset: "openai",
     baseUrl: "https://api.openai.com/v1",
     authStyle: "BEARER",
-    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations"],
+    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos"],
     tags: ["official"],
     settings: {},
   },
@@ -112,6 +116,26 @@ export const PROVIDERS: ProviderSeed[] = [
     // anthropicBaseUrl: origin; the adapter appends /v1/messages. geminiBaseUrl: includes /v1beta.
     settings: { anthropicBaseUrl: "https://codex-everywhere.com", geminiBaseUrl: "https://codex-everywhere.com/v1beta" },
   },
+  {
+    slug: "fal",
+    name: "fal.ai",
+    preset: "fal",
+    baseUrl: "https://fal.run",
+    authStyle: "BEARER", // the fal adapter sends "Authorization: Key <key>"
+    formats: ["openai_images", "openai_videos"],
+    tags: ["images"],
+    settings: { queueBaseUrl: "https://queue.fal.run", falMode: "auto" },
+  },
+  {
+    slug: "replicate",
+    name: "Replicate",
+    preset: "replicate",
+    baseUrl: "https://api.replicate.com/v1",
+    authStyle: "BEARER",
+    formats: ["openai_images"],
+    tags: ["images"],
+    settings: {},
+  },
 ];
 
 export interface ModelSeed {
@@ -133,6 +157,8 @@ export interface ModelSeed {
   cacheWrite1hMult?: string;
   /** official USD per generated image */
   image?: string;
+  /** official USD per generated video second */
+  perSecond?: string;
   longContext?: { threshold: number; multiplier: string };
   sortOrder: number;
 }
@@ -148,6 +174,7 @@ export const MODELS: ModelSeed[] = [
   { slug: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", vendor: "openai", provider: "openai", description: "GPT-5.6 mid-tier model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 128_000, input: "2", output: "12", cached: "0.20", sortOrder: 60 },
   { slug: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", vendor: "openai", provider: "openai", description: "GPT-5.6 small, fast model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 64_000, input: "0.20", output: "1.20", cached: "0.02", sortOrder: 70 },
   { slug: "gpt-image-2", displayName: "GPT Image 2", vendor: "openai", provider: "openai", description: "Image generation and editing.", capabilities: ["images"], contextWindow: 32_000, maxOutput: 0, image: "0.04", sortOrder: 80 },
+  { slug: "sora-2", displayName: "Sora 2", vendor: "openai", provider: "openai", description: "Text/image-to-video generation with synced audio (720p).", capabilities: ["video"], contextWindow: 0, maxOutput: 0, perSecond: "0.10", sortOrder: 85 },
   { slug: "text-embedding-3-small", displayName: "Text Embedding 3 Small", vendor: "openai", provider: "openai", description: "Low-cost text embeddings.", capabilities: ["embeddings"], contextWindow: 8_191, maxOutput: 0, input: "0.02", output: "0", sortOrder: 90 },
   { slug: "claude-fable-5-1", displayName: "Claude Fable 5.1", vendor: "anthropic", provider: "anthropic", description: "Anthropic's most capable model.", capabilities: CHAT_CAPS, contextWindow: 1_000_000, maxOutput: 128_000, input: "10", output: "50", cached: "0.25", cacheWriteMult: "1.25", cacheWrite1hMult: "2", sortOrder: 100 },
   { slug: "claude-opus-5-5", displayName: "Claude Opus 5.5", vendor: "anthropic", provider: "anthropic", description: "Frontier reasoning and coding.", capabilities: CHAT_CAPS, contextWindow: 500_000, maxOutput: 64_000, input: "4", output: "20", cached: "0.20", cacheWriteMult: "1.25", cacheWrite1hMult: "2", sortOrder: 110 },

@@ -55,7 +55,7 @@ export function Announcements({ rows, canEdit }: { rows: AnnouncementRow[]; canE
                 <div className={cn("min-w-0 flex-1", !a.active && "opacity-60")}>
                   <p className="text-sm font-medium">{a.title}</p>
                   <p className="whitespace-pre-wrap text-sm text-muted-foreground">{a.body}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">{new Date(a.createdAt).toLocaleString()}</p>
+                  <p className="mt-1 text-xs text-muted-foreground" suppressHydrationWarning>{new Date(a.createdAt).toLocaleString()}</p>
                 </div>
                 {canEdit && (
                   <div className="flex shrink-0 items-center gap-1">

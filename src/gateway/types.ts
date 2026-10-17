@@ -21,6 +21,11 @@ export type Operation =
   | "audio_transcriptions"
   | "audio_translations"
   | "moderations"
+  | "videos_create"
+  | "videos_list"
+  | "videos_get"
+  | "videos_content"
+  | "videos_delete"
   | "messages"
   | "messages_count_tokens"
   | "gemini_generate"
@@ -49,6 +54,8 @@ export interface ParsedPath {
   model?: string;
   /** Responses lookups. */
   responseId?: string;
+  /** Video lookups: OUR public video id. */
+  videoId?: string;
   /** Streaming implied by the path (Gemini streamGenerateContent). */
   pathStream: boolean;
   /** Body is multipart/form-data. */
@@ -68,6 +75,8 @@ export interface Usage {
   imageCount: number;
   audioSeconds: number;
   characters: number;
+  /** Generated video seconds (billed per second). */
+  videoSeconds: number;
   estimated: boolean;
 }
 
@@ -84,6 +93,7 @@ export function emptyUsage(): Usage {
     imageCount: 0,
     audioSeconds: 0,
     characters: 0,
+    videoSeconds: 0,
     estimated: false,
   };
 }

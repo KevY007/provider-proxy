@@ -26,6 +26,8 @@ export interface NavItem {
   exact?: boolean;
   /** Opens in a new tab / leaves the shell (e.g. public docs). */
   external?: boolean;
+  /** Hidden from SUPPORT staff (the page itself is admin-only). */
+  adminOnly?: boolean;
 }
 
 export interface NavGroup {
@@ -69,8 +71,8 @@ export const adminNav: NavGroup[] = [
     label: "Catalog",
     items: [
       { title: "Providers", href: "/admin/providers", icon: Server },
-      { title: "Models", href: "/admin/models", icon: Cpu },
-      { title: "Groups", href: "/admin/groups", icon: Layers },
+      { title: "Models", href: "/admin/models", icon: Cpu, adminOnly: true },
+      { title: "Groups", href: "/admin/groups", icon: Layers, adminOnly: true },
     ],
   },
   {
@@ -91,6 +93,13 @@ export const adminNav: NavGroup[] = [
     ],
   },
 ];
+
+/** Drops admin-only items (and groups left empty) for everyone but ADMIN, so SUPPORT never sees links that bounce. */
+export function navForRole(groups: NavGroup[], role: "CUSTOMER" | "SUPPORT" | "ADMIN"): NavGroup[] {
+  return groups
+    .map((g) => ({ ...g, items: g.items.filter((i) => !i.adminOnly || role === "ADMIN") }))
+    .filter((g) => g.items.length > 0);
+}
 
 export function isNavActive(item: NavItem, pathname: string): boolean {
   if (item.external) return false;

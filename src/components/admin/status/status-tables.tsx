@@ -60,7 +60,7 @@ const providerCols: ColumnDef<StatusProviderRow>[] = [
       </span>
     ),
   },
-  { accessorKey: "lastCheckAt", header: "Last check", cell: ({ row }) => <span className="whitespace-nowrap text-xs text-muted-foreground">{when(row.original.lastCheckAt)}</span> },
+  { accessorKey: "lastCheckAt", header: "Last check", cell: ({ row }) => <span className="whitespace-nowrap text-xs text-muted-foreground" suppressHydrationWarning>{when(row.original.lastCheckAt)}</span> },
 ];
 
 const keyCols: ColumnDef<StatusKeyRow>[] = [
@@ -100,7 +100,7 @@ const keyCols: ColumnDef<StatusKeyRow>[] = [
 ];
 
 const failureCols: ColumnDef<RecentFailure>[] = [
-  { accessorKey: "createdAt", header: "When", cell: ({ row }) => <span className="whitespace-nowrap text-xs">{when(row.original.createdAt)}</span> },
+  { accessorKey: "createdAt", header: "When", cell: ({ row }) => <span className="whitespace-nowrap text-xs" suppressHydrationWarning>{when(row.original.createdAt)}</span> },
   { accessorKey: "providerName", header: "Provider" },
   { accessorKey: "keyLabel", header: "Key", cell: ({ row }) => row.original.keyLabel ?? "provider" },
   { accessorKey: "latencyMs", header: "Latency", cell: ({ row }) => (row.original.latencyMs != null ? `${row.original.latencyMs}ms` : "-") },

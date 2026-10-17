@@ -60,7 +60,7 @@ export interface KeyFormDialogProps {
   pools: PoolOption[];
   currentPool: PoolOption | null;
   models: ModelOption[];
-  onCreated: (key: CreatedKey) => void;
+  onCreated: (key: CreatedKey, meta: { name: string; allowedModels: string[] }) => void;
 }
 
 export function KeyFormDialog({ open, onOpenChange, editing, pools, currentPool, models, onCreated }: KeyFormDialogProps) {
@@ -117,7 +117,7 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
       } else {
         const r = await createKeyAction(payload);
         if (r.ok && r.data) {
-          onCreated(r.data);
+          onCreated(r.data, { name: payload.name.trim(), allowedModels: payload.allowedModels });
           onClose();
         } else if (!r.ok) {
           setErrors(r.fieldErrors ?? {});
