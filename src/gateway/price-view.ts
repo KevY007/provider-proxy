@@ -35,7 +35,7 @@ export const PUBLIC_UNITS = [
 ] as const;
 export type PublicUnitKey = (typeof PUBLIC_UNITS)[number]["key"];
 
-const FIELD_OF: Record<PublicUnitKey, keyof PriceTable> = {
+const FIELD_OF: Record<PublicUnitKey, Exclude<keyof PriceTable, "tools">> = {
   input: "input",
   output: "output",
   cached_input: "cachedInput",

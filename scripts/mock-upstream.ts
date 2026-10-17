@@ -31,7 +31,7 @@
  *   gzip                    compress the response (Content-Encoding: gzip) even though the client asked for identity
  *   early-headers           flush the response headers immediately (before a delayed first frame), like a real provider
  * Header `x-mock-fail: <status>` answers that HTTP status (retry-after: 7 + request id + rate-limit headers, native body).
- * Per-frame delay: `x-mock-delay-ms` (a slow trickle). `x-mock-tag: <id>` labels a request in /__mock/aborts.
+ * Per-frame delay: `x-mock-delay-ms` (a slow trickle). `x-mock-linger-ms: N` keeps a stream's connection open N ms after its last frame. `x-mock-tag: <id>` labels a request in /__mock/aborts.
  * `x-mock-hash-body: 1` (automatic above 32 MB) never buffers the request: the body is hashed on the fly and
  * /__mock/last reports bodySha256 / bodyBytes. Files APIs (OpenAI /v1/files + /v1/uploads, Anthropic /v1/files,
  * Gemini /upload/v1beta/files + /v1beta/files) keep files per upstream credential (a file is invisible to other keys).
@@ -148,6 +148,14 @@ interface MockGSession {
   displayName: string;
   received: number;
 }
+interface MockContainerFile {
+  owner: string;
+  containerId: string;
+  id: string;
+  filename: string;
+  data: Buffer;
+  createdAt: number;
+}
 interface MockState {
   total: number;
   inflight: number;
@@ -160,6 +168,8 @@ interface MockState {
   files: Map<string, MockFile>;
   uploads: Map<string, MockUpload>;
   gsessions: Map<string, MockGSession>;
+  /** code-interpreter container files (a Responses request that ran code creates them), by `<container>/<file>` */
+  containerFiles: Map<string, MockContainerFile>;
   /** fal / Replicate / video job state (created lazily) */
   extras?: MockExtras;
 }
@@ -177,6 +187,7 @@ function createState(): MockState {
     files: new Map(),
     uploads: new Map(),
     gsessions: new Map(),
+    containerFiles: new Map(),
   };
 }
 
@@ -213,6 +224,7 @@ function resetState(state: MockState): void {
   state.files = new Map();
   state.uploads = new Map();
   state.gsessions = new Map();
+  state.containerFiles = new Map();
   state.extras = undefined;
 }
 
@@ -495,6 +507,10 @@ async function emitFrames(ctx: Ctx, frames: string[], delay: number, contentType
       return;
     }
   }
+  // `x-mock-linger-ms`: keep the connection open this long after the LAST frame (a real provider closes a moment later than
+  // it sent its terminal event - a client that stops reading at [DONE] and hangs up then races the upstream's own end)
+  const linger = Number(hdr(ctx.req, "x-mock-linger-ms"));
+  if (Number.isFinite(linger) && linger > 0 && !(await sleep(ctx, Math.min(linger, 60_000)))) return;
   if (gz) gz.end();
   else if (!res.destroyed && !res.writableEnded) res.end();
 }
@@ -586,10 +602,30 @@ interface Markers {
   words?: number;
   /** ignore the request's output cap */
   runaway?: boolean;
+  /** server tools (Anthropic + Responses): N web searches / file searches, a code-execution run that creates a file */
+  ws?: number;
+  fs?: number;
+  codeexec: boolean;
+  /** thinking tokens (inside the output tokens); thinkburn = thinking uses the whole output budget and no text follows */
+  think?: number;
+  thinkburn: boolean;
+  /** do not itemize the thinking tokens in usage (output_tokens_details) */
+  nothinkdetails: boolean;
 }
 
 function parseMarkers(src: string): Markers {
-  const mk: Markers = { notool: /\[\[notool\]\]/.test(src) };
+  const mk: Markers = {
+    notool: /\[\[notool\]\]/.test(src),
+    codeexec: /\[\[codeexec\]\]/.test(src),
+    thinkburn: /\[\[thinkburn\]\]/.test(src),
+    nothinkdetails: /\[\[nothinkdetails\]\]/.test(src),
+  };
+  const ws = /\[\[ws:(\d+)\]\]/.exec(src);
+  if (ws) mk.ws = Number(ws[1]);
+  const fsm = /\[\[fs:(\d+)\]\]/.exec(src);
+  if (fsm) mk.fs = Number(fsm[1]);
+  const th = /\[\[think:(\d+)\]\]/.exec(src);
+  if (th) mk.think = Number(th[1]);
   const u = /\[\[usage:([^\]]*)\]\]/.exec(src);
   if (u) {
     for (const pair of u[1].split(",")) {
@@ -614,6 +650,7 @@ function parseMarkers(src: string): Markers {
   return mk;
 }
 
+const noMarkers: Markers = { notool: false, codeexec: false, thinkburn: false, nothinkdetails: false };
 const stripMarkers = (s: string) => s.replace(/\[\[[^\]]*\]\]/g, "").replace(/\s+/g, " ").trim();
 
 interface Extracted {
@@ -734,8 +771,9 @@ function extractAnthropic(b: Obj): Extracted {
   }
   const last = messages[messages.length - 1];
   ex.lastIsToolResult = isObj(last) && asArr(last.content).some((x) => isObj(x) && x.type === "tool_result");
-  const tools = asArr(b.tools);
-  if (tools.length) ex.toolName = (isObj(tools[0]) && asStr(tools[0].name)) || "tool";
+  // only user-defined (custom) tools are called; server tools (web_search_..., code_execution_...) run on the "server"
+  const custom = asArr(b.tools).filter((t) => isObj(t) && (t.type === undefined || t.type === "custom"));
+  if (custom.length) ex.toolName = (isObj(custom[0]) && asStr(custom[0].name)) || "tool";
   const tc = b.tool_choice;
   if (isObj(tc)) {
     if (tc.type === "none") ex.toolChoiceNone = true;
@@ -1017,7 +1055,22 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
     arguments: args,
     status,
   });
-  const finalOutput: Obj[] = [p.tool ? callItem("completed", p.tool.args) : messageItem("completed", p.text)];
+  // hosted tools that "ran": web searches, file searches, a code-interpreter run that created a file in a container
+  const extra: Obj[] = [];
+  for (let i = 0; i < (p.markers.ws ?? 0); i++) extra.push({ type: "web_search_call", id: `ws_mock_${i}`, status: "completed", action: { type: "search", query: "mock query" } });
+  for (let i = 0; i < (p.markers.fs ?? 0); i++) extra.push({ type: "file_search_call", id: `fs_mock_${i}`, status: "completed", queries: ["mock query"], results: null });
+  let citation: Obj | null = null;
+  if (p.markers.codeexec) {
+    const containerId = `cntr_mock${rid()}`;
+    const fileId = `cfile_mock${rid()}`;
+    ctx.state.containerFiles.set(`${containerId}/${fileId}`, { owner: ctx.cred, containerId, id: fileId, filename: "report.pdf", data: MOCK_PDF, createdAt: Date.now() });
+    extra.push({ type: "code_interpreter_call", id: "ci_mock1", status: "completed", container_id: containerId, code: "make_pdf()", outputs: [{ type: "logs", logs: "wrote report.pdf" }] });
+    citation = { type: "container_file_citation", container_id: containerId, file_id: fileId, filename: "report.pdf", start_index: 0, end_index: 0 };
+  }
+  const mainItem = p.tool ? callItem("completed", p.tool.args) : messageItem("completed", p.text);
+  if (citation && Array.isArray(mainItem.content)) (mainItem.content as Obj[])[0].annotations = [citation];
+  const finalOutput: Obj[] = [...extra, mainItem];
+  const shift = extra.length;
   const finalResp = base("completed", finalOutput, responsesUsage(p.usage));
   const save = () => {
     if (b.store !== false) storeResponse(ctx.state, id, finalResp);
@@ -1034,22 +1087,26 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
   const frames: string[] = [];
   frames.push(ev("response.created", { response: base("in_progress", [], null) }));
   frames.push(ev("response.in_progress", { response: base("in_progress", [], null) }));
+  extra.forEach((item, i) => {
+    frames.push(ev("response.output_item.added", { output_index: i, item: { ...item, status: "in_progress" } }));
+    frames.push(ev("response.output_item.done", { output_index: i, item }));
+  });
   if (p.tool) {
-    frames.push(ev("response.output_item.added", { output_index: 0, item: callItem("in_progress", "") }));
+    frames.push(ev("response.output_item.added", { output_index: shift, item: callItem("in_progress", "") }));
     for (const piece of splitPieces(p.tool.args, 3)) {
-      frames.push(ev("response.function_call_arguments.delta", { item_id: fcId, output_index: 0, delta: piece }));
+      frames.push(ev("response.function_call_arguments.delta", { item_id: fcId, output_index: shift, delta: piece }));
     }
-    frames.push(ev("response.function_call_arguments.done", { item_id: fcId, output_index: 0, arguments: p.tool.args }));
-    frames.push(ev("response.output_item.done", { output_index: 0, item: callItem("completed", p.tool.args) }));
+    frames.push(ev("response.function_call_arguments.done", { item_id: fcId, output_index: shift, arguments: p.tool.args }));
+    frames.push(ev("response.output_item.done", { output_index: shift, item: callItem("completed", p.tool.args) }));
   } else {
-    frames.push(ev("response.output_item.added", { output_index: 0, item: messageItem("in_progress", "") }));
-    frames.push(ev("response.content_part.added", { item_id: msgId, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }));
+    frames.push(ev("response.output_item.added", { output_index: shift, item: messageItem("in_progress", "") }));
+    frames.push(ev("response.content_part.added", { item_id: msgId, output_index: shift, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }));
     for (const d of textDeltas(p.text)) {
-      frames.push(ev("response.output_text.delta", { item_id: msgId, output_index: 0, content_index: 0, delta: d }));
+      frames.push(ev("response.output_text.delta", { item_id: msgId, output_index: shift, content_index: 0, delta: d }));
     }
-    frames.push(ev("response.output_text.done", { item_id: msgId, output_index: 0, content_index: 0, text: p.text }));
-    frames.push(ev("response.content_part.done", { item_id: msgId, output_index: 0, content_index: 0, part: { type: "output_text", text: p.text, annotations: [] } }));
-    frames.push(ev("response.output_item.done", { output_index: 0, item: messageItem("completed", p.text) }));
+    frames.push(ev("response.output_text.done", { item_id: msgId, output_index: shift, content_index: 0, text: p.text }));
+    frames.push(ev("response.content_part.done", { item_id: msgId, output_index: shift, content_index: 0, part: { type: "output_text", text: p.text, annotations: citation ? [citation] : [] } }));
+    frames.push(ev("response.output_item.done", { output_index: shift, item: mainItem }));
   }
   frames.push(ev("response.completed", { response: finalResp }));
   save();
@@ -1203,89 +1260,186 @@ function anthropicUsage(u: Usage, outputTokens = u.output): Obj {
   };
 }
 
-async function handleAnthropicMessages(ctx: Ctx, b: Obj): Promise<void> {
-  const model = asStr(b.model);
-  if (!model) return sendError(ctx, "invalid_request", "model: Field required");
-  if (!Array.isArray(b.messages) || b.messages.length === 0) {
-    return sendError(ctx, "invalid_request", "messages: Field required");
+// ---- Claude model generations (what the real API accepts for `thinking` / sampling) -------------------------------------
+interface ClaudeGen {
+  family: string;
+  major: number;
+  minor: number;
+}
+
+function claudeGen(model: string): ClaudeGen | null {
+  const m = /^claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d{1,2})(?!\d))?/.exec(model);
+  return m ? { family: m[1], major: Number(m[2]), minor: m[3] ? Number(m[3]) : 0 } : null;
+}
+
+const isGen = (g: ClaudeGen, family: string, major: number, minor: number) => g.family === family && g.major === major && g.minor === minor;
+
+/** Thinking (and sampling) validation like the real API; returns the 400 message or null. */
+function anthropicParamError(model: string, b: Obj): string | null {
+  const g = claudeGen(model);
+  if (!g) return null;
+  const th = isObj(b.thinking) ? b.thinking : null;
+  const type = th ? asStr(th.type) : undefined;
+  const alwaysOn = g.family === "fable" || g.family === "mythos" || isGen(g, "opus", 5, 5);
+  const adaptiveOnly = alwaysOn || g.major >= 5 || (g.major === 4 && g.minor >= 7); // `enabled` + budget_tokens was removed
+  const effort = isObj(b.output_config) ? asStr(b.output_config.effort) : undefined;
+  if (type === "enabled") {
+    if (adaptiveOnly) return '"thinking.type.enabled" is not supported for this model. Use "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.';
+    const budget = th ? asNum(th.budget_tokens) : undefined;
+    if (budget === undefined || budget < 1024) return "thinking.enabled.budget_tokens: Input should be greater than or equal to 1024";
+    if (budget >= (asNum(b.max_tokens) ?? 0)) return "thinking.enabled.budget_tokens: Input should be less than max_tokens";
+  } else if (type === "adaptive") {
+    if (g.major < 4 || (g.major === 4 && g.minor < 6)) return '"thinking.type.adaptive" is not supported for this model.';
+  } else if (type === "disabled") {
+    if (alwaysOn || isGen(g, "sonnet", 5, 5)) {
+      return '"thinking.type.disabled" is not supported for this model. Use "thinking.type.between_tools" for the lowest thinking setting, or "thinking.type.adaptive" and "output_config.effort" to control thinking behavior.';
+    }
+    if ((isGen(g, "haiku", 5, 5) || isGen(g, "opus", 5, 0)) && (effort === "xhigh" || effort === "max")) {
+      return `output_config.effort '${effort}' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.`;
+    }
+  } else if (type === "between_tools") {
+    if (!isGen(g, "sonnet", 5, 5)) return '"thinking.type.between_tools" is not supported for this model.';
+    if (th && Object.keys(th).some((k) => k !== "type")) return "thinking.between_tools: no other field is allowed";
+    if (effort === "xhigh" || effort === "max") {
+      return `output_config.effort '${effort}' is not supported when thinking is disabled on this model. Use effort 'high' or below, or enable thinking.`;
+    }
+  } else if (type !== undefined) {
+    return "thinking.type: Input should be 'enabled', 'disabled' or 'adaptive'";
   }
-  if (asNum(b.max_tokens) === undefined || (asNum(b.max_tokens) as number) < 1) {
-    return sendError(ctx, "invalid_request", "max_tokens: Field required");
+  if (effort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(effort)) return "output_config.effort: Input should be 'low', 'medium', 'high', 'xhigh' or 'max'";
+  if (effort === "xhigh" && g.major === 4 && g.minor < 7) return "output_config.effort 'xhigh' is not supported for this model.";
+  if (effort !== undefined && (g.major < 4 || (g.major === 4 && g.minor < 5))) return "output_config.effort: not supported for this model";
+  // sampling parameters were removed / narrowed on the newest models
+  if (g.major >= 5 || (g.major === 4 && g.minor >= 7)) {
+    const t = asNum(b.temperature);
+    const tp = asNum(b.top_p);
+    if (t !== undefined && t !== 1) return "temperature: non-default values are not supported for this model";
+    if (tp !== undefined && tp !== 0.99) return "top_p: non-default values are not supported for this model";
+    if (b.top_k !== undefined) return "top_k: not supported for this model";
   }
+  return null;
+}
+
+/** Does the model think on this request? (adaptive / enabled; models that think by default do so when `thinking` is omitted) */
+function thinkingActive(model: string, b: Obj): boolean {
+  const g = claudeGen(model);
+  const type = isObj(b.thinking) ? asStr(b.thinking.type) : undefined;
+  if (type === "adaptive" || type === "enabled") return true;
+  if (type === "disabled" || type === "between_tools") return false;
+  if (!g) return false;
+  return g.family === "fable" || g.family === "mythos" || (g.major >= 5 && g.family !== "haiku") || isGen(g, "haiku", 5, 5);
+}
+
+interface BuiltMessage {
+  message: Obj;
+  plan: Plan;
+}
+
+const MOCK_PDF = Buffer.from("%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+
+/** The Anthropic message object for a request (what POST /v1/messages and each batch result return), or a 400. */
+function buildAnthropicMessage(ctx: Ctx, b: Obj): { error: string } | BuiltMessage {
+  const model = asStr(b.model) ?? "";
+  if (!model) return { error: "model: Field required" };
+  if (!Array.isArray(b.messages) || b.messages.length === 0) return { error: "messages: Field required" };
+  if (asNum(b.max_tokens) === undefined || (asNum(b.max_tokens) as number) < 1) return { error: "max_tokens: Field required" };
+  const bad = anthropicParamError(model, b);
+  if (bad) return { error: bad };
+  const maxTokens = asNum(b.max_tokens) as number;
   const ex = extractAnthropic(b);
   const p = plan(ex, "anthropic", undefined, outputCap(b));
+  const mk = p.markers;
+  const content: Obj[] = [];
+  const serverUse: Obj = { web_search_requests: 0 };
+  let thinkTokens = 0;
+  let burned = false;
+  if (thinkingActive(model, b) && (mk.think !== undefined || mk.thinkburn)) {
+    const summarized = isObj(b.thinking) && b.thinking.display === "summarized";
+    burned = mk.thinkburn;
+    thinkTokens = burned ? maxTokens : Math.min(mk.think ?? 0, maxTokens);
+    content.push({ type: "thinking", thinking: summarized ? "I weighed the request and picked the simplest approach." : "", signature: `sig_mock_${rid()}` });
+  }
+  const searches = mk.ws ?? 0;
+  for (let i = 0; i < searches; i++) {
+    const tid = `srvtoolu_ws${i}_${rid()}`;
+    content.push({ type: "server_tool_use", id: tid, name: "web_search", input: { query: "mock query" } });
+    content.push({ type: "web_search_tool_result", tool_use_id: tid, content: [{ type: "web_search_result", url: `https://example.com/${i}`, title: "Example", encrypted_content: "x", page_age: null }] });
+  }
+  if (searches) serverUse.web_search_requests = searches;
+  let container: Obj | undefined;
+  if (mk.codeexec) {
+    const tid = `srvtoolu_ce_${rid()}`;
+    const id = mockFileId("anthropic");
+    putFile(ctx, { id, owner: ctx.cred, api: "anthropic", filename: "report.pdf", purpose: "", mime: "application/pdf", bytes: MOCK_PDF.length, sha256: createHash("sha256").update(MOCK_PDF).digest("hex"), data: MOCK_PDF });
+    content.push({ type: "server_tool_use", id: tid, name: "bash_code_execution", input: { command: "python make_pdf.py" } });
+    content.push({
+      type: "bash_code_execution_tool_result",
+      tool_use_id: tid,
+      content: { type: "bash_code_execution_result", stdout: "wrote report.pdf", stderr: "", return_code: 0, content: [{ type: "bash_code_execution_output", file_id: id }] },
+    });
+    serverUse.code_execution_requests = 1;
+    container = { id: `container_mock_${rid()}`, expires_at: new Date(Date.now() + 3_600_000).toISOString() };
+  }
+  const stopReason = burned ? "max_tokens" : p.tool ? "tool_use" : "end_turn";
+  if (!burned) {
+    if (p.tool) content.push({ type: "tool_use", id: "toolu_mock1", name: p.tool.name, input: JSON.parse(p.tool.args) as Obj });
+    else content.push({ type: "text", text: p.text });
+  }
+  const u = { ...p.usage, output: burned ? maxTokens : p.usage.output + thinkTokens };
+  const usage: Obj = { ...anthropicUsage(u), server_tool_use: serverUse, service_tier: "standard" };
+  if (thinkTokens > 0 && !mk.nothinkdetails) usage.output_tokens_details = { thinking_tokens: thinkTokens };
+  const message: Obj = { id: `msg_mock_${rid()}`, type: "message", role: "assistant", model, content, stop_reason: stopReason, stop_sequence: null, usage };
+  if (container) message.container = container;
+  return { message, plan: p };
+}
+
+async function handleAnthropicMessages(ctx: Ctx, b: Obj): Promise<void> {
+  const built = buildAnthropicMessage(ctx, b);
+  if ("error" in built) return sendError(ctx, "invalid_request", built.error);
+  const { message, plan: p } = built;
   const delay = resolveDelay(ctx.req, b, p.markers);
-  const id = `msg_mock_${rid()}`;
-  const stopReason = p.tool ? "tool_use" : "end_turn";
-  const toolInput = p.tool ? (JSON.parse(p.tool.args) as Obj) : {};
 
   if (b.stream !== true) {
     if (!(await sleep(ctx, delay))) return;
-    const content = p.tool
-      ? [{ type: "tool_use", id: "toolu_mock1", name: p.tool.name, input: toolInput }]
-      : [{ type: "text", text: p.text }];
-    return sendJson(
-      ctx,
-      200,
-      {
-        id,
-        type: "message",
-        role: "assistant",
-        model,
-        content,
-        stop_reason: stopReason,
-        stop_sequence: null,
-        usage: { ...anthropicUsage(p.usage), service_tier: "standard" },
-      },
-      { "request-id": `req_mock_${rid()}` },
-    );
+    return sendJson(ctx, 200, message, { "request-id": `req_mock_${rid()}` });
   }
 
+  const usage = message.usage as Obj;
+  const blocks = message.content as Obj[];
   const frames: string[] = [];
-  frames.push(
-    eventFrame("message_start", {
-      type: "message_start",
-      message: {
-        id,
-        type: "message",
-        role: "assistant",
-        model,
-        content: [],
-        stop_reason: null,
-        stop_sequence: null,
-        usage: anthropicUsage(p.usage, 1),
-      },
-    }),
-  );
-  if (p.tool) {
-    frames.push(
-      eventFrame("content_block_start", {
-        type: "content_block_start",
-        index: 0,
-        content_block: { type: "tool_use", id: "toolu_mock1", name: p.tool.name, input: {} },
-      }),
-    );
-    frames.push(eventFrame("ping", { type: "ping" }));
-    for (const piece of splitPieces(p.tool.args, 3)) {
-      frames.push(
-        eventFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: piece } }),
-      );
+  const startUsage: Obj = { ...usage, output_tokens: 1, server_tool_use: { web_search_requests: 0 } };
+  delete startUsage.output_tokens_details;
+  frames.push(eventFrame("message_start", { type: "message_start", message: { ...message, content: [], stop_reason: null, usage: startUsage } }));
+  blocks.forEach((blk, index) => {
+    const start = (cb: Obj) => frames.push(eventFrame("content_block_start", { type: "content_block_start", index, content_block: cb }));
+    const delta = (d: Obj) => frames.push(eventFrame("content_block_delta", { type: "content_block_delta", index, delta: d }));
+    switch (blk.type) {
+      case "thinking":
+        start({ type: "thinking", thinking: "", signature: "" });
+        if (asStr(blk.thinking)) delta({ type: "thinking_delta", thinking: blk.thinking });
+        delta({ type: "signature_delta", signature: blk.signature });
+        break;
+      case "tool_use":
+      case "server_tool_use":
+        start({ ...blk, input: {} });
+        if (index === blocks.length - 1) frames.push(eventFrame("ping", { type: "ping" }));
+        for (const piece of splitPieces(JSON.stringify(blk.input), 3)) delta({ type: "input_json_delta", partial_json: piece });
+        break;
+      case "text":
+        start({ type: "text", text: "" });
+        if (index === blocks.length - 1) frames.push(eventFrame("ping", { type: "ping" }));
+        for (const d of textDeltas(String(blk.text))) delta({ type: "text_delta", text: d });
+        break;
+      default:
+        start(blk); // server tool results arrive whole
     }
-  } else {
-    frames.push(
-      eventFrame("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } }),
-    );
-    frames.push(eventFrame("ping", { type: "ping" }));
-    for (const d of textDeltas(p.text)) {
-      frames.push(eventFrame("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: d } }));
-    }
-  }
-  frames.push(eventFrame("content_block_stop", { type: "content_block_stop", index: 0 }));
+    frames.push(eventFrame("content_block_stop", { type: "content_block_stop", index }));
+  });
   frames.push(
     eventFrame("message_delta", {
       type: "message_delta",
-      delta: { stop_reason: stopReason, stop_sequence: null },
-      usage: { output_tokens: p.usage.output },
+      delta: { stop_reason: message.stop_reason, stop_sequence: null },
+      usage: { output_tokens: usage.output_tokens, server_tool_use: usage.server_tool_use, ...(usage.output_tokens_details ? { output_tokens_details: usage.output_tokens_details } : {}) },
     }),
   );
   frames.push(eventFrame("message_stop", { type: "message_stop" }));
@@ -1752,6 +1906,7 @@ function isFilesPath(path: string): boolean {
     path.startsWith("/v1/files/") ||
     path === "/v1/uploads" ||
     path.startsWith("/v1/uploads/") ||
+    path.startsWith("/v1/containers/") ||
     path === "/v1beta/files" ||
     path.startsWith("/v1beta/files/") ||
     path === "/upload/v1beta/files"
@@ -1769,7 +1924,7 @@ function patternChunk(offset: number, len: number): Buffer {
 async function streamBytes(ctx: Ctx, total: number, source: Buffer | null, type: string, headers: Record<string, string> = {}): Promise<void> {
   const res = ctx.res;
   if (res.headersSent || res.destroyed) return;
-  const delay = resolveDelay(ctx.req, null, { notool: false });
+  const delay = resolveDelay(ctx.req, null, noMarkers);
   if (ctx.fault?.dropHeaders) return cutConnection(ctx, "rst");
   res.writeHead(200, { "content-type": type, "content-length": total, ...idHeaders(), ...headers });
   ctx.phase = "streaming";
@@ -1913,6 +2068,16 @@ async function handleFilesApi(ctx: Ctx, raw: Buffer): Promise<void> {
       }
     }
     return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
+  }
+
+  // ------------------------------------------------------------------ OpenAI code-interpreter container files
+  const cm = /^\/v1\/containers\/([^/]+)\/files\/([^/]+)(\/content)?$/.exec(path);
+  if (cm && method === "GET") {
+    const [, cid, fid] = cm.map((x) => (x ? decodeURIComponent(x) : x));
+    const f = state.containerFiles.get(`${cid}/${fid}`);
+    if (!f || f.owner !== ctx.cred) return sendJson(ctx, 404, { error: { message: `File with id '${fid}' not found in container '${cid}'.`, type: "invalid_request_error", param: null, code: null } });
+    if (cm[3]) return streamBytes(ctx, f.data.length, f.data, "application/pdf");
+    return sendJson(ctx, 200, { id: f.id, object: "container.file", container_id: f.containerId, created_at: Math.floor(f.createdAt / 1000), bytes: f.data.length, path: `/mnt/data/${f.filename}`, source: "assistant" }, idHeaders());
   }
 
   // ------------------------------------------------------------------ OpenAI /v1/uploads
@@ -2174,7 +2339,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
 
   // non-chat endpoints honour x-mock-delay-ms too (a slow upstream: lets tests abort while the gateway waits for it)
   if (/^\/v1\/(images|audio|embeddings|moderations)/.test(path)) {
-    const d = resolveDelay(req, null, { notool: false });
+    const d = resolveDelay(req, null, noMarkers);
     if (d > 0 && !(await sleep(ctx, d))) return;
   }
 

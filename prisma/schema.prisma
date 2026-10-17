@@ -331,6 +331,12 @@ model Model {
   longContextThreshold  Int? // input tokens above which multiplier applies
   longContextMultiplier Decimal? @db.Decimal(10, 4)
 
+  // server-tool SELL prices (USD per unit, keys: web_search_request, code_execution_hour, web_search_call, file_search_call ...) + their official list prices
+  toolPrices         Json     @default("{}")
+  officialToolPrices Json     @default("{}")
+  // Batch API: % taken off the token prices of batch results. null = 50 (the vendors' own batch discount)
+  batchDiscountPct   Decimal? @db.Decimal(5, 2)
+
   // reference official price (marketing / "savings" display only)
   officialInputPrice  Decimal? @db.Decimal(24, 12)
   officialOutputPrice Decimal? @db.Decimal(24, 12)
@@ -388,6 +394,8 @@ model ModelRoute {
   perMinuteCost       Decimal? @db.Decimal(24, 12)
   perMillionCharsCost Decimal? @db.Decimal(24, 12)
   perSecondCost       Decimal? @db.Decimal(24, 12) // video: USD per generated second
+  toolCosts           Json     @default("{}") // server-tool COSTS (USD per unit, same keys as Model.toolPrices)
+  batchCostDiscountPct Decimal @default(50) @db.Decimal(5, 2) // what the supplier takes off the token prices of Batch API results
 
   createdAt DateTime @default(now())
 
@@ -429,6 +437,8 @@ model RequestLog {
   audioSeconds     Float         @default(0)
   characters       Int           @default(0)
   videoSeconds     Float         @default(0)
+  toolUsage        Json          @default("{}") // server tools used by the request, e.g. {"web_search_request":2,"code_execution_hour":0.0833}
+  batchId          String? // Batch API: the upstream batch this row was metered from
   usageEstimated   Boolean       @default(false)
   price            Decimal       @default(0) @db.Decimal(24, 12) // charged to customer
   cost             Decimal       @default(0) @db.Decimal(24, 12) // paid upstream
@@ -450,6 +460,7 @@ model RequestLog {
   @@index([modelSlug, createdAt])
   @@index([apiKeyId, createdAt])
   @@index([status, createdAt])
+  @@index([batchId])
 }
 
 model VideoJob {
@@ -494,19 +505,24 @@ model UpstreamObject {
   // lookup is scoped to the owning customer (foreign or unknown ids answer 404). `upstreamId` is the id the
   // customer sees (it is the upstream's own id; Gemini upload sessions use OUR opaque session id).
   id            String   @id @default(cuid())
-  kind          String // "file" | "upload" | "gemini_upload"
+  kind          String // "file" | "upload" | "gemini_upload" | "batch"
   upstreamId    String
   providerId    String
   providerKeyId String
   userId        String
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   apiKeyId      String?
-  meta          Json? // last upstream object seen (file listing is served from here) / session details
+  meta          Json? // last upstream object seen (file listing is served from here) / session details / batch bookkeeping
+  // Batch API (kind "batch"): processing state, and the exactly-once metering of its results
+  status         String? // last upstream processing status (in_progress | canceling | ended ... / validating | in_progress | completed ...)
+  meteredAt      DateTime? // set when every result of the batch was metered
+  meterClaimedAt DateTime? // a metering run holds the batch (stale after 10 minutes)
   createdAt     DateTime @default(now())
 
   @@unique([kind, upstreamId, providerId])
   @@index([userId, kind, createdAt])
   @@index([providerKeyId])
+  @@index([kind, meteredAt])
 }
 
 // ----------------------------------------------------------------------------

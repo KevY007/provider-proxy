@@ -1,6 +1,7 @@
 import type { InboundFormat } from "../types";
 
-export { chatRequestToMessages, messagesResponseToChat, AnthropicToChatStream } from "./chat-to-anthropic";
+export { chatRequestToMessages, messagesResponseToChat, chatUsageFromNormalized, THINKING_BURN_NOTE, AnthropicToChatStream } from "./chat-to-anthropic";
+export { claudeProfile, planReasoning, readReasoningAsk, mapEffort, hasToolTurnWithoutThinking, type ClaudeProfile, type ReasoningPlan } from "./claude-reasoning";
 export { messagesRequestToChat, chatResponseToMessages, ChatToAnthropicStream } from "./anthropic-to-chat";
 
 /**

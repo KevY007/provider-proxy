@@ -182,7 +182,7 @@ export function ModelWorkspace({
               <RuleSelector
                 mode={f.pricingMode}
                 value={f.pricingValue}
-                onMode={(m) => setF((s) => ({ ...s, pricingMode: m, pricingValue: m === "FIXED" ? s.pricingValue : s.pricingValue || (m === "PERCENT_OF_OFFICIAL" ? "70" : "30") }))}
+                onMode={(m) => setF((s) => ({ ...s, pricingMode: m, pricingValue: m === "FIXED" ? s.pricingValue : s.pricingValue || (m === "PERCENT_OF_OFFICIAL" ? "100" : "30") }))}
                 onValue={(v) => set("pricingValue", v)}
                 valueError={fieldErrors.pricingValue}
               />

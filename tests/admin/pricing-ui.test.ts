@@ -116,7 +116,7 @@ describe("add-model wizard helpers", () => {
   });
 
   it("chooses a default pricing rule", () => {
-    expect(defaultRule({ officialInputPrice: "5" })).toEqual({ mode: "PERCENT_OF_OFFICIAL", value: "70" });
+    expect(defaultRule({ officialInputPrice: "5" })).toEqual({ mode: "PERCENT_OF_OFFICIAL", value: "100" });
     expect(defaultRule({ inputCost: "1" })).toEqual({ mode: "MARKUP_OVER_COST", value: "30" });
     expect(defaultRule({}).mode).toBe("FIXED");
   });

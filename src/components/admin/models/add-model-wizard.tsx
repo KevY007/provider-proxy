@@ -234,7 +234,7 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
           {step === 4 && (
             <>
               <PriceExplainer audience="admin" />
-              <RuleSelector mode={mode} value={ruleValue} onMode={(m) => { setRuleTouched(true); setMode(m); if (m !== "FIXED" && !ruleValue) setRuleValue(m === "PERCENT_OF_OFFICIAL" ? "70" : "30"); }} onValue={(v) => { setRuleTouched(true); setRuleValue(v); }} valueError={errors.pricingValue} />
+              <RuleSelector mode={mode} value={ruleValue} onMode={(m) => { setRuleTouched(true); setMode(m); if (m !== "FIXED" && !ruleValue) setRuleValue(m === "PERCENT_OF_OFFICIAL" ? "100" : "30"); }} onValue={(v) => { setRuleTouched(true); setRuleValue(v); }} valueError={errors.pricingValue} />
               <PriceGrid
                 values={values}
                 mode={mode}

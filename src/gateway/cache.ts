@@ -76,6 +76,8 @@ export interface ModelRec {
   /** Upstream retirement date (ms) when announced. */
   retiresAt: number | null;
   longContext: LongContext;
+  /** Batch API: percent taken off the token prices of batch results (null = the vendors' 50). */
+  batchDiscountPct?: Decimal | null;
   createdAt: number;
 }
 
@@ -92,6 +94,8 @@ export interface RouteRec {
   paramOverrides: JsonObject;
   maxOutputTokens: number | null;
   cost: PriceTable;
+  /** Batch API: percent the supplier takes off the token prices of batch results. */
+  batchCostDiscountPct?: Decimal;
 }
 
 export interface GroupRec {
@@ -235,6 +239,7 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       official: officialTable(m),
       retiresAt: m.retiresAt ? m.retiresAt.getTime() : null,
       longContext: { threshold: m.longContextThreshold, multiplier: m.longContextMultiplier ? toDecimal(m.longContextMultiplier) : null },
+      batchDiscountPct: m.batchDiscountPct === null ? null : toDecimal(m.batchDiscountPct),
       createdAt: m.createdAt.getTime(),
     };
     modelsById.set(m.id, rec);
@@ -264,6 +269,7 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       paramOverrides: asRecord(r.paramOverrides),
       maxOutputTokens: r.maxOutputTokens,
       cost: costTable(r),
+      batchCostDiscountPct: toDecimal(r.batchCostDiscountPct, 50),
     };
     const arr = routesByModel.get(r.modelId);
     if (arr) arr.push(rec);

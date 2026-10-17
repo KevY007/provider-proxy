@@ -9,7 +9,7 @@ import { buildUpstreamHeaders, buildUpstreamUrl, providerSettings, upstreamOp } 
 import { chatRequestToMessages, messagesRequestToChat } from "./translate";
 import type { ErrorFormat, InboundFormat, Json, JsonObject, Operation, ParsedPath, Usage } from "./types";
 import { emptyUsage } from "./types";
-import { usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponses } from "./usage";
+import { usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponsesObject } from "./usage";
 import { deepMerge, isObject, safeJsonParse } from "./util";
 import type { ModelRec } from "./cache";
 
@@ -47,6 +47,8 @@ export interface Prepared {
   body: UpstreamBody;
   upstreamFormat: InboundFormat;
   upstreamOp: Operation;
+  /** Admin-only remarks the request shaping wants in the request log (e.g. a reasoning request that could not be honoured). */
+  notes?: string[];
 }
 
 /** Spliced body -> a Buffer when small and in memory, else a fresh stream with an explicit content-length. */
@@ -111,6 +113,7 @@ export function prepareUpstream(i: PrepareInput): Prepared {
   let body: UpstreamBody = null;
   let bodyLength: number | null = null;
   let contentType: string | null = null;
+  const translationNotes = { notes: [] as string[] };
 
   if (i.form) {
     // the customer's multipart bytes, forwarded as they are (same boundary / order); only `model` is replaced
@@ -121,7 +124,7 @@ export function prepareUpstream(i: PrepareInput): Prepared {
     let obj: JsonObject;
     switch (plan.mode) {
       case "chat_to_messages":
-        obj = chatRequestToMessages(i.body, { upstreamModel: route.upstreamModel, defaultMaxTokens: route.maxOutputTokens ?? model.maxOutput ?? 4096 });
+        obj = chatRequestToMessages(i.body, { upstreamModel: route.upstreamModel, defaultMaxTokens: route.maxOutputTokens ?? model.maxOutput ?? 4096, notes: translationNotes });
         break;
       case "messages_to_chat":
         obj = messagesRequestToChat(i.body, { upstreamModel: route.upstreamModel, maxTokensParam: tokensParam });
@@ -182,6 +185,7 @@ export function prepareUpstream(i: PrepareInput): Prepared {
     body,
     upstreamFormat: upFormat,
     upstreamOp: op,
+    ...(translationNotes.notes.length ? { notes: translationNotes.notes } : {}),
   };
 }
 
@@ -195,7 +199,7 @@ export function extractUsage(upFormat: InboundFormat, op: Operation, json: Json)
     case "embeddings":
       return isObject(json.usage) ? usageFromOpenAI(json.usage) : null;
     case "responses":
-      return isObject(json.usage) ? usageFromResponses(json.usage) : null;
+      return isObject(json.usage) ? usageFromResponsesObject(json) : null;
     case "images_generations":
     case "images_edits":
     case "images_variations": {

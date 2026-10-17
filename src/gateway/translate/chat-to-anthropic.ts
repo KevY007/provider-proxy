@@ -5,6 +5,7 @@ import type { Json, JsonObject, Usage } from "../types";
 import { emptyUsage } from "../types";
 import { mergeUsage, usageFromAnthropic } from "../usage";
 import { isObject, safeJsonParse } from "../util";
+import { claudeProfile, hasToolTurnWithoutThinking, planReasoning, readReasoningAsk } from "./claude-reasoning";
 
 /**
  * Inbound OpenAI chat/completions  ->  upstream Anthropic Messages.
@@ -80,8 +81,20 @@ function userBlocks(content: Json): JsonObject[] {
   return out;
 }
 
-function assistantBlocks(m: JsonObject): JsonObject[] {
+/** `thinking_blocks` an earlier response carried (see messagesResponseToChat): passed back as the signed thinking blocks they are. */
+function thinkingBlocksOf(m: JsonObject): JsonObject[] {
+  if (!Array.isArray(m.thinking_blocks)) return [];
   const out: JsonObject[] = [];
+  for (const b of m.thinking_blocks) {
+    if (!isObject(b)) continue;
+    if (b.type === "thinking" && typeof b.signature === "string" && b.signature) out.push({ type: "thinking", thinking: typeof b.thinking === "string" ? b.thinking : "", signature: b.signature });
+    else if (b.type === "redacted_thinking" && typeof b.data === "string") out.push({ type: "redacted_thinking", data: b.data });
+  }
+  return out;
+}
+
+function assistantBlocks(m: JsonObject): JsonObject[] {
+  const out: JsonObject[] = [...thinkingBlocksOf(m)];
   const text = textFromContent(m.content);
   if (text) out.push({ type: "text", text });
   if (Array.isArray(m.tool_calls)) {
@@ -107,16 +120,19 @@ function toolResultContent(content: Json): string | JsonObject[] {
   return content === null || content === undefined ? "" : JSON.stringify(content);
 }
 
-const REASONING_BUDGET: Record<string, number> = { minimal: 1024, low: 2048, medium: 8192, high: 16384 };
-
 export interface ToMessagesOptions {
   upstreamModel: string;
   /** Anthropic requires max_tokens: used when the client sent none. */
   defaultMaxTokens: number;
 }
 
+/** Admin-only notes the translation wants logged (e.g. why a reasoning request was not honoured). */
+export interface TranslationNotes {
+  notes: string[];
+}
+
 /** OpenAI chat/completions request -> Anthropic /v1/messages request. */
-export function chatRequestToMessages(body: JsonObject, opts: ToMessagesOptions): JsonObject {
+export function chatRequestToMessages(body: JsonObject, opts: ToMessagesOptions & { notes?: TranslationNotes }): JsonObject {
   if (typeof body.n === "number" && body.n > 1) throw new GatewayError("invalid_request", "n > 1 is not supported for this model.", { param: "n" });
   const messages = Array.isArray(body.messages) ? body.messages : null;
   if (!messages) throw new GatewayError("invalid_request", "'messages' is required.", { param: "messages" });
@@ -187,8 +203,11 @@ export function chatRequestToMessages(body: JsonObject, opts: ToMessagesOptions)
   const maxTokens = Number(body.max_completion_tokens ?? body.max_tokens);
   req.max_tokens = Number.isFinite(maxTokens) && maxTokens > 0 ? Math.trunc(maxTokens) : opts.defaultMaxTokens;
 
-  if (typeof body.temperature === "number") req.temperature = Math.min(1, Math.max(0, body.temperature));
-  if (typeof body.top_p === "number") req.top_p = body.top_p;
+  const profile = claudeProfile(opts.upstreamModel);
+  if (profile.sampling) {
+    if (typeof body.temperature === "number") req.temperature = Math.min(1, Math.max(0, body.temperature));
+    if (typeof body.top_p === "number") req.top_p = body.top_p;
+  } // else: the newest models reject non-default temperature / top_p (400) - an OpenAI client's sampling hints are dropped
   if (body.stop !== undefined && body.stop !== null) {
     const stops = (Array.isArray(body.stop) ? body.stop : [body.stop]).filter((s: unknown) => typeof s === "string" && s.length > 0);
     if (stops.length) req.stop_sequences = stops;
@@ -213,20 +232,31 @@ export function chatRequestToMessages(body: JsonObject, opts: ToMessagesOptions)
   const tc = body.tool_choice;
   if (req.tools && tc !== undefined && tc !== null) {
     if (tc === "auto") req.tool_choice = { type: "auto" };
-    else if (tc === "required") req.tool_choice = { type: "any" };
+    else if (tc === "required") req.tool_choice = profile.forcedTool ? { type: "any" } : { type: "auto" };
     else if (tc === "none") req.tool_choice = { type: "none" };
-    else if (isObject(tc) && tc.type === "function" && isObject(tc.function)) req.tool_choice = { type: "tool", name: String(tc.function.name) };
+    else if (isObject(tc) && tc.type === "function" && isObject(tc.function)) req.tool_choice = profile.forcedTool ? { type: "tool", name: String(tc.function.name) } : { type: "auto" };
+    if (!profile.forcedTool && (tc === "required" || (isObject(tc) && tc.type === "function"))) {
+      // forced tool use is rejected on this model: ask for the call in the prompt instead (the tool schema keeps the arguments valid)
+      const name = isObject(tc) && isObject(tc.function) ? String(tc.function.name) : null;
+      const hint = name ? `You must respond by calling the tool "${name}".` : "You must respond by calling one of the provided tools.";
+      req.system = typeof req.system === "string" ? `${req.system}
+
+${hint}` : Array.isArray(req.system) ? [...req.system, { type: "text", text: hint }] : hint;
+    }
   }
   if (req.tools && body.parallel_tool_calls === false) {
     req.tool_choice = { ...(isObject(req.tool_choice) ? req.tool_choice : { type: "auto" }), disable_parallel_tool_use: true };
   }
 
-  const effort = typeof body.reasoning_effort === "string" ? REASONING_BUDGET[body.reasoning_effort] : undefined;
-  if (effort && req.max_tokens > effort + 256) {
-    req.thinking = { type: "enabled", budget_tokens: effort };
+  // ---- reasoning: OpenAI's reasoning_effort -> this model's thinking API (see claude-reasoning.ts)
+  const plan = planReasoning(profile, readReasoningAsk(body), req.max_tokens, profile.mode === "adaptive" || !hasToolTurnWithoutThinking(messages));
+  if (plan.thinking) req.thinking = plan.thinking;
+  if (plan.effort) req.output_config = { effort: plan.effort };
+  if (plan.dropSampling) {
     delete req.temperature;
     delete req.top_p;
   }
+  if (plan.note) opts.notes?.notes.push(plan.note);
   return req;
 }
 
@@ -256,15 +286,22 @@ export function chatUsageFromNormalized(u: Usage): JsonObject {
 }
 
 /** Anthropic Messages response -> OpenAI chat.completion. */
-export function messagesResponseToChat(msg: JsonObject, publicModel: string): { body: JsonObject; usage: Usage } {
+/** The thinking used up the whole output budget: nothing visible was produced. */
+export const THINKING_BURN_NOTE = "thinking used the whole output budget: the response has no visible output (finish_reason length); raise max_tokens or lower reasoning_effort";
+
+export function messagesResponseToChat(msg: JsonObject, publicModel: string): { body: JsonObject; usage: Usage; burned: boolean } {
   const blocks: Json[] = Array.isArray(msg.content) ? msg.content : [];
   let text = "";
   let reasoning = "";
   const toolCalls: JsonObject[] = [];
+  const thinkingBlocks: JsonObject[] = [];
   for (const b of blocks) {
     if (!isObject(b)) continue;
     if (b.type === "text" && typeof b.text === "string") text += b.text;
-    else if (b.type === "thinking" && typeof b.thinking === "string") reasoning += b.thinking;
+    else if (b.type === "thinking") {
+      if (typeof b.thinking === "string") reasoning += b.thinking;
+      thinkingBlocks.push({ type: "thinking", thinking: typeof b.thinking === "string" ? b.thinking : "", signature: typeof b.signature === "string" ? b.signature : "" });
+    } else if (b.type === "redacted_thinking" && typeof b.data === "string") thinkingBlocks.push({ type: "redacted_thinking", data: b.data });
     else if (b.type === "tool_use") {
       toolCalls.push({ id: String(b.id), type: "function", function: { name: String(b.name), arguments: JSON.stringify(b.input ?? {}) } });
     }
@@ -272,10 +309,14 @@ export function messagesResponseToChat(msg: JsonObject, publicModel: string): { 
   const usage = usageFromAnthropic(msg.usage);
   const message: JsonObject = { role: "assistant", content: text || (toolCalls.length ? null : ""), refusal: null };
   if (reasoning) message.reasoning_content = reasoning;
+  // (non-standard, LiteLLM-compatible) the signed blocks, so a client can pass them back with the tool results of the next turn
+  if (thinkingBlocks.length) message.thinking_blocks = thinkingBlocks;
   if (toolCalls.length) message.tool_calls = toolCalls;
+  const burned = msg.stop_reason === "max_tokens" && !text && !toolCalls.length && thinkingBlocks.length > 0;
   const idRaw = String(msg.id ?? "");
   return {
     usage,
+    burned,
     body: {
       id: `chatcmpl-${idRaw.replace(/^msg_/, "") || Math.random().toString(36).slice(2)}`,
       object: "chat.completion",
@@ -298,6 +339,9 @@ export class AnthropicToChatStream implements StreamProcessor {
   private _usage: Usage = emptyUsage();
   private sawUsage = false;
   private text = new TextAcc();
+  private thinking = new TextAcc(500_000);
+  private sawThinking = false;
+  private stopReason: string | null = null;
   private done = false;
   private err: { status: number; message: string; type?: string } | null = null;
 
@@ -356,7 +400,10 @@ export class AnthropicToChatStream implements StreamProcessor {
           if (cb.type === "text" && typeof cb.text === "string" && cb.text) {
             this.text.add(cb.text);
             out.push(this.chunk({ content: cb.text }));
-          }
+          } else if (cb.type === "redacted_thinking" && typeof cb.data === "string") {
+            this.sawThinking = true;
+            out.push(this.chunk({ thinking_blocks: [{ type: "redacted_thinking", data: cb.data }] }));
+          } else if (cb.type === "thinking") this.sawThinking = true;
         }
         break;
       }
@@ -371,7 +418,12 @@ export class AnthropicToChatStream implements StreamProcessor {
         } else if (delta.type === "input_json_delta" && blk?.tool !== undefined) {
           out.push(this.chunk({ tool_calls: [{ index: blk.tool, function: { arguments: String(delta.partial_json ?? "") } }] }));
         } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
-          out.push(this.chunk({ reasoning_content: delta.thinking }));
+          this.thinking.add(delta.thinking);
+          this.sawThinking = true;
+          if (delta.thinking) out.push(this.chunk({ reasoning_content: delta.thinking, thinking_blocks: [{ type: "thinking", thinking: delta.thinking }] }));
+        } else if (delta.type === "signature_delta" && typeof delta.signature === "string") {
+          this.sawThinking = true;
+          out.push(this.chunk({ thinking_blocks: [{ type: "thinking", thinking: "", signature: delta.signature }] }));
         }
         break;
       }
@@ -381,6 +433,7 @@ export class AnthropicToChatStream implements StreamProcessor {
           this.sawUsage = true;
         }
         const reason = isObject(d.delta) ? d.delta.stop_reason : undefined;
+        if (typeof reason === "string") this.stopReason = reason;
         if (reason !== undefined && reason !== null) {
           this.finish = stopReasonToFinish(reason);
           this.ensureRole(out);
@@ -434,6 +487,13 @@ export class AnthropicToChatStream implements StreamProcessor {
   }
   outputText(): string {
     return this.text.toString();
+  }
+  reasoningText(): string {
+    return this.thinking.toString();
+  }
+  /** Admin-only note for the request log: the thinking ate the whole output budget. */
+  note(): string | null {
+    return this.stopReason === "max_tokens" && this.sawThinking && this.text.length === 0 && this.toolIndex < 0 ? THINKING_BURN_NOTE : null;
   }
   outputChars(): number {
     return this.text.length;

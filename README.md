@@ -38,7 +38,7 @@ printed by the seed. Verification/reset emails are logged to the console and sto
 | `pnpm lint` / `typecheck` / `test` | ESLint, `tsc --noEmit`, Vitest |
 | `pnpm db:migrate` / `db:deploy` / `db:seed` / `db:studio` | Prisma dev migrate, deploy migrations, seed, Studio |
 | `pnpm mock:upstream` | Local fake upstream provider (OpenAI / Anthropic / Gemini, plus fal.ai, Replicate and `/v1/videos`) |
-| `pnpm setup:live [--markup 1.30]` | Idempotent live setup: enable OpenAI / Anthropic / fal.ai / Replicate from the `LIVE_*` keys in `.env`, models + routes + profitable prices (sell = cost x markup) |
+| `pnpm setup:live [--markup 1.30 \| --percent-of-official 100]` | Idempotent live setup: enable OpenAI / Anthropic / fal.ai / Replicate from the `LIVE_*` keys in `.env`, models + aliases + routes + prices (default: sell = official price, i.e. "match official"), refreshes the providers' formats to the preset list |
 | `pnpm e2e:live [--skip-video]` | Real-traffic end-to-end check against a running dev server (see below) |
 | `pnpm e2e` / `pnpm loadtest` | End-to-end and load-test scripts (QA) |
 | `pnpm chaos --docker <image> [--scenarios] [--h2]` | Connection-fidelity run against the built container: `--scenarios` = reset / early close / error event / gzip / client abort matrix over HTTP/1.1 and h2c; default = 1000 concurrent 2-minute streams with a SIGTERM drain in the middle (see below) |
@@ -75,8 +75,13 @@ NEXT_DIST_DIR=.next-live pnpm next dev -p 3005    # dev server (second terminal)
 pnpm e2e:live                                     # drives the gateway with real OpenAI / Anthropic / fal.ai / Replicate calls
 ```
 
-- **Pricing policy**: route cost = upstream list price, sell price = cost x 1.30 by default (`--markup` to change). Prices of
-  post-2025 models are marked `*` in the setup summary: confirm them in /admin/models.
+- **Pricing policy** (owner decision): route cost = upstream list price, and the DEFAULT customer price of a model served through the
+  maker's own API is **match official** (rule `PERCENT_OF_OFFICIAL` 100: sell = official price, server-tool prices included). A model with
+  no official price keeps `MARKUP_OVER_COST` +30%. `pnpm setup:live --markup 1.30` forces cost x 1.30 for every model,
+  `--percent-of-official 70` forces 70% of official. The seed and `setup:live` also move models that still carry the old seeded default
+  (+30% over cost, never edited by an admin) to "match official" (`migrateSeededMarkupRules`). The admin Add-model wizard preselects
+  "match official" (all three rules stay available). Prices of post-2025 models are marked `*` in the setup summary: confirm them in
+  /admin/models.
 - `setup:live` asks OpenAI / Anthropic which models the key can use and **disables models whose upstream `shutdown_date`
   has passed** (sora-2 was shut down on 2026-09-24) and lists upcoming sunsets.
 - `smart-fast` is a demo public model that routes to Claude Haiku (priority 10) and falls back to GPT-5 nano (priority 5).

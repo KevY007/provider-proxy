@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { OpenAIStreamPassthrough } from "@/gateway/stream-processors";
 import { StreamSession, type FinishInfo } from "@/gateway/stream";
 import type { StreamProcessor } from "@/gateway/processor";
-import { UpstreamTimeoutError } from "@/gateway/upstream";
+import { ClientAbortError, UpstreamTimeoutError } from "@/gateway/upstream";
+import { AnthropicToChatStream } from "@/gateway/translate";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -155,6 +156,127 @@ describe("StreamSession", () => {
     expect(finished).toHaveLength(1);
     expect(finished[0].reason).toBe("cancelled");
     expect(up.ac.signal.aborted).toBe(true);
+  });
+
+  // ---- bug 3 (live workload report): a stream whose upstream completed and whose last byte was handed to the client
+  // is SUCCESS even when the client closes right after (the OpenAI SDK stops reading at [DONE] and cancels at once)
+  describe("client closes right after the terminal event", () => {
+    async function readUntil(reader: ReadableStreamDefaultReader<Uint8Array>, marker: string): Promise<string> {
+      let text = "";
+      while (!text.includes(marker)) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        text += dec.decode(value);
+      }
+      return text;
+    }
+
+    it("OpenAI chunk stream: cancel() after [DONE] (upstream still open) -> `completed`, upstream aborted", async () => {
+      const up = upstream([chunk("a"), chunk("b", "stop"), data("[DONE]")], { hang: true });
+      const { s, finished } = session(up);
+      await s.prime();
+      const reader = s.toReadable().getReader();
+      const text = await readUntil(reader, "[DONE]");
+      expect(text).toContain("[DONE]");
+      await reader.cancel(); // the SDK closes the response as soon as it saw [DONE]
+      await sleep(20);
+      expect(finished).toHaveLength(1);
+      expect(finished[0].reason).toBe("completed");
+      expect(up.ac.signal.aborted).toBe(true); // nothing keeps running upstream
+    });
+
+    it("repeated 40x with varying reading delays: never CANCELLED", async () => {
+      for (let i = 0; i < 40; i++) {
+        const up = upstream([chunk("a"), chunk("b", "stop"), data("[DONE]")], { gapMs: i % 3 });
+        const { s, finished } = session(up);
+        await s.prime();
+        const reader = s.toReadable().getReader();
+        await readUntil(reader, "[DONE]");
+        if (i % 2) await sleep(i % 5);
+        await reader.cancel();
+        await sleep(5);
+        expect(
+          finished.map((f) => f.reason),
+          `iteration ${i}`,
+        ).toEqual(["completed"]);
+      }
+    });
+
+    it("a close BEFORE the upstream completed is still CANCELLED (no finish_reason / [DONE] seen yet)", async () => {
+      const up = upstream([chunk("a"), chunk("b")], { hang: true });
+      const { s, finished } = session(up);
+      await s.prime();
+      const reader = s.toReadable().getReader();
+      await reader.read();
+      await reader.cancel();
+      await sleep(20);
+      expect(finished.map((f) => f.reason)).toEqual(["cancelled"]);
+    });
+
+    it("the client abort landing on the idle read of the next pull is `completed` too", async () => {
+      const up = upstream([chunk("a"), chunk("b", "stop"), data("[DONE]")], { hang: true });
+      const { s, finished } = session(up);
+      await s.prime();
+      const reader = s.toReadable().getReader();
+      await readUntil(reader, "[DONE]");
+      await sleep(10); // the next pull is now waiting on the (silent) upstream
+      up.ac.abort(new ClientAbortError());
+      await sleep(20);
+      expect(finished.map((f) => f.reason)).toEqual(["completed"]);
+      await reader.cancel().catch(() => undefined);
+    });
+
+    it("translated Claude -> chat stream with a tool call: cancel() after the final [DONE] -> `completed`", async () => {
+      const ev = (type: string, o: object) => `event: ${type}\ndata: ${JSON.stringify({ type, ...o })}\n\n`;
+      const frames = [
+        ev("message_start", { message: { id: "msg_1", model: "up", usage: { input_tokens: 5, output_tokens: 1 } } }),
+        ev("content_block_start", { index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "get_weather", input: {} } }),
+        ev("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: '{"city":"Paris"}' } }),
+        ev("content_block_stop", { index: 0 }),
+        ev("message_delta", { delta: { stop_reason: "tool_use" }, usage: { output_tokens: 9 } }),
+        ev("message_stop", {}),
+      ];
+      const up = upstream(frames, { hang: true });
+      const { s, finished, processor } = session(up, { processor: new AnthropicToChatStream("public", true) });
+      await s.prime();
+      const reader = s.toReadable().getReader();
+      const text = await readUntil(reader, "[DONE]");
+      expect(text).toContain('"finish_reason":"tool_calls"');
+      await reader.cancel();
+      await sleep(20);
+      expect(finished.map((f) => f.reason)).toEqual(["completed"]);
+      expect(processor.usage()).toMatchObject({ inputTokens: 5, outputTokens: 9 });
+    });
+
+    it("raw byte passthrough with a known length: leaving after the last announced byte is `completed`", async () => {
+      const ac = new AbortController();
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode("hello "));
+          c.enqueue(enc.encode("world"));
+          // the upstream connection stays open (it has not noticed the end yet)
+        },
+      });
+      const finished: FinishInfo[] = [];
+      const s = new StreamSession({ body, processor: null, abort: (r) => ac.abort(r), signal: ac.signal, expectedBytes: 11, onFinish: (i) => finished.push(i) });
+      const reader = s.toReadable().getReader();
+      let got = "";
+      while (got.length < 11) got += dec.decode((await reader.read()).value);
+      await reader.cancel();
+      await sleep(10);
+      expect(finished.map((f) => f.reason)).toEqual(["completed"]);
+
+      // ... but leaving before the announced length is a cancellation
+      const ac2 = new AbortController();
+      const body2 = new ReadableStream<Uint8Array>({ start: (c) => c.enqueue(enc.encode("hello ")) });
+      const finished2: FinishInfo[] = [];
+      const s2 = new StreamSession({ body: body2, processor: null, abort: (r) => ac2.abort(r), signal: ac2.signal, expectedBytes: 11, onFinish: (i) => finished2.push(i) });
+      const r2 = s2.toReadable().getReader();
+      await r2.read();
+      await r2.cancel();
+      await sleep(10);
+      expect(finished2.map((f) => f.reason)).toEqual(["cancelled"]);
+    });
   });
 
   it("idle upstream (opt-in cutoff) -> aborted with UpstreamTimeoutError and the client stream is destroyed", async () => {

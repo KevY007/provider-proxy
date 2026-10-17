@@ -11,7 +11,7 @@ import type { Usage } from "./types";
  *                          + cacheWrite1h x (cacheWrite1h ?? cacheWrite ?? in) + output x out
  *                          + audioIn x audioInputPrice + audioOut x audioOutputPrice ) / 1e6
  *   flat$         = images x imagePrice + requestPrice + minutes x perMinute + chars x perMillionChars / 1e6
- *                   + videoSeconds x perSecond
+ *                   + videoSeconds x perSecond + sum(toolUsage[k] x tools[k])    (server tools: searches, container hours, calls)
  *   price         = multiplier x (tokens$ + flat$)        <- the group/user multiplier applies to everything the customer pays
  *   cost          = same formula with route cost fields, NO multiplier
  *   profit        = price - cost
@@ -22,6 +22,7 @@ import type { Usage } from "./types";
  *  - When an image model has a flat per-image price and images were generated, token usage is not billed in
  *    addition ("if imagePrice set bill per image, else bill token usage").
  *  - Results are rounded to the DB scale (12 dp) so what we log is exactly what we deduct.
+ *  - Batch API results take `batchDiscountPct` off the TOKEN part only (server tools and flat prices are not discounted).
  */
 export interface PriceTable {
   input: Decimal;
@@ -37,6 +38,20 @@ export interface PriceTable {
   perMillionChars: Decimal | null;
   /** Video generation, USD per generated second. */
   perSecond: Decimal | null;
+  /** Server tools, USD per unit (`web_search_request`, `code_execution_hour`, `web_search_call`, `file_search_call`, ...). */
+  tools?: Record<string, Decimal>;
+}
+
+/** `{ "web_search_request": "0.01" }` (a Json column) -> decimals; anything that is not a non-negative number is ignored. */
+export function toolTable(v: unknown): Record<string, Decimal> {
+  const out: Record<string, Decimal> = {};
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return out;
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (x === null || x === undefined || x === "") continue;
+    const d = toDecimal(x as MoneyLike, NaN);
+    if (d.isFinite() && d.gte(0)) out[k] = d;
+  }
+  return out;
 }
 
 export interface LongContext {
@@ -60,6 +75,7 @@ export function sellTable(m: {
   perMinutePrice?: MoneyLike;
   perMillionChars?: MoneyLike;
   perSecondPrice?: MoneyLike;
+  toolPrices?: unknown;
 }): PriceTable {
   return {
     input: toDecimal(m.inputPrice),
@@ -74,6 +90,7 @@ export function sellTable(m: {
     perMinute: opt(m.perMinutePrice),
     perMillionChars: opt(m.perMillionChars),
     perSecond: opt(m.perSecondPrice),
+    tools: toolTable(m.toolPrices),
   };
 }
 
@@ -91,6 +108,7 @@ export function costTable(r: {
   perMinuteCost?: MoneyLike;
   perMillionCharsCost?: MoneyLike;
   perSecondCost?: MoneyLike;
+  toolCosts?: unknown;
 }): PriceTable {
   return {
     input: toDecimal(r.inputCost),
@@ -105,6 +123,7 @@ export function costTable(r: {
     perMinute: opt(r.perMinuteCost),
     perMillionChars: opt(r.perMillionCharsCost),
     perSecond: opt(r.perSecondCost),
+    tools: toolTable(r.toolCosts),
   };
 }
 
@@ -151,6 +170,17 @@ function flatAmount(u: Usage, t: PriceTable, billRequest: boolean): Decimal {
   if (t.perMinute && u.audioSeconds > 0) sum = sum.plus(t.perMinute.times(u.audioSeconds).div(60));
   if (t.perMillionChars && u.characters > 0) sum = sum.plus(perM(u.characters, t.perMillionChars));
   if (t.perSecond && u.videoSeconds > 0) sum = sum.plus(t.perSecond.times(u.videoSeconds));
+  return sum.plus(toolAmount(u, t));
+}
+
+/** Server tools the request used x their unit prices (a tool without a price is free: nothing is invented). */
+function toolAmount(u: Usage, t: PriceTable): Decimal {
+  let sum = ZERO;
+  if (!u.toolUsage || !t.tools) return sum;
+  for (const [k, units] of Object.entries(u.toolUsage)) {
+    const price = t.tools[k];
+    if (price && units > 0) sum = sum.plus(price.times(units));
+  }
   return sum;
 }
 
@@ -160,20 +190,34 @@ export interface PriceOptions {
   longContext?: LongContext | null;
   /** Multiplier for customer price (omit for cost). */
   multiplier?: MoneyLike;
+  /** Batch API: percent taken off the token part (0-100). */
+  tokenDiscountPct?: MoneyLike;
 }
+
+/** The discount factor (1 - pct/100) of a batch discount, clamped to [0, 1]. */
+export function discountFactor(pct: MoneyLike): Decimal {
+  const d = toDecimal(pct, 0);
+  if (!d.isFinite() || d.lte(0)) return new Decimal(1);
+  if (d.gte(100)) return ZERO;
+  return new Decimal(1).minus(d.div(100));
+}
+
+/** The vendors' own Batch API discount (Anthropic and OpenAI: 50% off input and output tokens). */
+export const DEFAULT_BATCH_DISCOUNT_PCT = 50;
 
 /** Amount for `usage` under `table` (used for both price and cost). Rounded to 12 dp. */
 export function computeAmount(usage: Usage, table: PriceTable, opts: PriceOptions = {}): Decimal {
   const flatImages = !!table.image && usage.imageCount > 0;
   let tokens = flatImages ? ZERO : tokenAmount(usage, table);
   tokens = tokens.times(longContextFactor(usage.inputTokens, opts.longContext));
+  if (opts.tokenDiscountPct !== undefined && opts.tokenDiscountPct !== null) tokens = tokens.times(discountFactor(opts.tokenDiscountPct));
   let total = tokens.plus(flatAmount(usage, table, opts.billRequest ?? true));
   if (opts.multiplier !== undefined && opts.multiplier !== null) total = total.times(toDecimal(opts.multiplier, 1));
   return roundDb(total);
 }
 
 /** Per-unit nullable prices (an "official" price list: any unit may be unknown). */
-export type OptTable = { [K in keyof PriceTable]: Decimal | null };
+export type OptTable = { [K in Exclude<keyof PriceTable, "tools">]: Decimal | null } & { tools?: Record<string, Decimal> };
 
 /** Build the OFFICIAL price list of a Model row (null = the model has no official price for that unit). */
 export function officialTable(m: {
@@ -188,6 +232,7 @@ export function officialTable(m: {
   officialPerMinutePrice?: MoneyLike;
   officialPerMillionChars?: MoneyLike;
   officialPerSecondPrice?: MoneyLike;
+  officialToolPrices?: unknown;
 }): OptTable {
   return {
     input: opt(m.officialInputPrice),
@@ -202,6 +247,7 @@ export function officialTable(m: {
     perMinute: opt(m.officialPerMinutePrice),
     perMillionChars: opt(m.officialPerMillionChars),
     perSecond: opt(m.officialPerSecondPrice),
+    tools: toolTable(m.officialToolPrices),
   };
 }
 
@@ -229,7 +275,16 @@ export function effectiveOfficial(official: OptTable | null | undefined, sell: P
     perMinute: o.perMinute ?? scaled(sell.perMinute, m),
     perMillionChars: o.perMillionChars ?? scaled(sell.perMillionChars, m),
     perSecond: o.perSecond ?? scaled(sell.perSecond, m),
+    tools: effectiveOfficialTools(o.tools, sell.tools, m),
   };
+}
+
+/** Server tools: the official unit price where one exists, else what the customer pays for it (sell x multiplier). */
+function effectiveOfficialTools(official: Record<string, Decimal> | undefined, sell: Record<string, Decimal> | undefined, mult: Decimal): Record<string, Decimal> {
+  const out: Record<string, Decimal> = {};
+  for (const [k, v] of Object.entries(sell ?? {})) out[k] = v.times(mult);
+  for (const [k, v] of Object.entries(official ?? {})) out[k] = v;
+  return out;
 }
 
 export interface PriceBreakdown {
@@ -241,6 +296,14 @@ export interface PriceBreakdown {
   official: Decimal;
 }
 
+/** Batch API discounts (percent off the token part): what the customer is charged, what we pay, and the vendor's own batch price. */
+export interface BatchDiscounts {
+  /** Model.batchDiscountPct (null/undefined = the vendors' 50) */
+  sellPct: MoneyLike;
+  /** ModelRoute.batchCostDiscountPct */
+  costPct: MoneyLike;
+}
+
 /** price (with multiplier) + cost (without) + profit (+ official-price equivalent) for one request. */
 export function priceRequest(
   usage: Usage,
@@ -250,11 +313,15 @@ export function priceRequest(
   longContext: LongContext | null | undefined,
   billRequest = true,
   official?: OptTable | null,
+  batch?: BatchDiscounts | null,
 ): PriceBreakdown {
   const mult = toDecimal(multiplier, 1);
-  const price = computeAmount(usage, sell, { multiplier: mult, longContext, billRequest });
-  const c = cost ? computeAmount(usage, cost, { longContext, billRequest }) : ZERO;
-  const off = official ? computeAmount(usage, effectiveOfficial(official, sell, mult), { longContext, billRequest }) : price;
+  const sellPct = batch ? (batch.sellPct === null || batch.sellPct === undefined ? DEFAULT_BATCH_DISCOUNT_PCT : batch.sellPct) : undefined;
+  const costPct = batch ? (batch.costPct === null || batch.costPct === undefined ? DEFAULT_BATCH_DISCOUNT_PCT : batch.costPct) : undefined;
+  const price = computeAmount(usage, sell, { multiplier: mult, longContext, billRequest, tokenDiscountPct: sellPct });
+  const c = cost ? computeAmount(usage, cost, { longContext, billRequest, tokenDiscountPct: costPct }) : ZERO;
+  // the official equivalent of a batch result is the vendor's own batch price (the vendors discount their list price by 50%)
+  const off = official ? computeAmount(usage, effectiveOfficial(official, sell, mult), { longContext, billRequest, tokenDiscountPct: batch ? DEFAULT_BATCH_DISCOUNT_PCT : undefined }) : price;
   return { price, cost: c, profit: roundDb(price.minus(c)), multiplier: mult, official: off };
 }
 

@@ -111,6 +111,20 @@ export function parsePath(pathname: string, method: string, headers?: Headers): 
     if (m === "DELETE") return raw({ endpoint: "/v1/files/{id}", format, op: "files_delete", errorFormat, objectId: id });
     throw methodNotAllowed(m, "GET, DELETE");
   }
+  // OpenAI code-interpreter container files (files a Responses request created): metadata + content, owner-checked
+  if (p.startsWith("/v1/containers/")) {
+    const parts = p.slice("/v1/containers/".length).split("/");
+    const cid = decode(parts[0] ?? "");
+    const fid = decode(parts[2] ?? "");
+    if (!cid || parts[1] !== "files" || !fid || parts.length > 4 || (parts.length === 4 && parts[3] !== "content")) throw new GatewayError("not_found");
+    if (m !== "GET") throw methodNotAllowed(m, "GET");
+    return raw({
+      endpoint: parts.length === 4 ? "/v1/containers/{id}/files/{file}/content" : "/v1/containers/{id}/files/{file}",
+      format: "openai_files",
+      op: parts.length === 4 ? "containers_file_content" : "containers_file_get",
+      objectId: `${cid}/${fid}`,
+    });
+  }
   // OpenAI multipart uploads (files larger than a single request): create -> parts -> complete | cancel
   if (p === "/v1/uploads" || p.startsWith("/v1/uploads/")) {
     if (p === "/v1/uploads") {

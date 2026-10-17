@@ -21,8 +21,10 @@ export type Fmt =
   | "openai_moderations"
   | "openai_videos"
   | "openai_files"
+  | "openai_batches"
   | "anthropic_messages"
   | "anthropic_files"
+  | "anthropic_batches"
   | "gemini"
   | "gemini_files";
 
@@ -46,7 +48,7 @@ export const PROVIDERS: ProviderSeed[] = [
     preset: "openai",
     baseUrl: "https://api.openai.com/v1",
     authStyle: "BEARER",
-    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos", "openai_files"],
+    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos", "openai_files", "openai_batches"],
     tags: ["official"],
     settings: {},
   },
@@ -56,7 +58,7 @@ export const PROVIDERS: ProviderSeed[] = [
     preset: "anthropic",
     baseUrl: "https://api.anthropic.com",
     authStyle: "X_API_KEY",
-    formats: ["anthropic_messages", "anthropic_files"],
+    formats: ["anthropic_messages", "anthropic_files", "anthropic_batches"],
     tags: ["official"],
     settings: { anthropicVersion: "2023-06-01" },
   },

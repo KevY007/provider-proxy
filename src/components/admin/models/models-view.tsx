@@ -352,7 +352,7 @@ function ApplyRuleDialog({ target, onClose }: { target: { ids: string[]; clear: 
         return res.ok;
       }}
     >
-      <RuleSelector mode={mode} value={value} onMode={(m) => { setMode(m); if (m === "PERCENT_OF_OFFICIAL" && !value) setValue("70"); if (m === "MARKUP_OVER_COST" && !value) setValue("30"); }} onValue={setValue} valueError={fieldErrors.value} />
+      <RuleSelector mode={mode} value={value} onMode={(m) => { setMode(m); if (m === "PERCENT_OF_OFFICIAL" && !value) setValue("100"); if (m === "MARKUP_OVER_COST" && !value) setValue("30"); }} onValue={setValue} valueError={fieldErrors.value} />
       <p className={cn("text-xs text-muted-foreground", mode === "FIXED" && "text-amber-700 dark:text-amber-400")}>
         {mode === "FIXED" ? "Fixed keeps today's prices as they are and stops automatic updates." : "Models without an official price (or without a route cost for markup) keep their current prices."}
       </p>
