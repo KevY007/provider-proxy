@@ -31,7 +31,7 @@ export const AUTH_STYLE_OPTIONS = [
 // keep in sync with ENDPOINT_FORMATS (gateway/providers/presets); duplicated so client bundles don't import gateway code
 export const FORMAT_OPTIONS = [
   "openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images",
-  "openai_audio", "openai_moderations", "anthropic_messages", "gemini",
+  "openai_audio", "openai_moderations", "openai_videos", "openai_files", "anthropic_messages", "anthropic_files", "gemini", "gemini_files",
 ].map((f) => ({ value: f, label: f }));
 
 export function emptyProviderForm(): ProviderFormState {

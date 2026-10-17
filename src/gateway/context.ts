@@ -8,6 +8,9 @@ import { allowAnonymousLog } from "./limits";
 import { recordOutcome, type Charge, type Outcome } from "./metering";
 import { settleFunds, type FundsState } from "./reserve";
 import type { ParsedForm } from "./multipart";
+import type { TopLevelScan } from "./jsonscan";
+import type { FilesState } from "./files";
+import type { BodySpool } from "./spool";
 import type { Candidate } from "./select";
 import type { SlotLease } from "./slots";
 import type { AttemptRecord, ErrorFormat, Json, JsonObject, ParsedPath, Usage } from "./types";
@@ -30,7 +33,15 @@ export interface Ctx {
   stream: boolean;
   clientWantsUsage: boolean;
   body: JsonObject | null;
+  /** The customer's JSON bytes (spool) + where each top-level member sits: forwarded byte-identical except the members we change. */
+  jsonRaw: { spool: BodySpool; scan: TopLevelScan } | null;
   form: ParsedForm | null;
+  /** Raw passthrough body (Files / uploads): the decoded request stream, forwarded untouched. */
+  rawBody: ReadableStream<Uint8Array> | null;
+  /** Files APIs: the object the call targets, its owner row, and how the body is carried. */
+  files: FilesState | null;
+  /** Cleanups run when the request is over (temp files, ...). */
+  disposers: Array<() => void | Promise<void>>;
   attempts: AttemptRecord[];
   queueMs: number;
   /** last attempted (or serving) route + upstream key */
@@ -65,7 +76,11 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     stream: false,
     clientWantsUsage: false,
     body: null,
+    jsonRaw: null,
     form: null,
+    rawBody: null,
+    files: null,
+    disposers: [],
     attempts: [],
     queueMs: 0,
     chosen: null,
@@ -90,6 +105,15 @@ export function releaseAll(ctx: Ctx): void {
   const c = ctx.customerLease;
   ctx.customerLease = null;
   c?.release();
+  const ds = ctx.disposers;
+  ctx.disposers = [];
+  for (const d of ds) {
+    try {
+      void Promise.resolve(d()).catch(() => undefined);
+    } catch {
+      /* best effort */
+    }
+  }
 }
 
 export const EXPOSE_HEADERS = "x-request-id, retry-after, retry-after-ms, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens, anthropic-ratelimit-requests-limit, anthropic-ratelimit-requests-remaining, anthropic-ratelimit-requests-reset, anthropic-ratelimit-tokens-limit, anthropic-ratelimit-tokens-remaining, anthropic-ratelimit-tokens-reset";

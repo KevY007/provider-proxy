@@ -41,6 +41,27 @@ printed by the seed. Verification/reset emails are logged to the console and sto
 | `pnpm setup:live [--markup 1.30]` | Idempotent live setup: enable OpenAI / Anthropic / fal.ai / Replicate from the `LIVE_*` keys in `.env`, models + routes + profitable prices (sell = cost x markup) |
 | `pnpm e2e:live [--skip-video]` | Real-traffic end-to-end check against a running dev server (see below) |
 | `pnpm e2e` / `pnpm loadtest` | End-to-end and load-test scripts (QA) |
+| `pnpm chaos --docker <image> [--scenarios] [--h2]` | Connection-fidelity run against the built container: `--scenarios` = reset / early close / error event / gzip / client abort matrix over HTTP/1.1 and h2c; default = 1000 concurrent 2-minute streams with a SIGTERM drain in the middle (see below) |
+| `node scripts/h2c-check.mjs <base-url> [path]` | HTTP/2 cleartext (prior knowledge) client for checking a running container |
+
+## Connection fidelity, keep-alive and big uploads
+
+The gateway is a **faithful 1:1 proxy** ([docs/PLAN.md](docs/PLAN.md) section 9d): a client that disconnects aborts the upstream
+request at once (usage so far is metered, slots and credit holds are released); an upstream failure is mirrored to the client
+(real status + `retry-after` + rate-limit headers + native error body before the response started, the upstream's own error
+event inside a stream, a dropped connection when the upstream resets or closes early - never a synthetic `[DONE]`); idle SSE
+streams get `: keep-alive` heartbeats; nothing is compressed (`Accept-Encoding: identity` upstream, gzip/br/zstd request bodies
+decoded); request bodies have **no size limit** (`maxRequestBodyMb`, 0 = unlimited) and are streamed (multipart spooled to disk,
+JSON forwarded byte-identical except `model`); the Files APIs (OpenAI `/v1/files` + `/v1/uploads`, Anthropic `/v1/files`, Gemini
+resumable upload) are passed through with sticky routing and per-customer ownership. The container (`server.mjs`) serves HTTP/1.1
+and h2c on one port and drains gracefully on SIGTERM.
+
+```bash
+pnpm vitest run tests/gateway/chaos.test.ts tests/gateway/files.test.ts tests/gateway/bigbody.test.ts
+GW_CHAOS_HEAVY=1 pnpm vitest run tests/gateway/bigbody.test.ts      # 1 GB multipart + 200 MB JSON round trips
+docker build -t providerproxy:fidelity . && pnpm chaos --docker providerproxy:fidelity --scenarios
+pnpm chaos --docker providerproxy:fidelity --streams 1000 --seconds 120 --sigterm-after 40
+```
 
 ## Live providers (real upstream traffic)
 

@@ -19,11 +19,28 @@
  * N words and IGNORES the cap (a misbehaving upstream). `[[http400]]` anywhere in the request body makes the mock
  * answer a 400 invalid_request.
  * `[[notool]]` suppresses the automatic tool call. Introspection (no auth): /__mock/stats, /__mock/reset,
- * /__mock/last?path=/v1/messages, /healthz.
+ * /__mock/last?path=/v1/messages, /__mock/aborts, /healthz.
+ *
+ * Fidelity / chaos controls (PLAN 9d.6) - header `x-mock-mode` (the gateway forwards `x-mock-*` headers to providers
+ * tagged "mock"), comma separated:
+ *   drop-headers            RST the connection before any response byte
+ *   drop-pre-content        send the response headers, then RST before the first body byte
+ *   rst-after:N             RST (TCP reset) after N body frames          fin-after:N   clean FIN after N frames, NO terminator
+ *   stall-after:N           stop sending after N frames (connection stays open)
+ *   error-after:N           send an in-stream error event after N frames, then end normally
+ *   gzip                    compress the response (Content-Encoding: gzip) even though the client asked for identity
+ *   early-headers           flush the response headers immediately (before a delayed first frame), like a real provider
+ * Header `x-mock-fail: <status>` answers that HTTP status (retry-after: 7 + request id + rate-limit headers, native body).
+ * Per-frame delay: `x-mock-delay-ms` (a slow trickle). `x-mock-tag: <id>` labels a request in /__mock/aborts.
+ * `x-mock-hash-body: 1` (automatic above 32 MB) never buffers the request: the body is hashed on the fly and
+ * /__mock/last reports bodySha256 / bodyBytes. Files APIs (OpenAI /v1/files + /v1/uploads, Anthropic /v1/files,
+ * Gemini /upload/v1beta/files + /v1beta/files) keep files per upstream credential (a file is invisible to other keys).
  */
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import zlib from "node:zlib";
+import { createHash, randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
+import { MultipartScanner, boundaryOf } from "../src/gateway/multipart";
 
 // ---------------------------------------------------------------------------------------------------------------------
 // small utils
@@ -83,7 +100,53 @@ interface LastRequest {
   headers: Record<string, string>;
   body: unknown;
   multipart: { fields: Record<string, string>; files: { name: string; filename: string; size: number }[] } | null;
+  /** streamed (never buffered) bodies: hash + size of everything received */
+  bodySha256?: string;
+  bodyBytes?: number;
   at: string;
+}
+/** A request that ended before the mock finished answering it (the client / the gateway hung up). */
+interface AbortRecord {
+  tag: string | null;
+  path: string;
+  key: string;
+  /** what the mock was doing: reading the request body, waiting (delay) or streaming the response */
+  phase: "uploading" | "waiting" | "streaming";
+  frames: number;
+  /** Date.now() at the moment the mock noticed */
+  at: number;
+}
+interface MockFile {
+  id: string;
+  /** upstream credential that owns it: other keys cannot see it (separate accounts) */
+  owner: string;
+  api: "openai" | "anthropic" | "gemini";
+  filename: string;
+  purpose: string;
+  mime: string;
+  bytes: number;
+  sha256: string;
+  /** small files keep their content; big ones are regenerated as a pattern on download */
+  data: Buffer | null;
+  createdAt: number;
+  object: Obj;
+}
+interface MockUpload {
+  id: string;
+  owner: string;
+  filename: string;
+  purpose: string;
+  mime: string;
+  bytes: number;
+  parts: Map<string, { size: number; sha256: string }>;
+  status: string;
+}
+interface MockGSession {
+  id: string;
+  owner: string;
+  mime: string;
+  displayName: string;
+  received: number;
 }
 interface MockState {
   total: number;
@@ -93,6 +156,10 @@ interface MockState {
   byPath: Map<string, number>;
   last: Map<string, LastRequest>;
   responses: Map<string, Obj>;
+  aborts: AbortRecord[];
+  files: Map<string, MockFile>;
+  uploads: Map<string, MockUpload>;
+  gsessions: Map<string, MockGSession>;
   /** fal / Replicate / video job state (created lazily) */
   extras?: MockExtras;
 }
@@ -106,6 +173,10 @@ function createState(): MockState {
     byPath: new Map(),
     last: new Map(),
     responses: new Map(),
+    aborts: [],
+    files: new Map(),
+    uploads: new Map(),
+    gsessions: new Map(),
   };
 }
 
@@ -138,12 +209,28 @@ function resetState(state: MockState): void {
   state.byPath = new Map();
   state.last = new Map();
   state.responses = new Map();
+  state.aborts = [];
+  state.files = new Map();
+  state.uploads = new Map();
+  state.gsessions = new Map();
   state.extras = undefined;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // request context
 // ---------------------------------------------------------------------------------------------------------------------
+
+interface Fault {
+  dropHeaders: boolean;
+  dropPreContent: boolean;
+  rstAfter?: number;
+  finAfter?: number;
+  stallAfter?: number;
+  errorAfter?: number;
+  gzip: boolean;
+  /** send the response headers right away, before the first (delayed) frame - what a real provider does */
+  earlyHeaders?: boolean;
+}
 
 interface Ctx {
   req: http.IncomingMessage;
@@ -154,6 +241,76 @@ interface Ctx {
   closed: boolean;
   waiters: Set<() => void>;
   state: MockState;
+  fault: Fault | null;
+  phase: "uploading" | "waiting" | "streaming";
+  frames: number;
+  /** the mock itself cut the connection (not a client abort) */
+  selfDestroyed: boolean;
+  tag: string | null;
+  cred: string;
+  /** body received in streaming-hash mode */
+  hashed: { sha256: string; bytes: number } | null;
+  /** multipart structure of a streamed body (fields + file part sizes) */
+  scan: MultipartScanner | null;
+}
+
+function parseFault(req: http.IncomingMessage): Fault | null {
+  const raw = req.headers["x-mock-mode"];
+  const text = Array.isArray(raw) ? raw.join(",") : raw;
+  if (!text) return null;
+  const f: Fault = { dropHeaders: false, dropPreContent: false, gzip: false };
+  for (const part of text.split(",")) {
+    const [name, arg] = part.trim().split(":");
+    const n = Number(arg);
+    switch (name) {
+      case "drop-headers":
+        f.dropHeaders = true;
+        break;
+      case "drop-pre-content":
+        f.dropPreContent = true;
+        break;
+      case "rst-after":
+        f.rstAfter = Number.isFinite(n) ? n : 1;
+        break;
+      case "fin-after":
+        f.finAfter = Number.isFinite(n) ? n : 1;
+        break;
+      case "stall-after":
+        f.stallAfter = Number.isFinite(n) ? n : 1;
+        break;
+      case "error-after":
+        f.errorAfter = Number.isFinite(n) ? n : 1;
+        break;
+      case "gzip":
+        f.gzip = true;
+        break;
+      case "early-headers":
+        f.earlyHeaders = true;
+        break;
+      default:
+    }
+  }
+  return f;
+}
+
+/** Cut the connection the way a failing provider does: `rst` = TCP reset, `fin` = clean close without the chunked terminator. */
+function cutConnection(ctx: Ctx, how: "rst" | "fin"): void {
+  ctx.selfDestroyed = true;
+  const socket = ctx.res.socket ?? ctx.req.socket;
+  if (!socket || socket.destroyed) return;
+  if (how === "rst") socket.resetAndDestroy();
+  else {
+    socket.end();
+    setTimeout(() => socket.destroy(), 20).unref?.();
+  }
+}
+
+/** Write `data` and resolve once it has left the process (so a following RST cannot swallow it). */
+function writeFlushed(ctx: Ctx, w: { write(chunk: string | Buffer, cb: (err?: Error | null) => void): boolean }, data: string | Buffer): Promise<void> {
+  return new Promise<void>((resolve) => {
+    if (ctx.res.destroyed) return resolve();
+    w.write(data, () => resolve());
+  });
 }
 
 /** Cancellable sleep. Resolves false when the client went away (so callers can bail out). */
@@ -174,9 +331,10 @@ function sleep(ctx: Ctx, ms: number): Promise<boolean> {
   });
 }
 
-function surfaceOf(path: string): Surface {
+function surfaceOf(path: string, req?: http.IncomingMessage): Surface {
   if (path === "/v1/messages" || path.startsWith("/v1/messages/")) return "anthropic";
-  if (path === "/v1beta/models" || path.startsWith("/v1beta/models/")) return "gemini";
+  if (path === "/v1/files" || path.startsWith("/v1/files/")) return req?.headers["anthropic-version"] ? "anthropic" : "openai";
+  if (path === "/v1beta/models" || path.startsWith("/v1beta/models/") || path === "/v1beta/files" || path.startsWith("/v1beta/files/") || path.startsWith("/upload/v1beta/")) return "gemini";
   return "openai";
 }
 
@@ -220,16 +378,36 @@ const GEMINI_ERR: Record<ErrKind, string> = {
   not_found: "NOT_FOUND",
 };
 
+/** Ids every real provider sends; the gateway must rename them to x-upstream-request-id and drop the rest. */
+function idHeaders(): Record<string, string> {
+  return { "x-request-id": `req_mock_${rid()}`, "openai-organization": "org-mock-secret", "openai-version": "2020-10-01", "x-powered-by": "mock-upstream" };
+}
+
 function sendJson(ctx: Ctx, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const res = ctx.res;
   if (res.headersSent || res.writableEnded || res.destroyed) return;
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...headers });
+  const f = ctx.fault;
+  if (f?.dropHeaders || f?.dropPreContent) return cutConnection(ctx, "rst");
+  let payload: string | Buffer = JSON.stringify(body);
+  const out: Record<string, string | number> = { "content-type": "application/json", ...idHeaders(), ...headers };
+  if (f?.gzip) {
+    payload = zlib.gzipSync(payload);
+    out["content-encoding"] = "gzip";
+  }
+  out["content-length"] = Buffer.byteLength(payload);
+  if (f?.rstAfter !== undefined || f?.finAfter !== undefined) {
+    // cut the body in half
+    res.writeHead(status, out);
+    const half = Buffer.from(payload).subarray(0, Math.max(1, Math.floor(Buffer.byteLength(payload) / 2)));
+    void writeFlushed(ctx, res, half).then(() => cutConnection(ctx, f.rstAfter !== undefined ? "rst" : "fin"));
+    return;
+  }
+  res.writeHead(status, out);
   res.end(payload);
 }
 
-function sendError(ctx: Ctx, kind: ErrKind, message: string, extraHeaders: Record<string, string> = {}): void {
-  const status = ERR_STATUS[kind];
+function sendError(ctx: Ctx, kind: ErrKind, message: string, extraHeaders: Record<string, string> = {}, statusOverride?: number): void {
+  const status = statusOverride ?? ERR_STATUS[kind];
   const headers = { ...extraHeaders };
   let body: Obj;
   if (ctx.surface === "anthropic") {
@@ -264,16 +442,69 @@ function rateLimitHeaders(ctx: Ctx): Record<string, string> {
  */
 async function emitFrames(ctx: Ctx, frames: string[], delay: number, contentType: string): Promise<void> {
   const res = ctx.res;
+  const f = ctx.fault;
+  ctx.phase = "waiting";
+  if (f?.dropHeaders) return cutConnection(ctx, "rst");
   res.statusCode = 200;
   res.setHeader("content-type", contentType);
   res.setHeader("cache-control", "no-cache");
   res.setHeader("x-accel-buffering", "no");
-  for (const frame of frames) {
+  for (const [k, v] of Object.entries(idHeaders())) res.setHeader(k, v);
+  const gz = f?.gzip ? zlib.createGzip() : null;
+  if (gz) {
+    res.setHeader("content-encoding", "gzip");
+    gz.pipe(res);
+  }
+  const put = (data: string): Promise<void> => {
+    if (!gz) return writeFlushed(ctx, res, data);
+    return new Promise<void>((resolve) => {
+      gz.write(data);
+      gz.flush(() => resolve());
+    });
+  };
+  if (f?.dropPreContent) {
+    res.flushHeaders();
+    await sleep(ctx, 40);
+    return cutConnection(ctx, "rst");
+  }
+  if (f?.earlyHeaders) res.flushHeaders();
+  for (let i = 0; i < frames.length; i++) {
     if (!(await sleep(ctx, delay))) return;
     if (res.destroyed || res.writableEnded) return;
-    res.write(frame);
+    ctx.phase = "streaming";
+    await put(frames[i]);
+    ctx.frames++;
+    const n = i + 1;
+    // (a TCP reset discards what the peer has not read yet: give the frames written so far time to be consumed)
+    if (f?.rstAfter === n) {
+      await sleep(ctx, 60);
+      return cutConnection(ctx, "rst");
+    }
+    if (f?.finAfter === n) {
+      await sleep(ctx, 30);
+      return cutConnection(ctx, "fin");
+    }
+    if (f?.stallAfter === n) {
+      await sleep(ctx, 3_600_000);
+      return;
+    }
+    if (f?.errorAfter === n) {
+      await put(streamErrorFrame(ctx));
+      if (gz) gz.end();
+      else res.end();
+      return;
+    }
   }
-  if (!res.destroyed && !res.writableEnded) res.end();
+  if (gz) gz.end();
+  else if (!res.destroyed && !res.writableEnded) res.end();
+}
+
+/** The in-stream error event each API uses (sent after `error-after:N` frames). */
+function streamErrorFrame(ctx: Ctx): string {
+  if (ctx.surface === "anthropic") return eventFrame("error", { type: "error", error: { type: "overloaded_error", message: "Overloaded" }, request_id: `req_mock_${rid()}` });
+  if (ctx.surface === "gemini") return dataFrame({ error: { code: 503, message: "The model is overloaded. Please try again later.", status: "UNAVAILABLE" } });
+  if (ctx.path === "/v1/responses") return eventFrame("error", { type: "error", code: "server_error", message: "The server had an error while processing your request.", param: null, sequence_number: 99 });
+  return dataFrame({ error: { message: "The server had an error while processing your request.", type: "server_error", code: "server_error", param: null } });
 }
 
 const SSE = "text/event-stream";
@@ -1509,6 +1740,318 @@ async function handleExtra(ctx: Ctx, kind: ExtraKind, raw: Buffer): Promise<void
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Files APIs (OpenAI /v1/files + /v1/uploads, Anthropic /v1/files, Gemini resumable upload + /v1beta/files)
+// A file belongs to the upstream credential that created it: any other key answers 404, exactly like separate accounts.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const FILE_KEEP_BYTES = 16 * 1024 * 1024;
+
+function isFilesPath(path: string): boolean {
+  return (
+    path === "/v1/files" ||
+    path.startsWith("/v1/files/") ||
+    path === "/v1/uploads" ||
+    path.startsWith("/v1/uploads/") ||
+    path === "/v1beta/files" ||
+    path.startsWith("/v1beta/files/") ||
+    path === "/upload/v1beta/files"
+  );
+}
+
+/** Deterministic filler for downloads of files whose bytes were not kept. */
+function patternChunk(offset: number, len: number): Buffer {
+  const b = Buffer.allocUnsafe(len);
+  for (let i = 0; i < len; i++) b[i] = (offset + i) & 0xff;
+  return b;
+}
+
+/** Stream `total` bytes (a Buffer or generated pattern) with per-chunk delay so a client abort can be observed mid-download. */
+async function streamBytes(ctx: Ctx, total: number, source: Buffer | null, type: string, headers: Record<string, string> = {}): Promise<void> {
+  const res = ctx.res;
+  if (res.headersSent || res.destroyed) return;
+  const delay = resolveDelay(ctx.req, null, { notool: false });
+  if (ctx.fault?.dropHeaders) return cutConnection(ctx, "rst");
+  res.writeHead(200, { "content-type": type, "content-length": total, ...idHeaders(), ...headers });
+  ctx.phase = "streaming";
+  const CHUNK = 64 * 1024;
+  let sent = 0;
+  while (sent < total) {
+    if (!(await sleep(ctx, delay))) return;
+    if (res.destroyed) return;
+    const n = Math.min(CHUNK, total - sent);
+    await writeFlushed(ctx, res, source ? source.subarray(sent, sent + n) : patternChunk(sent, n));
+    sent += n;
+    ctx.frames++;
+    if (ctx.fault?.rstAfter !== undefined && ctx.frames >= ctx.fault.rstAfter) return cutConnection(ctx, "rst");
+  }
+  res.end();
+}
+
+const mockFileId = (api: MockFile["api"]) => (api === "openai" ? `file-mock${rid()}` : api === "anthropic" ? `file_011mock${rid()}` : `mock${rid().toLowerCase()}`);
+
+function fileObject(f: Omit<MockFile, "object">, origin: string): Obj {
+  switch (f.api) {
+    case "anthropic":
+      return { id: f.id, type: "file", filename: f.filename, mime_type: f.mime, size_bytes: f.bytes, created_at: new Date(f.createdAt).toISOString(), downloadable: false };
+    case "gemini":
+      return {
+        name: `files/${f.id}`,
+        displayName: f.filename,
+        mimeType: f.mime,
+        sizeBytes: String(f.bytes),
+        createTime: new Date(f.createdAt).toISOString(),
+        updateTime: new Date(f.createdAt).toISOString(),
+        expirationTime: new Date(f.createdAt + 172_800_000).toISOString(),
+        sha256Hash: Buffer.from(f.sha256, "hex").toString("base64"),
+        uri: `${origin}/v1beta/files/${f.id}`,
+        state: "ACTIVE",
+        source: "UPLOADED",
+      };
+    default:
+      return { id: f.id, object: "file", bytes: f.bytes, created_at: Math.floor(f.createdAt / 1000), filename: f.filename, purpose: f.purpose, status: "processed", status_details: null };
+  }
+}
+
+function putFile(ctx: Ctx, f: Omit<MockFile, "object" | "createdAt">): MockFile {
+  const full = { ...f, createdAt: Date.now() };
+  const file: MockFile = { ...full, object: fileObject(full, originOf(ctx)) };
+  ctx.state.files.set(`${f.api}:${f.id}`, file);
+  return file;
+}
+
+function ownFile(ctx: Ctx, api: MockFile["api"], id: string): MockFile | null {
+  const f = ctx.state.files.get(`${api}:${id}`);
+  return f && f.owner === ctx.cred ? f : null;
+}
+
+function fileNotFound(ctx: Ctx, id: string): void {
+  if (ctx.surface === "anthropic") return sendJson(ctx, 404, { type: "error", error: { type: "not_found_error", message: `File not found: ${id}` }, request_id: `req_mock_${rid()}` });
+  if (ctx.surface === "gemini") return sendJson(ctx, 403, { error: { code: 403, message: `Permission denied on resource or it may not exist: files/${id}`, status: "PERMISSION_DENIED" } });
+  sendJson(ctx, 404, { error: { message: `No such File object: ${id}`, type: "invalid_request_error", param: "id", code: null } });
+}
+
+/** The first file part of a multipart body kept in memory, with its metadata. */
+function firstFilePart(raw: Buffer, contentType: string): { filename: string; mime: string; data: Buffer; fields: Record<string, string> } | null {
+  const boundary = boundaryOf(contentType);
+  if (!boundary || raw.length === 0) return null;
+  const sc = new MultipartScanner(boundary);
+  try {
+    sc.push(raw);
+  } catch {
+    return null;
+  }
+  const f = sc.files[0];
+  if (!f) return null;
+  return { filename: f.filename, mime: f.type || "application/octet-stream", data: raw.subarray(f.start, f.end), fields: Object.fromEntries(sc.fields.map((x) => [x.name, x.value])) };
+}
+
+async function handleFilesApi(ctx: Ctx, raw: Buffer): Promise<void> {
+  const { req, path, url, state } = ctx;
+  const method = (req.method ?? "GET").toUpperCase();
+  const ct = String(req.headers["content-type"] ?? "");
+  const origin = originOf(ctx);
+  const jsonBody = (): Obj => {
+    try {
+      const v: unknown = raw.length ? JSON.parse(raw.toString("utf8")) : {};
+      return isObj(v) ? v : {};
+    } catch {
+      return {};
+    }
+  };
+
+  // ------------------------------------------------------------------ OpenAI + Anthropic /v1/files
+  if (path === "/v1/files" || path.startsWith("/v1/files/")) {
+    const api: MockFile["api"] = ctx.surface === "anthropic" ? "anthropic" : "openai";
+    if (api === "anthropic" && !String(req.headers["anthropic-beta"] ?? "").includes("files-api")) {
+      return sendError(ctx, "invalid_request", "The Files API is in beta: send the anthropic-beta: files-api-2025-04-14 header.");
+    }
+    const m = /^\/v1\/files\/([^/]+)(\/content)?$/.exec(path);
+    if (path === "/v1/files" && method === "POST") {
+      // small bodies are kept, big ones were hashed on the fly
+      let filename = "file";
+      let mime = "application/octet-stream";
+      let purpose = "assistants";
+      let bytes = 0;
+      let data: Buffer | null = null;
+      let sha = ctx.hashed?.sha256 ?? "";
+      if (ctx.hashed) {
+        const f = ctx.scan?.files[0];
+        if (!f) return sendError(ctx, "invalid_request", "Missing required parameter: 'file'.");
+        filename = f.filename;
+        mime = f.type || mime;
+        bytes = f.size;
+        purpose = ctx.scan?.fields.find((x) => x.name === "purpose")?.value ?? purpose;
+      } else {
+        const part = firstFilePart(raw, ct);
+        if (!part) return sendError(ctx, "invalid_request", "Missing required parameter: 'file'.");
+        filename = part.filename;
+        mime = part.mime;
+        bytes = part.data.length;
+        purpose = part.fields.purpose ?? purpose;
+        sha = createHash("sha256").update(part.data).digest("hex");
+        if (bytes <= FILE_KEEP_BYTES) data = Buffer.from(part.data);
+      }
+      if (api === "openai" && !purpose) return sendError(ctx, "invalid_request", "Missing required parameter: 'purpose'.");
+      const f = putFile(ctx, { id: mockFileId(api), owner: ctx.cred, api, filename, purpose, mime, bytes, sha256: sha, data });
+      return sendJson(ctx, 200, f.object, idHeaders());
+    }
+    if (path === "/v1/files" && method === "GET") {
+      const mine = [...state.files.values()].filter((f) => f.api === api && f.owner === ctx.cred).sort((a, b) => b.createdAt - a.createdAt);
+      const data = mine.map((f) => f.object);
+      if (api === "anthropic") return sendJson(ctx, 200, { data, has_more: false, first_id: mine[0]?.id ?? null, last_id: mine[mine.length - 1]?.id ?? null });
+      return sendJson(ctx, 200, { object: "list", data, has_more: false });
+    }
+    if (m) {
+      const id = decodeURIComponent(m[1]);
+      const f = ownFile(ctx, api, id);
+      if (!f) return fileNotFound(ctx, id);
+      if (m[2] && method === "GET") return streamBytes(ctx, f.bytes, f.data, f.mime);
+      if (!m[2] && method === "GET") return sendJson(ctx, 200, f.object, idHeaders());
+      if (!m[2] && method === "DELETE") {
+        state.files.delete(`${api}:${id}`);
+        return sendJson(ctx, 200, api === "anthropic" ? { id, type: "file_deleted" } : { id, object: "file", deleted: true });
+      }
+    }
+    return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
+  }
+
+  // ------------------------------------------------------------------ OpenAI /v1/uploads
+  if (path === "/v1/uploads" || path.startsWith("/v1/uploads/")) {
+    const uploadObj = (u: MockUpload, file: Obj | null): Obj => ({
+      id: u.id,
+      object: "upload",
+      bytes: u.bytes,
+      created_at: nowSec(),
+      filename: u.filename,
+      purpose: u.purpose,
+      status: u.status,
+      expires_at: nowSec() + 3600,
+      file,
+    });
+    if (path === "/v1/uploads" && method === "POST") {
+      const b = jsonBody();
+      const filename = asStr(b.filename);
+      const purpose = asStr(b.purpose);
+      const bytes = asNum(b.bytes);
+      if (!filename || !purpose || bytes === undefined) return sendError(ctx, "invalid_request", "filename, purpose and bytes are required.");
+      const u: MockUpload = { id: `upload_mock${rid()}`, owner: ctx.cred, filename, purpose, mime: asStr(b.mime_type) ?? "application/octet-stream", bytes, parts: new Map(), status: "pending" };
+      state.uploads.set(u.id, u);
+      return sendJson(ctx, 200, uploadObj(u, null), idHeaders());
+    }
+    const m = /^\/v1\/uploads\/([^/]+)\/(parts|complete|cancel)$/.exec(path);
+    if (m && method === "POST") {
+      const id = decodeURIComponent(m[1]);
+      const u = state.uploads.get(id);
+      if (!u || u.owner !== ctx.cred) return sendJson(ctx, 404, { error: { message: `No such Upload object: ${id}`, type: "invalid_request_error", param: "id", code: null } });
+      if (m[2] === "parts") {
+        const size = ctx.hashed ? (ctx.scan?.files[0]?.size ?? ctx.hashed.bytes) : (firstFilePart(raw, ct)?.data.length ?? 0);
+        const sha = ctx.hashed?.sha256 ?? createHash("sha256").update(raw).digest("hex");
+        const partId = `part_mock${rid()}`;
+        u.parts.set(partId, { size, sha256: sha });
+        return sendJson(ctx, 200, { id: partId, object: "upload.part", created_at: nowSec(), upload_id: id }, idHeaders());
+      }
+      if (m[2] === "cancel") {
+        u.status = "cancelled";
+        return sendJson(ctx, 200, uploadObj(u, null), idHeaders());
+      }
+      const ids = asArr(jsonBody().part_ids).filter((x): x is string => typeof x === "string");
+      let total = 0;
+      for (const pid of ids) {
+        const p = u.parts.get(pid);
+        if (!p) return sendError(ctx, "invalid_request", `Unknown part id: ${pid}`);
+        total += p.size;
+      }
+      if (total !== u.bytes) return sendError(ctx, "invalid_request", `The number of bytes uploaded (${total}) does not match the number of bytes specified (${u.bytes}).`);
+      u.status = "completed";
+      const f = putFile(ctx, { id: mockFileId("openai"), owner: ctx.cred, api: "openai", filename: u.filename, purpose: u.purpose, mime: u.mime, bytes: total, sha256: "", data: null });
+      return sendJson(ctx, 200, uploadObj(u, f.object), idHeaders());
+    }
+    return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
+  }
+
+  // ------------------------------------------------------------------ Gemini
+  if (path === "/upload/v1beta/files" && (method === "POST" || method === "PUT")) {
+    const command = String(req.headers["x-goog-upload-command"] ?? "").toLowerCase();
+    const uploadId = url.searchParams.get("upload_id");
+    if (!uploadId) {
+      if (String(req.headers["x-goog-upload-protocol"] ?? "").toLowerCase() === "multipart") {
+        const f = putFile(ctx, { id: mockFileId("gemini"), owner: ctx.cred, api: "gemini", filename: "upload", purpose: "", mime: ct || "application/octet-stream", bytes: ctx.hashed?.bytes ?? raw.length, sha256: ctx.hashed?.sha256 ?? createHash("sha256").update(raw).digest("hex"), data: null });
+        return sendJson(ctx, 200, { file: f.object }, { "x-goog-upload-status": "final", ...idHeaders() });
+      }
+      if (command !== "start") return sendError(ctx, "invalid_request", "Missing x-goog-upload-command: start.");
+      const meta = jsonBody();
+      const s: MockGSession = {
+        id: `gup${rid()}`,
+        owner: ctx.cred,
+        mime: String(req.headers["x-goog-upload-header-content-type"] ?? "application/octet-stream"),
+        displayName: isObj(meta.file) ? (asStr(meta.file.display_name) ?? asStr(meta.file.displayName) ?? "upload") : "upload",
+        received: 0,
+      };
+      state.gsessions.set(s.id, s);
+      res204(ctx, { "x-goog-upload-status": "active", "x-goog-upload-url": `${origin}/upload/v1beta/files?upload_id=${s.id}&upload_protocol=resumable`, "x-goog-upload-chunk-granularity": "8388608", ...idHeaders() });
+      return;
+    }
+    const s = state.gsessions.get(uploadId);
+    if (!s || s.owner !== ctx.cred) return sendJson(ctx, 404, { error: { code: 404, message: "Invalid or expired upload session.", status: "NOT_FOUND" } });
+    const size = ctx.hashed?.bytes ?? raw.length;
+    s.received += size;
+    if (command.includes("finalize")) {
+      const f = putFile(ctx, {
+        id: mockFileId("gemini"),
+        owner: ctx.cred,
+        api: "gemini",
+        filename: s.displayName,
+        purpose: "",
+        mime: s.mime,
+        bytes: s.received,
+        sha256: ctx.hashed?.sha256 ?? createHash("sha256").update(raw).digest("hex"),
+        data: !ctx.hashed && size <= FILE_KEEP_BYTES ? Buffer.from(raw) : null,
+      });
+      state.gsessions.delete(uploadId);
+      return sendJson(ctx, 200, { file: f.object }, { "x-goog-upload-status": "final", ...idHeaders() });
+    }
+    return sendJson(ctx, 200, {}, { "x-goog-upload-status": "active" });
+  }
+  if (path === "/v1beta/files" && method === "GET") {
+    const mine = [...state.files.values()].filter((f) => f.api === "gemini" && f.owner === ctx.cred);
+    return sendJson(ctx, 200, { files: mine.map((f) => f.object) });
+  }
+  const gm = /^\/v1beta\/files\/([^/]+)$/.exec(path);
+  if (gm) {
+    const id = decodeURIComponent(gm[1]);
+    const f = ownFile(ctx, "gemini", id);
+    if (!f) return fileNotFound(ctx, id);
+    if (method === "GET") return sendJson(ctx, 200, f.object, idHeaders());
+    if (method === "DELETE") {
+      state.files.delete(`gemini:${id}`);
+      return sendJson(ctx, 200, {});
+    }
+  }
+  return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
+}
+
+function res204(ctx: Ctx, headers: Record<string, string>): void {
+  const res = ctx.res;
+  if (res.headersSent || res.destroyed) return;
+  res.writeHead(200, { "content-length": 0, ...headers });
+  res.end();
+}
+
+/** `file_id` / `fileUri` strings anywhere in a request body. */
+function referencedFiles(v: unknown, out: Array<{ api: MockFile["api"]; id: string }> = [], key = "", depth = 0): Array<{ api: MockFile["api"]; id: string }> {
+  if (depth > 24) return out;
+  if (typeof v === "string") {
+    if (key === "file_id") out.push({ api: v.startsWith("file_011") ? "anthropic" : "openai", id: v });
+    else if (key === "fileUri" || key === "file_uri") {
+      const m = /\/files\/([A-Za-z0-9_-]+)/.exec(v);
+      if (m) out.push({ api: "gemini", id: m[1] });
+    }
+  } else if (Array.isArray(v)) for (const x of v) referencedFiles(x, out, key, depth + 1);
+  else if (isObj(v)) for (const [k, x] of Object.entries(v)) referencedFiles(x, out, k, depth + 1);
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // auth & dispatch
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -1570,7 +2113,8 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   const known =
     (method === "POST" && (postRoutes.has(path) || !!gem)) ||
     (method === "GET" && (path === "/v1/models" || !!modelOne || path === "/v1beta/models" || !!gemModelOne)) ||
-    !!resp;
+    !!resp ||
+    isFilesPath(path);
   if (!known) return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
 
   // --- auth (per-surface header style) ---
@@ -1579,13 +2123,35 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   const slow = cred.includes("slow");
   if (slow && !(await sleep(ctx, 1500))) return;
   if (cred.includes("bad")) return sendError(ctx, "auth", "Incorrect API key provided.");
-  if (cred.includes("fail429")) return sendError(ctx, "rate_limit", "Rate limit reached for requests (mock fail429 key).", rateLimitHeaders(ctx));
-  if (cred.includes("fail500")) return sendError(ctx, "server", "The server had an error while processing your request (mock fail500 key).");
-  if (cred.includes("fail529")) return sendError(ctx, "overloaded", "Overloaded (mock fail529 key).");
+  // (the messages are what a real provider says: the gateway forwards them to the client, so they must not name the fault key)
+  if (cred.includes("fail429")) return sendError(ctx, "rate_limit", "Rate limit reached for requests.", { ...rateLimitHeaders(ctx), ...idHeaders() });
+  if (cred.includes("fail500")) return sendError(ctx, "server", "The server had an error while processing your request.", idHeaders());
+  if (cred.includes("fail529")) return sendError(ctx, "overloaded", "Overloaded.", idHeaders());
+  // x-mock-fail: <status> - any HTTP status, retry-after 7 + request id, native error body
+  const failStatus = Number(hdr(req, "x-mock-fail"));
+  if (Number.isInteger(failStatus) && failStatus >= 400 && failStatus < 600) {
+    const kind: ErrKind = failStatus === 429 ? "rate_limit" : failStatus === 401 ? "auth" : failStatus === 404 ? "not_found" : failStatus === 529 ? "overloaded" : failStatus < 500 ? "invalid_request" : "server";
+    const rl = failStatus === 429 ? { ...rateLimitHeaders(ctx), "retry-after": "7" } : { "retry-after": "7" };
+    return sendError(ctx, kind, failStatus === 429 ? "Rate limit reached for requests." : failStatus === 529 ? "Overloaded." : failStatus >= 500 ? "The server had an error while processing your request." : "The request was rejected.", { ...rl, ...idHeaders() }, failStatus);
+  }
 
   if (surface === "anthropic" && !hdr(req, "anthropic-version")) {
     return sendError(ctx, "invalid_request", "anthropic-version: header is required");
   }
+  ctx.cred = cred;
+
+  // files referenced by the request must belong to this credential (the gateway has to pin the request to the right account)
+  if (method === "POST" && !isFilesPath(path) && /^application\/json/i.test(String(req.headers["content-type"] ?? "")) && raw.length > 0 && raw.length < 8 * 1024 * 1024) {
+    try {
+      const v: unknown = JSON.parse(raw.toString("utf8"));
+      for (const ref of referencedFiles(v)) {
+        if (!ownFile(ctx, ref.api, ref.id)) return fileNotFound(ctx, ref.id);
+      }
+    } catch {
+      /* reported below */
+    }
+  }
+  if (isFilesPath(path)) return handleFilesApi(ctx, raw);
 
   // --- GETs / bodiless ---
   if (method === "GET") {
@@ -1599,12 +2165,18 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   // --- POSTs ---
   let parsed: Parsed;
   try {
-    parsed = parseBody(raw, String(req.headers["content-type"] ?? ""));
+    parsed = ctx.hashed ? hashedParse(ctx) : parseBody(raw, String(req.headers["content-type"] ?? ""));
   } catch (e) {
     return sendError(ctx, "invalid_request", e instanceof BadBody ? e.message : "Invalid request body");
   }
   const b = parsed.json ?? {};
   if (raw.includes("[[http400]]")) return sendError(ctx, "invalid_request", "mock: request rejected ([[http400]])");
+
+  // non-chat endpoints honour x-mock-delay-ms too (a slow upstream: lets tests abort while the gateway waits for it)
+  if (/^\/v1\/(images|audio|embeddings|moderations)/.test(path)) {
+    const d = resolveDelay(req, null, { notool: false });
+    if (d > 0 && !(await sleep(ctx, d))) return;
+  }
 
   if (gem) return handleGemini(ctx, decodeURIComponent(gem[1]), gem[2], b);
   switch (path) {
@@ -1670,7 +2242,55 @@ function introspect(state: MockState, res: http.ServerResponse, url: URL, path: 
     else json(200, rec);
     return true;
   }
+  if (path === "/__mock/aborts") {
+    const tag = url.searchParams.get("tag");
+    json(200, { now: Date.now(), aborts: tag ? state.aborts.filter((a) => a.tag === tag) : state.aborts });
+    return true;
+  }
   return false;
+}
+
+/** Streaming-hash mode: the request is never buffered, only counted and hashed (huge uploads). */
+async function hashBody(req: http.IncomingMessage, ct: string): Promise<{ sha256: string; bytes: number; scan: MultipartScanner | null }> {
+  const h = createHash("sha256");
+  let bytes = 0;
+  const boundary = /multipart\/form-data/i.test(ct) ? boundaryOf(ct) : null;
+  const scan = boundary ? new MultipartScanner(boundary) : null;
+  for await (const c of req) {
+    const b = typeof c === "string" ? Buffer.from(c) : (c as Buffer);
+    h.update(b);
+    bytes += b.length;
+    try {
+      scan?.push(b);
+    } catch {
+      /* malformed multipart: reported by the handler */
+    }
+  }
+  return { sha256: h.digest("hex"), bytes, scan };
+}
+
+function wantsHash(req: http.IncomingMessage): boolean {
+  if (hdr(req, "x-mock-hash-body")) return true;
+  const len = Number(req.headers["content-length"]);
+  return Number.isFinite(len) && len > 32 * 1024 * 1024;
+}
+
+/** What the handlers see for a streamed body: the multipart structure, or a canned chat-like JSON request. */
+function hashedParse(ctx: Ctx): Parsed {
+  const ct = String(ctx.req.headers["content-type"] ?? "");
+  if (/multipart\/form-data/i.test(ct)) {
+    const sc = ctx.scan;
+    return {
+      json: null,
+      multipart: {
+        fields: Object.fromEntries((sc?.fields ?? []).map((f) => [f.name, f.value])),
+        files: (sc?.files ?? []).map((f) => ({ name: f.name, filename: f.filename, size: f.size })),
+      },
+    };
+  }
+  const text = "[[usage:in=10,out=5]] hashed body";
+  const stream = String(ctx.req.headers["x-mock-hash-stream"] ?? "") === "1";
+  return { json: { model: "hash-model", messages: [{ role: "user", content: text }], input: text, prompt: text, contents: [{ role: "user", parts: [{ text }] }], max_tokens: 64, stream }, multipart: null };
 }
 
 async function handle(state: MockState, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -1683,26 +2303,58 @@ async function handle(state: MockState, req: http.IncomingMessage, res: http.Ser
     if (introspect(state, res, url, path)) return;
   }
 
-  const surface = surfaceOf(path);
-  const ctx: Ctx = { req, res, url, path, surface, closed: false, waiters: new Set(), state };
+  const surface = surfaceOf(path, req);
   const key = credentialFor(surface, req, url) ?? "(none)";
+  const ctx: Ctx = {
+    req,
+    res,
+    url,
+    path,
+    surface,
+    closed: false,
+    waiters: new Set(),
+    state,
+    fault: parseFault(req),
+    phase: "uploading",
+    frames: 0,
+    selfDestroyed: false,
+    tag: hdr(req, "x-mock-tag"),
+    cred: key,
+    hashed: null,
+    scan: null,
+  };
   const done = track(state, key, path);
   res.on("close", () => {
     ctx.closed = true;
     for (const w of [...ctx.waiters]) w();
     ctx.waiters.clear();
     done();
+    // the other side hung up before the mock finished answering (client abort / gateway abort)
+    if (!res.writableFinished && !ctx.selfDestroyed) state.aborts.push({ tag: ctx.tag, path, key, phase: ctx.phase, frames: ctx.frames, at: Date.now() });
   });
 
   try {
-    const raw = await readBody(req);
-    if (ctx.closed) return;
+    const ct = String(req.headers["content-type"] ?? "");
+    let raw: Buffer;
+    if (wantsHash(req)) {
+      const h = await hashBody(req, ct);
+      if (ctx.closed) return;
+      ctx.hashed = { sha256: h.sha256, bytes: h.bytes };
+      ctx.scan = h.scan;
+      raw = Buffer.alloc(0);
+    } else {
+      raw = await readBody(req);
+      if (ctx.closed) return;
+    }
+    ctx.phase = "waiting";
     // record for /__mock/last (auth failures included, so tests can inspect what the gateway sent)
     let body: unknown = null;
     let multipart: LastRequest["multipart"] = null;
     try {
-      const ct = String(req.headers["content-type"] ?? "");
-      if (/multipart\/form-data/i.test(ct)) multipart = parseMultipart(raw, ct);
+      if (ctx.hashed) {
+        const sc = ctx.scan;
+        if (sc) multipart = { fields: Object.fromEntries(sc.fields.map((f) => [f.name, f.value])), files: sc.files.map((f) => ({ name: f.name, filename: f.filename, size: f.size })) };
+      } else if (/multipart\/form-data/i.test(ct)) multipart = parseMultipart(raw, ct);
       else if (raw.length > 0) body = JSON.parse(raw.toString("utf8"));
     } catch {
       /* malformed JSON is reported to the caller below */
@@ -1716,6 +2368,7 @@ async function handle(state: MockState, req: http.IncomingMessage, res: http.Ser
       headers,
       body,
       multipart,
+      ...(ctx.hashed ? { bodySha256: ctx.hashed.sha256, bodyBytes: ctx.hashed.bytes } : raw.length ? { bodySha256: createHash("sha256").update(raw).digest("hex"), bodyBytes: raw.length } : {}),
       at: new Date().toISOString(),
     });
     await route(ctx, raw);

@@ -718,8 +718,12 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     expect(o.headers.get("retry-after")).toBe("2");
     expect(o.headers.get("x-ratelimit-remaining-requests")).toBe("0");
     const ob = await o.json();
-    expect(ob.error).toMatchObject({ type: "rate_limit_error", code: "rate_limited" });
+    // the upstream's own error document: its type / code / message survive, only our identity is scrubbed (PLAN 9d.1a)
+    expect(ob.error).toMatchObject({ type: "rate_limit_error", code: "rate_limit_exceeded", message: "Rate limit reached for requests." });
     expect(JSON.stringify(ob)).not.toMatch(/mock|127\.0\.0\.1|fail429/i);
+    expect(o.headers.get("x-upstream-request-id")).toMatch(/^req_mock_/);
+    expect(o.headers.get("openai-organization")).toBeNull();
+    expect(o.headers.get("x-powered-by")).toBeNull();
     const ol = await logOf(o);
     expect(ol).toMatchObject({ status: "UPSTREAM_ERROR", httpStatus: 429, errorCode: "rate_limited" });
     expect((ol.attempts as unknown[]).length).toBe(2);
@@ -735,14 +739,14 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     expect(a.headers.get("retry-after")).toBeTruthy();
   });
 
-  it("upstream 500s are retried and surface as a clean 502 upstream_error with detail only in internalError", async () => {
+  it("upstream 500s are retried; the client then gets the LAST upstream's real status + native error (PLAN 9d.1a), the gateway code only in the log", async () => {
     const res = await call("/v1/chat/completions", fx.main.key, { model: M.f500, messages: [{ role: "user", content: "x" }] });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(500);
     const body = await res.json();
-    expect(body.error.code).toBe("upstream_error");
+    expect(body.error).toMatchObject({ type: "server_error", code: "internal_server_error", message: "The server had an error while processing your request." });
     expect(JSON.stringify(body)).not.toMatch(/fail500|mock|127\.0\.0\.1/i);
     const log = await logOf(res);
-    expect(log).toMatchObject({ status: "UPSTREAM_ERROR", httpStatus: 502 });
+    expect(log).toMatchObject({ status: "UPSTREAM_ERROR", httpStatus: 500, errorCode: "upstream_error" });
     expect((log.attempts as Array<{ status: number }>).every((a) => a.status === 500)).toBe(true);
     expect(log.internalError).toContain("500");
   });

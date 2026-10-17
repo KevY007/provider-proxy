@@ -53,9 +53,10 @@ export const falVideoCreateDriver: Driver = {
 
     // optional reference image
     const file = ctx.form?.files.find((f) => f.name === "input_reference");
-    if (file) {
-      if (file.data.length > MAX_REFERENCE_BYTES) throw new DriverClientError(413, "'input_reference' is too large (max 8 MB).", "payload_too_large", "input_reference");
-      input.image_url = `data:${file.type || "image/png"};base64,${file.data.toString("base64")}`;
+    if (file && ctx.form) {
+      if (file.size > MAX_REFERENCE_BYTES) throw new DriverClientError(413, "'input_reference' is too large (max 8 MB).", "payload_too_large", "input_reference");
+      const data = await ctx.form.spool.slice(file.start, file.end);
+      input.image_url = `data:${file.type || "image/png"};base64,${data.toString("base64")}`;
     } else if (ctx.body) {
       const ref: unknown = ctx.body.input_reference;
       if (typeof ref === "string" && ref.trim()) input.image_url = ref.trim();

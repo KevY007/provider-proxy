@@ -32,8 +32,8 @@ export interface UpstreamTarget {
 type Surface = "openai" | "anthropic" | "gemini";
 
 export function surfaceOf(format: InboundFormat): Surface {
-  if (format === "anthropic_messages") return "anthropic";
-  if (format === "gemini") return "gemini";
+  if (format === "anthropic_messages" || format === "anthropic_files") return "anthropic";
+  if (format === "gemini" || format === "gemini_files") return "gemini";
   return "openai";
 }
 
@@ -78,8 +78,41 @@ export interface UrlInput {
   /** For video lookups: the UPSTREAM video id, plus a raw query string (e.g. "variant=thumbnail"). */
   videoId?: string;
   query?: string;
+  /** Files APIs: the UPSTREAM object id (file id, upload id, Gemini `files/xyz`). */
+  objectId?: string;
   /** Secret, only used for QUERY_KEY auth. */
   secret?: string;
+}
+
+const encPath = (s: string): string => s.split("/").map(encodeURIComponent).join("/");
+
+/** URL of a Files-API operation (raw passthrough): same path shape as the upstream's own API. */
+function filesUrl(i: UrlInput): string {
+  const { provider: p, format, op } = i;
+  const s = p.settings;
+  const id = i.objectId;
+  if (format === "anthropic_files") {
+    const root = trimSlash(str(s.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "");
+    return `${root}/v1/files${id ? `/${encodeURIComponent(id)}` : ""}${op === "files_content" ? "/content" : ""}`;
+  }
+  if (format === "gemini_files") {
+    const root = trimSlash(str(s.geminiBaseUrl) ?? p.baseUrl).replace(/\/v1(beta)?$/, "");
+    if (op === "gfiles_upload") return `${root}/upload/v1beta/files`;
+    return `${root}/v1beta/${id ? encPath(id) : "files"}`;
+  }
+  const root = trimSlash(str(s.openaiBaseUrl) ?? p.baseUrl);
+  switch (op) {
+    case "uploads_create":
+      return `${root}/uploads`;
+    case "uploads_part":
+      return `${root}/uploads/${encodeURIComponent(id ?? "")}/parts`;
+    case "uploads_complete":
+      return `${root}/uploads/${encodeURIComponent(id ?? "")}/complete`;
+    case "uploads_cancel":
+      return `${root}/uploads/${encodeURIComponent(id ?? "")}/cancel`;
+    default:
+      return `${root}/files${id ? `/${encodeURIComponent(id)}` : ""}${op === "files_content" ? "/content" : ""}`;
+  }
 }
 
 /** Operation as seen on the upstream wire (translated chat <-> messages share the "chat"/"messages" ops). */
@@ -95,7 +128,10 @@ export function buildUpstreamUrl(i: UrlInput): string {
   const s = p.settings;
   let url: string;
 
-  if (format === "anthropic_messages") {
+  if (op.startsWith("files_") || op.startsWith("uploads_") || op.startsWith("gfiles_")) {
+    url = filesUrl(i);
+    if (i.query) url += (url.includes("?") ? "&" : "?") + i.query;
+  } else if (format === "anthropic_messages") {
     const root = trimSlash(str(s.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "");
     url = `${root}/v1/messages${op === "messages_count_tokens" ? "/count_tokens" : ""}`;
   } else if (format === "gemini") {
@@ -192,10 +228,19 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
     "user-agent": "ProviderProxy/1.0",
   };
   if (i.hasBody !== false) h["content-type"] = i.contentType || "application/json";
-  if (i.op === "videos_content") {
+  if (i.op === "videos_content" || i.op === "files_content") {
     h.accept = "*/*";
     const range = i.inbound?.get("range");
     if (range) h.range = range;
+  }
+  // forwarded unchanged: providers that support idempotency handle it, we never dedupe (PLAN 9d)
+  const idem = i.inbound?.get("idempotency-key");
+  if (idem) h["idempotency-key"] = idem;
+  if (i.op && (i.op.startsWith("gfiles_") || i.op.startsWith("uploads_") || i.op.startsWith("files_"))) {
+    // Files APIs: the resumable-upload protocol headers are part of the wire contract
+    i.inbound?.forEach((v, k) => {
+      if (k.startsWith("x-goog-upload-")) h[k] = v;
+    });
   }
 
   if (surface === "anthropic") {

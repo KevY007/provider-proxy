@@ -54,7 +54,10 @@ export const SETTING_DEFS = {
   queueTimeoutMs: def("number", "gateway", "Queue timeout (ms)", "How long a request waits for a free upstream slot before getting a 429.", z.number().int().min(0).max(600000), 20000),
   defaultKeyConcurrency: def("number", "gateway", "Default key concurrency", "Concurrent request slots per upstream key when not set on the key.", z.number().int().min(1).max(100000), 50),
   defaultCustomerConcurrency: def("number", "gateway", "Default customer concurrency", "Concurrent request slots per customer when not set on key/user/group.", z.number().int().min(1).max(100000), 20),
-  passUpstreamRateLimits: def("boolean", "gateway", "Pass upstream rate-limit headers", "Forward upstream retry-after / x-ratelimit-* headers to clients on 429.", z.boolean(), true),
+  passUpstreamRateLimits: def("boolean", "gateway", "Pass upstream rate-limit headers", "Forward upstream retry-after / x-ratelimit-* headers to clients (responses and errors).", z.boolean(), true),
+  streamHeartbeatSec: def("number", "gateway", "Stream heartbeat (s)", "While an already-started SSE stream is silent for this long, send a ': keep-alive' comment line so no proxy or load balancer drops the connection. Never sent on non-SSE responses; 0 = off.", z.number().int().min(0).max(600), 15),
+  maxRequestBodyMb: def("number", "gateway", "Max request body (MB)", "Largest request body the gateway accepts. 0 = unlimited (the upstream provider's own limit applies and its error is passed through).", z.number().int().min(0).max(1000000), 0),
+  upstreamIdleTimeoutSec: def("number", "gateway", "Upstream stream idle timeout (s)", "Abort a stream when the upstream sends nothing for this long; the client connection is then dropped like on any upstream failure. 0 = never. A provider can override it with settings.idleTimeoutSec.", z.number().int().min(0).max(86400), 0),
   // --- general ---
   siteName: def("string", "general", "Site name", "Shown in the UI, emails and page titles.", z.string().min(1).max(80), "ProviderProxy"),
   supportEmail: def("string", "general", "Support email", "Shown to customers for help; used as reply-to.", z.string().max(200), ""),

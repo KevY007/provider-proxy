@@ -53,6 +53,12 @@ steps:
       - ${_SERVICE}
       - --region=${_REGION}
       - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      # Connection fidelity (docs/PLAN.md 9d / 5c): end-to-end HTTP/2 (h2c; lifts Cloud Run's 32 MB HTTP/1 request cap so
+      # uploads of any size work), the 60-minute maximum request time for long streams, CPU kept after the response so the
+      # metering buffer is flushed. These flags are also applied on every later deploy.
+      - --use-http2
+      - --timeout=3600
+      - --no-cpu-throttling
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA

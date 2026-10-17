@@ -18,8 +18,11 @@ export const ENDPOINT_FORMATS = [
   "openai_audio",
   "openai_moderations",
   "openai_videos",
+  "openai_files",
   "anthropic_messages",
+  "anthropic_files",
   "gemini",
+  "gemini_files",
 ] as const;
 export type EndpointFormat = (typeof ENDPOINT_FORMATS)[number];
 
@@ -47,7 +50,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     name: "OpenAI",
     baseUrl: "https://api.openai.com/v1",
     authStyle: "BEARER",
-    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos"],
+    formats: ["openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images", "openai_audio", "openai_moderations", "openai_videos", "openai_files"],
     settings: {},
     docsUrl: "https://platform.openai.com/docs/api-reference",
     sampleModels: ["gpt-5", "gpt-5-mini", "gpt-4.1", "o4-mini", "text-embedding-3-small", "gpt-image-1", "sora-2", "whisper-1", "tts-1"],
@@ -59,7 +62,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     name: "Anthropic",
     baseUrl: "https://api.anthropic.com",
     authStyle: "X_API_KEY",
-    formats: ["anthropic_messages"],
+    formats: ["anthropic_messages", "anthropic_files"],
     settings: { anthropicVersion: "2023-06-01" },
     docsUrl: "https://docs.anthropic.com/en/api/messages",
     sampleModels: ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"],
@@ -72,7 +75,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     baseUrl: "https://generativelanguage.googleapis.com",
     authStyle: "X_GOOG_API_KEY",
     // openai_chat + openai_embeddings are served by Google's OpenAI-compatible endpoint (/v1beta/openai)
-    formats: ["gemini", "openai_chat", "openai_embeddings"],
+    formats: ["gemini", "openai_chat", "openai_embeddings", "gemini_files"],
     settings: {},
     docsUrl: "https://ai.google.dev/gemini-api/docs",
     sampleModels: ["gemini-2.5-pro", "gemini-2.5-flash", "text-embedding-004"],

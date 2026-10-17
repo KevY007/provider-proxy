@@ -76,14 +76,18 @@ export function orderKeys(keys: readonly KeyRec[], now: number = Date.now(), ran
 export function buildCandidates(
   snap: ConfigSnapshot,
   routes: RoutePlan[],
-  opts: { now?: number; rand?: () => number; failures?: ReadonlyMap<string, number>; pinKeyId?: string | null } = {},
+  opts: { now?: number; rand?: () => number; failures?: ReadonlyMap<string, number>; pinKeyId?: string | null; preferKeyId?: string | null } = {},
 ): Candidate[] {
   const now = opts.now ?? Date.now();
-  const out: Candidate[] = [];
+  let out: Candidate[] = [];
   for (const rp of routes) {
     const keys = snap.keysByProvider.get(rp.route.providerId) ?? [];
     const pool = opts.pinKeyId ? keys.filter((k) => k.id === opts.pinKeyId) : keys;
     for (const key of orderKeys(pool, now, opts.rand)) out.push({ ...rp, key });
+  }
+  // affinity (not a pin): a customer's new uploads go to the account that already holds their other files
+  if (opts.preferKeyId && out.some((c) => c.key.id === opts.preferKeyId)) {
+    out = [...out.filter((c) => c.key.id === opts.preferKeyId), ...out.filter((c) => c.key.id !== opts.preferKeyId)];
   }
   const f = opts.failures;
   if (!f || f.size === 0) return out;

@@ -4,7 +4,9 @@ import type { ConfigSnapshot } from "./cache";
 import { getKeySecret } from "./cache";
 import { logOutcome, releaseAll, releaseUpstream, withCommon, type Ctx } from "./context";
 import { GatewayError, streamErrorEvent } from "./errors";
+import { handleFilesOk, prepareRawUpstream } from "./files";
 import { finalError, type Failure } from "./failure";
+import { forwardUpstreamHeaders } from "./headers";
 import { classifyStatus, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
 import { checkRpm, checkTpm, providerKeyDailyCost } from "./limits";
 import { fileBytes } from "./multipart";
@@ -13,34 +15,37 @@ import { streamExceedsHold } from "./reserve";
 import { rememberResponse } from "./responses-sticky";
 import { buildCandidates, type Candidate, type RoutePlan } from "./select";
 import {
-  clientErrorFromUpstream,
-  type HeaderLike,
   extractErrorMessage,
   extractUsage,
+  inbandErrorDocument,
   maskResponse,
+  mirrorErrorFromUpstream,
   parseRetryAfter,
   pickRateLimitHeaders,
   prepareUpstream,
+  scrubText,
+  type HeaderLike,
   type Prepared,
   type ScrubContext,
+  clientErrorFromUpstream,
 } from "./shape";
 import { DriverClientError, DriverFailure, UpstreamHttpError, type Driver } from "./providers/driver-types";
 import { makeDriverEnv } from "./providers/driver-env";
 import { getDriver } from "./providers/drivers";
 import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPool } from "./slots";
-import { InBandError, StreamSession, type FinishInfo } from "./stream";
+import { StreamSession, type FinishInfo } from "./stream";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
 import { countRequestTokens, countTokens } from "./tokenizer";
 import { AnthropicToChatStream, ChatToAnthropicStream, chatResponseToMessages, messagesResponseToChat } from "./translate";
-import { emptyUsage, type InboundFormat, type Json, type JsonObject, type Operation, type Usage } from "./types";
-import { ClientAbortError, UpstreamTimeoutError, readErrorBody, readTextLimited, sendUpstream, type UpstreamHandle } from "./upstream";
+import { emptyUsage, type Json, type JsonObject, type Operation, type Usage } from "./types";
+import { ClientAbortError, UpstreamTimeoutError, readErrorBody, readTextLimited, sendUpstream, wantsHttp2, type UpstreamHandle } from "./upstream";
 import { finishVideoCreate, handleVideoCreateOk } from "./video";
 import { describeNetworkError, isObject, safeJsonParse, sleep } from "./util";
 
 export { finalError, type Failure } from "./failure";
 
-const MAX_JSON_RESPONSE = 64 * 1024 * 1024;
+const MAX_JSON_RESPONSE = 512 * 1024 * 1024;
 const STREAM_OPS = new Set<Operation>(["chat", "completions", "responses", "messages", "gemini_stream"]);
 const TOKEN_OPS = new Set<Operation>(["chat", "completions", "responses", "messages", "gemini_generate", "gemini_stream", "embeddings", "gemini_embed", "gemini_batch_embed"]);
 
@@ -50,8 +55,10 @@ export type AttemptResult =
   | { kind: "client_error"; error: GatewayError };
 
 export interface ExecOptions {
-  /** Restrict to a single upstream key (Responses-API stickiness). */
+  /** Restrict to a single upstream key (Responses-API / Files stickiness). */
   pinKeyId?: string | null;
+  /** Try this upstream key first when it is usable (affinity, not a pin). */
+  preferKeyId?: string | null;
   maxAttempts?: number;
   responseId?: string;
   /** Video lookups: the UPSTREAM video id + raw query string (e.g. "variant=thumbnail"). */
@@ -62,6 +69,8 @@ export interface ExecOptions {
 }
 
 const isFailoverStatus = (s: number) => s === 401 || s === 402 || s === 403 || s === 408 || s === 429 || s >= 500 || (s >= 300 && s < 400);
+/** Upstream answers we hand to the client as they are (after our own pool failover): the upstream's own overload / rate-limit / server errors. */
+const isMirrorStatus = (s: number) => s === 408 || s === 429 || (s >= 500 && s < 600);
 
 // ------------------------------------------------------------------ slot selection
 export function upstreamPools(c: Candidate, settings: Pick<SettingValues, "defaultKeyConcurrency">): SlotPool[] {
@@ -99,6 +108,7 @@ async function pickSlot(cands: Candidate[], settings: SettingValues): Promise<{ 
  * Execute the request against `routes` with failover (PLAN 5 steps 7-11, 9b):
  * walk (route, key) candidates in order, take the first free slot, queue when everything is busy, retry on
  * 429/5xx/network/auth failures before any byte reached the client, give up after settings.maxAttempts.
+ * A client that disconnects while queued leaves the queue at once (nothing is sent upstream).
  */
 export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions = {}): Promise<Response> {
   const snap = ctx.snap!;
@@ -115,7 +125,7 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
   try {
     for (;;) {
       if (signal.aborted) throw new GatewayError("client_closed");
-      const cands = buildCandidates(snap, routes, { failures, pinKeyId: opts.pinKeyId });
+      const cands = buildCandidates(snap, routes, { failures, pinKeyId: opts.pinKeyId, preferKeyId: opts.preferKeyId });
       if (!cands.length) throw lastFailure ? finalError(lastFailure, settings) : noProviderError(snap, routes);
 
       const pick = await pickSlot(cands, settings);
@@ -185,8 +195,9 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
   const t0 = Date.now();
   const { route, key } = cand;
   const provider = route.provider;
+  const idempotencyKey = ctx.req.headers.get("idempotency-key")?.slice(0, 200) ?? undefined;
   const rec = (status: number, error?: string) =>
-    ctx.attempts.push({ providerId: provider.id, providerKeyId: key.id, routeId: route.id, status, error: error?.slice(0, 300), latencyMs: Date.now() - t0 });
+    ctx.attempts.push({ providerId: provider.id, providerKeyId: key.id, routeId: route.id, status, error: error?.slice(0, 300), latencyMs: Date.now() - t0, ...(idempotencyKey ? { idempotencyKey } : {}) });
   const fail = (fk: FailureKind, status: number, message: string, extra: Partial<Failure> = {}): AttemptResult => {
     rec(status, message);
     return { kind: "failure", failure: { fk, status, message, internal: message, startedAt: t0, ...extra } };
@@ -196,26 +207,30 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
   if (!secret) return fail("auth", 0, "upstream key could not be decrypted");
 
   // providers whose API is not one OpenAI-shaped HTTP exchange (fal.ai, Replicate) run through a driver
-  const driver = getDriver(provider.preset, ctx.path!.op);
+  const driver = ctx.path!.raw ? null : getDriver(provider.preset, ctx.path!.op);
   if (driver) return runDriver(driver, ctx, cand, secret, t0, rec, fail);
 
   let prepared: Prepared;
   try {
-    prepared = prepareUpstream({
-      path: ctx.path!,
-      cand,
-      model: ctx.model!,
-      body: ctx.body,
-      form: ctx.form,
-      stream: ctx.stream,
-      inboundHeaders: ctx.req.headers,
-      secret,
-      responseId: opts.responseId ?? ctx.path!.responseId,
-      videoId: opts.upstreamVideoId,
-      query: opts.upstreamQuery,
-      outputCap: ctx.funds?.injectOutput ?? null,
-      fillOutput: ctx.funds?.fillOutput ?? null,
-    });
+    if (ctx.path!.raw) prepared = prepareRawUpstream(ctx, cand, secret);
+    else {
+      prepared = prepareUpstream({
+        path: ctx.path!,
+        cand,
+        model: ctx.model!,
+        body: ctx.body,
+        jsonRaw: ctx.jsonRaw,
+        form: ctx.form,
+        stream: ctx.stream,
+        inboundHeaders: ctx.req.headers,
+        secret,
+        responseId: opts.responseId ?? ctx.path!.responseId,
+        videoId: opts.upstreamVideoId,
+        query: opts.upstreamQuery,
+        outputCap: ctx.funds?.injectOutput ?? null,
+        fillOutput: ctx.funds?.fillOutput ?? null,
+      });
+    }
     if (opts.externalUrl) {
       const range = ctx.req.headers.get("range");
       prepared = { ...prepared, url: opts.externalUrl, headers: { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) } };
@@ -228,16 +243,19 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
     throw e;
   }
 
+  const http2 = wantsHttp2(provider);
+  // a one-shot stream body (large upload) cannot be re-sent on the same connection attempt
+  const replayable = prepared.body === null || typeof prepared.body === "string" || prepared.body instanceof Uint8Array;
   let h: UpstreamHandle;
   for (let tries = 0; ; tries++) {
     try {
-      h = await sendUpstream({ url: prepared.url, method: prepared.method, headers: prepared.headers, body: prepared.body, timeoutMs: provider.timeoutMs, clientSignal: ctx.req.signal });
+      h = await sendUpstream({ url: prepared.url, method: prepared.method, headers: prepared.headers, body: prepared.body, timeoutMs: provider.timeoutMs, clientSignal: ctx.req.signal, http2 });
       break;
     } catch (err) {
-      if (err instanceof ClientAbortError) throw new GatewayError("client_closed");
+      if (err instanceof ClientAbortError || ctx.req.signal.aborted) throw new GatewayError("client_closed");
       if (err instanceof UpstreamTimeoutError) return fail("timeout", 0, `no response within ${provider.timeoutMs}ms`);
       // connection could not even be established (nothing was sent): safe to retry once on the same key
-      if (tries === 0 && isConnectError(err)) {
+      if (tries === 0 && replayable && isConnectError(err)) {
         await sleep(25 + Math.random() * 75, ctx.req.signal);
         continue;
       }
@@ -255,7 +273,7 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
         const sameOrigin = target.origin === new URL(prepared.url).origin;
         const range = ctx.req.headers.get("range");
         const headers: Record<string, string> = sameOrigin ? prepared.headers : { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) };
-        h = await sendUpstream({ url: target.toString(), method: "GET", headers, timeoutMs: provider.timeoutMs, clientSignal: ctx.req.signal });
+        h = await sendUpstream({ url: target.toString(), method: "GET", headers, timeoutMs: provider.timeoutMs, clientSignal: ctx.req.signal, http2 });
       } catch (err) {
         if (err instanceof ClientAbortError) throw new GatewayError("client_closed");
         if (err instanceof UpstreamTimeoutError) return fail("timeout", 0, `no response within ${provider.timeoutMs}ms`);
@@ -265,7 +283,7 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
   }
 
   const res = h.res;
-  if (res.status >= 200 && res.status < 300) return handleOk(ctx, cand, prepared, h, t0, settings, rec, fail);
+  if (res.status >= 200 && res.status < 300) return handleOk(ctx, cand, prepared, h, t0, settings, rec, fail, secret);
 
   const errBody = await readErrorBody(res);
   h.dispose();
@@ -282,10 +300,11 @@ function httpErrorResult(
   errBody: string,
   t0: number,
   rec: Rec,
-  upstreamFormat: InboundFormat,
+  upstreamFormat: Prepared["upstreamFormat"],
 ): AttemptResult {
   const message = extractErrorMessage(errBody) || `HTTP ${status}`;
   rec(status, message);
+  const inbound = ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format;
   if (isFailoverStatus(status)) {
     return {
       kind: "failure",
@@ -297,10 +316,12 @@ function httpErrorResult(
         rlHeaders: pickRateLimitHeaders(headers),
         internal: errBody.slice(0, 2000),
         startedAt: t0,
+        // what the client receives if this turns out to be the last attempt: the upstream's own answer
+        mirror: isMirrorStatus(status) ? mirrorErrorFromUpstream(status, errBody, headers, inbound, upstreamFormat, scrubCtx(ctx, cand, secret), { rateLimits: ctx.snap!.settings.passUpstreamRateLimits }) : undefined,
       },
     };
   }
-  return { kind: "client_error", error: clientErrorFromUpstream(status, errBody, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, upstreamFormat, scrubCtx(ctx, cand, secret)) };
+  return { kind: "client_error", error: clientErrorFromUpstream(status, errBody, inbound, upstreamFormat, scrubCtx(ctx, cand, secret)) };
 }
 
 /** Run a provider driver (fal.ai / Replicate): one logical upstream call that may submit, poll and download. */
@@ -347,11 +368,12 @@ export type Rec = (status: number, error?: string) => number;
 export type Fail = (fk: FailureKind, status: number, message: string, extra?: Partial<Failure>) => AttemptResult;
 
 // ------------------------------------------------------------------ successful upstream response
-async function handleOk(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail): Promise<AttemptResult> {
+async function handleOk(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail, secret: string): Promise<AttemptResult> {
   const path = ctx.path!;
   const ct = h.res.headers.get("content-type") ?? "";
   const isSse = ct.includes("text/event-stream");
 
+  if (path.raw) return handleFilesOk(ctx, cand, h, t0, rec, fail);
   if (path.op === "videos_create") return handleVideoCreateOk({ ctx, cand, h, t0, rec, fail });
   if (path.op === "videos_content") return handleBinary(ctx, cand, h, t0, rec, true);
 
@@ -361,7 +383,7 @@ async function handleOk(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upstre
       h.dispose();
       return fail("server", 200, `expected an event stream, got ${ct || "no content-type"}`, { internal: body.slice(0, 1000) });
     }
-    return handleStream(ctx, cand, prepared, h, t0, settings, rec, fail);
+    return handleStream(ctx, cand, prepared, h, t0, settings, rec, fail, secret);
   }
   if (path.op === "audio_speech" || /^(audio|video|image)\//i.test(ct) || ct.includes("application/octet-stream")) {
     return handleBinary(ctx, cand, h, t0, rec);
@@ -394,6 +416,7 @@ async function completeUsage(ctx: Ctx, usage: Usage | null, outputText: string, 
 async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, rec: Rec, fail: Fail): Promise<AttemptResult> {
   const path = ctx.path!;
   const provider = cand.route.provider;
+  const settings = ctx.snap!.settings;
   const timer = setTimeout(() => h.abort(new UpstreamTimeoutError("idle")), provider.timeoutMs);
   let text: string;
   try {
@@ -411,6 +434,10 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
   const parsed = safeJsonParse<Json>(text);
   const publicName = publicModelName(ctx, cand);
   const mask = ctx.model?.maskUpstreamModel ?? true;
+  const fwd = (base: Headers): Headers => {
+    forwardUpstreamHeaders(h.res.headers, base, { rateLimits: settings.passUpstreamRateLimits });
+    return base;
+  };
 
   // non-JSON success bodies are legitimate only for audio transcription formats (text / srt / vtt)
   if (parsed === undefined) {
@@ -421,7 +448,7 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
       rec(200);
       recordKeySuccess(cand.key);
       logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage: u, ttftMs: Date.now() - t0 });
-      const hdr = new Headers({ "content-type": h.res.headers.get("content-type") ?? "text/plain; charset=utf-8", "x-request-id": ctx.requestId });
+      const hdr = fwd(new Headers({ "content-type": h.res.headers.get("content-type") ?? "text/plain; charset=utf-8", "x-request-id": ctx.requestId }));
       return { kind: "response", response: withCommon(ctx, new Response(text, { status: 200, headers: hdr })) };
     }
     return fail("server", 200, "upstream returned a non-JSON response", { internal: text.slice(0, 1000) });
@@ -431,7 +458,7 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
   if (isObject(parsed) && isObject(parsed.error) && ["chat", "completions", "messages", "responses", "embeddings"].includes(path.op) && parsed.choices === undefined && parsed.content === undefined && parsed.output === undefined && parsed.data === undefined) {
     const code = Number(parsed.error.code);
     const status = code >= 400 && code < 600 ? code : parsed.error.type === "overloaded_error" ? 529 : parsed.error.type === "rate_limit_error" ? 429 : 502;
-    return fail(classifyStatus(status), status, extractErrorMessage(text) || "upstream error in a 200 response", { internal: text.slice(0, 1000) });
+    return fail(classifyStatus(status), status, extractErrorMessage(text) || "upstream error in a 200 response", { internal: text.slice(0, 1000), mirror: isMirrorStatus(status) ? mirrorErrorFromUpstream(status, text, h.res.headers, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, prepared.upstreamFormat, scrubCtx(ctx, cand, getKeySecret(cand.key) ?? ""), { rateLimits: settings.passUpstreamRateLimits }) : undefined });
   }
 
   let out: Json = parsed;
@@ -466,7 +493,7 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
   rec(200);
   recordKeySuccess(cand.key);
   logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage: finalUsage, ttftMs: Date.now() - t0, responseBody: ctx.logBodies ? out : undefined });
-  return { kind: "response", response: withCommon(ctx, new Response(JSON.stringify(out), { status: 200, headers: jsonHeaders(ctx) })) };
+  return { kind: "response", response: withCommon(ctx, new Response(JSON.stringify(out), { status: 200, headers: fwd(jsonHeaders(ctx)) })) };
 }
 
 function collectOutputText(json: Json): string {
@@ -487,9 +514,17 @@ function collectOutputText(json: Json): string {
   return parts.join("\n");
 }
 
-// ------------------------------------------------------------------ binary passthrough (audio)
-async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: number, rec: Rec, passthrough = false): Promise<AttemptResult> {
+/** Idle cutoff for streams: off unless the admin set one (provider.settings.idleTimeoutSec, else the global setting). */
+function idleMsFor(cand: Candidate, settings: SettingValues): number {
+  const own = cand.route.provider.settings.idleTimeoutSec;
+  const sec = typeof own === "number" && own >= 0 ? own : settings.upstreamIdleTimeoutSec;
+  return sec > 0 ? Math.round(sec * 1000) : 0;
+}
+
+// ------------------------------------------------------------------ binary passthrough (audio, media, file content)
+export async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: number, rec: Rec, passthrough = false): Promise<AttemptResult> {
   const path = ctx.path!;
+  const settings = ctx.snap!.settings;
   rec(200);
   recordKeySuccess(cand.key);
   ctx.deferRelease = true;
@@ -507,7 +542,7 @@ async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: nu
     processor: null,
     abort: h.abort,
     signal: h.signal,
-    idleTimeoutMs: cand.route.provider.timeoutMs,
+    idleTimeoutMs: idleMsFor(cand, settings),
     startedAt: t0,
     onFinish: (info) => {
       h.dispose();
@@ -518,17 +553,17 @@ async function handleBinary(ctx: Ctx, cand: Candidate, h: UpstreamHandle, t0: nu
     },
   });
   const hdr = new Headers({ "content-type": ct, "cache-control": "no-store", "x-request-id": ctx.requestId });
+  forwardUpstreamHeaders(h.res.headers, hdr, { rateLimits: settings.passUpstreamRateLimits, media: passthrough });
   if (passthrough) {
-    // media downloads (video content): keep range / length semantics so players can seek
+    // media downloads (video / file content): keep length semantics so players and downloaders can seek and resume
     const encoded = !!h.res.headers.get("content-encoding");
-    for (const k of ["content-length", "content-range", "accept-ranges", "content-disposition", "etag", "last-modified"]) {
-      const v = h.res.headers.get(k);
-      if (v && !(encoded && k === "content-length")) hdr.set(k, v);
-    }
+    const len = h.res.headers.get("content-length");
+    if (len && !encoded) hdr.set("content-length", len);
   }
   return { kind: "response", response: withCommon(ctx, new Response(session.toReadable(), { status: passthrough ? h.res.status : 200, headers: hdr })) };
 }
 
+/** RequestLog for a finished non-SSE body stream (binary downloads). */
 function finishLog(ctx: Ctx, cand: Candidate, info: FinishInfo, usage: Usage, what: string): void {
   const base = { usage, ttftMs: info.firstOutputMs };
   switch (info.reason) {
@@ -538,18 +573,18 @@ function finishLog(ctx: Ctx, cand: Candidate, info: FinishInfo, usage: Usage, wh
     case "cancelled":
       logOutcome(ctx, { ...base, status: "CANCELLED", httpStatus: 499, errorCode: "client_closed", errorMessage: "Client closed the request." });
       break;
+    case "gateway_error":
+      logger.error("GATEWAY_ERROR", { requestId: ctx.requestId, what, err: describeNetworkError(info.error) });
+      logOutcome(ctx, { ...base, status: "GATEWAY_ERROR", httpStatus: 500, errorCode: "internal_error", errorMessage: "Internal server error.", internalError: `${what} stream processing failed: ${describeNetworkError(info.error)}` });
+      break;
     case "timeout":
-      recordKeyFailure(cand.key, "timeout", { status: 0, message: `${what} stream idle timeout` }, ctxSettings(ctx));
-      logOutcome(ctx, { ...base, status: "UPSTREAM_ERROR", httpStatus: 504, errorCode: "upstream_timeout", errorMessage: "The upstream provider timed out.", internalError: `${what} stream idle timeout` });
+      recordKeyFailure(cand.key, "timeout", { status: 0, message: `${what} stream idle timeout` }, ctx.snap!.settings);
+      logOutcome(ctx, { ...base, status: "UPSTREAM_ERROR", httpStatus: 504, errorCode: "upstream_timeout", errorMessage: "The upstream provider timed out.", internalError: `${what} stream idle timeout; client connection dropped` });
       break;
     default:
-      recordKeyFailure(cand.key, "server", { status: 0, message: `${what} stream ${info.reason}` }, ctxSettings(ctx));
-      logOutcome(ctx, { ...base, status: "UPSTREAM_ERROR", httpStatus: 502, errorCode: "upstream_error", errorMessage: "The upstream provider returned an error.", internalError: `${what} stream ${info.reason}: ${describeNetworkError(info.error)}` });
+      recordKeyFailure(cand.key, "server", { status: 0, message: `${what} stream ${info.reason}` }, ctx.snap!.settings);
+      logOutcome(ctx, { ...base, status: "UPSTREAM_ERROR", httpStatus: 502, errorCode: "upstream_error", errorMessage: "The upstream provider returned an error.", internalError: `${what} stream ${info.reason}; client connection dropped: ${describeNetworkError(info.error)}` });
   }
-}
-
-function ctxSettings(ctx: Ctx): SettingValues {
-  return ctx.snap!.settings;
 }
 
 // ------------------------------------------------------------------ SSE streaming
@@ -582,36 +617,32 @@ function makeProcessor(ctx: Ctx, cand: Candidate): StreamProcessor {
   }
 }
 
-async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail): Promise<AttemptResult> {
-  void prepared;
+async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail, secret: string): Promise<AttemptResult> {
   const body = h.res.body as ReadableStream<Uint8Array> | null;
   if (!body) {
     h.dispose();
     return fail("server", 200, "empty upstream stream");
   }
   const processor = makeProcessor(ctx, cand);
+  const sc = scrubCtx(ctx, cand, secret);
+  processor.setScrub?.((t) => scrubText(t, sc));
+  const sse = !geminiJsonArray(ctx);
+  const heartbeatMs = sse ? Math.max(0, settings.streamHeartbeatSec) * 1000 : 0;
   const session = new StreamSession({
     body,
     processor,
     abort: h.abort,
     signal: h.signal,
-    idleTimeoutMs: cand.route.provider.timeoutMs,
+    idleTimeoutMs: idleMsFor(cand, settings),
+    heartbeatMs,
     startedAt: t0,
-    errorEvent: (err) => {
-      let ge: GatewayError;
-      if (err instanceof UpstreamTimeoutError) ge = new GatewayError("upstream_timeout");
-      else if (err instanceof InBandError && err.info.status === 429) ge = new GatewayError("rate_limited", "Rate limit exceeded. Please retry later.");
-      else if (err instanceof InBandError && err.info.status === 529) ge = new GatewayError("upstream_overloaded");
-      else ge = new GatewayError("upstream_error");
-      return streamErrorEvent(ctx.errorFormat, ge, ctx.requestId);
-    },
     guard: ctx.funds?.outputTokens
       ? {
           exceeded: () => streamExceedsHold(ctx, processor),
           events: () => {
             const f = ctx.funds!;
             f.cut = true;
-            const ev = streamErrorEvent(ctx.errorFormat, new GatewayError("insufficient_balance", "Your available balance was used up while the response was streaming. Add credit to continue."), ctx.requestId);
+            const ev = budgetCutEvent(ctx);
             return processor.abortEvents ? processor.abortEvents(ev) : [ev];
           },
         }
@@ -627,21 +658,33 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   });
 
   try {
-    await session.prime();
+    // Before anything is sent to the client a failure fails over to the next key. If the upstream stays silent for one
+    // heartbeat interval the response is committed anyway (it answered 200 + SSE headers) so heartbeats can keep the client alive.
+    await session.prime({ commitAfterMs: heartbeatMs > 0 ? heartbeatMs : undefined });
   } catch (err) {
+    // classify BEFORE aborting: h.abort() itself sets the abort reason
+    const reason = h.signal.reason;
+    const clientGone = ctx.req.signal.aborted || reason instanceof ClientAbortError;
     session.discard();
     h.abort();
     h.dispose();
-    if (ctx.req.signal.aborted || h.signal.reason instanceof ClientAbortError) throw new GatewayError("client_closed");
-    if (h.signal.reason instanceof UpstreamTimeoutError) return fail("timeout", 0, "timed out waiting for the first stream event");
+    if (clientGone) throw new GatewayError("client_closed");
+    if (reason instanceof UpstreamTimeoutError) return fail("timeout", 0, "timed out waiting for the first stream event");
     return fail("network", 0, `stream failed before first event: ${describeNetworkError(err)}`);
   }
   const inband = processor.error();
-  if (inband) {
+  if (inband && session.firstEventError) {
+    // first event is an error: fail over; if every key answers like that the client gets the upstream's error as an HTTP error
     session.discard();
     h.abort();
     h.dispose();
-    return fail(classifyStatus(inband.status), inband.status, inband.message, { internal: `in-band stream error: ${inband.type ?? ""} ${inband.message}` });
+    const mirrorable = isMirrorStatus(inband.status);
+    return fail(classifyStatus(inband.status), inband.status, inband.message, {
+      internal: `in-band stream error: ${inband.type ?? ""} ${inband.message}`,
+      mirror: mirrorable
+        ? mirrorErrorFromUpstream(inband.status, inbandErrorDocument(prepared.upstreamFormat, inband), {}, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, prepared.upstreamFormat, sc, { rateLimits: settings.passUpstreamRateLimits })
+        : undefined,
+    });
   }
   if (session.isEmpty()) {
     session.discard();
@@ -653,12 +696,20 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   recordKeySuccess(cand.key); // the upstream answered: clear transient failure state now, not at the end of a long stream
   ctx.deferRelease = true;
   const headers = new Headers({
-    "content-type": geminiJsonArray(ctx) ? "application/json; charset=UTF-8" : "text/event-stream; charset=utf-8",
+    "content-type": sse ? "text/event-stream; charset=utf-8" : "application/json; charset=UTF-8",
     "cache-control": "no-cache, no-transform",
     "x-accel-buffering": "no",
     "x-request-id": ctx.requestId,
   });
+  if (sse) headers.set("connection", "keep-alive");
+  forwardUpstreamHeaders(h.res.headers, headers, { rateLimits: settings.passUpstreamRateLimits });
   return { kind: "response", response: withCommon(ctx, new Response(session.toReadable(), { status: 200, headers })) };
+}
+
+/** The ONE event we author ourselves mid-stream: the credit hold is used up (PLAN 9c). */
+function budgetCutEvent(ctx: Ctx): string {
+  const ge = new GatewayError("insufficient_balance", "Your available balance was used up while the response was streaming. Add credit to continue.");
+  return streamErrorEvent(ctx.errorFormat, ge, ctx.requestId);
 }
 
 async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProcessor, info: FinishInfo, settings: SettingValues): Promise<void> {
@@ -689,18 +740,41 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
     });
   } else if (info.reason === "cancelled") {
     logOutcome(ctx, { status: "CANCELLED", httpStatus: 499, errorCode: "client_closed", errorMessage: "Client closed the request.", usage, ttftMs: info.firstOutputMs });
+  } else if (info.reason === "gateway_error") {
+    logger.error("GATEWAY_ERROR", { requestId: ctx.requestId, endpoint: path.endpoint, err: describeNetworkError(info.error) });
+    logOutcome(ctx, {
+      status: "GATEWAY_ERROR",
+      httpStatus: 500,
+      errorCode: "internal_error",
+      errorMessage: "Internal server error.",
+      internalError: `stream processing failed after the response was committed (upstream aborted, client connection dropped): ${describeNetworkError(info.error)}`,
+      usage,
+      ttftMs: info.firstOutputMs,
+    });
+  } else if (info.inband && err) {
+    // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
+    recordKeyFailure(cand.key, classifyStatus(err.status), { status: err.status, message: err.message }, settings);
+    logOutcome(ctx, {
+      status: "UPSTREAM_ERROR",
+      httpStatus: err.status >= 400 ? err.status : 502,
+      errorCode: err.status === 429 ? "rate_limited" : err.status === 529 ? "upstream_overloaded" : "upstream_error",
+      errorMessage: "The upstream provider returned an error.",
+      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}`,
+      usage,
+      ttftMs: info.firstOutputMs,
+    });
   } else {
+    // upstream reset / dropped / ended early / stalled: the client connection was destroyed the same way
     const timeout = info.reason === "timeout";
-    recordKeyFailure(cand.key, timeout ? "timeout" : "server", { status: err?.status ?? 0, message: err?.message ?? `stream ${info.reason}` }, settings);
+    recordKeyFailure(cand.key, timeout ? "timeout" : "server", { status: 0, message: `stream ${info.reason}` }, settings);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: timeout ? 504 : 502,
       errorCode: timeout ? "upstream_timeout" : "upstream_error",
       errorMessage: timeout ? "The upstream provider timed out." : "The upstream provider returned an error.",
-      internalError: `stream ${info.reason}${err ? `: ${err.type ?? ""} ${err.message}` : ""}${info.error ? ` (${describeNetworkError(info.error)})` : ""}`,
+      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started; client connection dropped${info.error ? ` (${describeNetworkError(info.error)})` : ""}`,
       usage,
       ttftMs: info.firstOutputMs,
     });
   }
 }
-
