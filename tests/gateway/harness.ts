@@ -39,7 +39,7 @@ export function createHarness(tag: string) {
     async start(): Promise<void> {
       h.mock = await startMockUpstream(0, "127.0.0.1");
       h.base = `http://127.0.0.1:${h.mock.port}`;
-      const g = await db.group.create({ data: { name: name("g"), slug: name("g"), priceMultiplier: "1" } });
+      const g = await db.group.create({ data: { name: name("g"), slug: name("g"), priceMultiplier: "1", providerTags: [`iso-${sfx}`] } });
       ids.groups.push(g.id);
       h.groupId = g.id;
     },
@@ -96,7 +96,7 @@ export function createHarness(tag: string) {
           baseUrl: o.baseUrl ?? `${h.base}/v1`,
           authStyle: o.authStyle ?? "BEARER",
           formats: o.formats,
-          tags: ["mock"],
+          tags: ["mock", `iso-${sfx}`], // iso-<sfx> + the harness group's providerTags keep parallel test files off each other's providers (Files calls pick ANY provider speaking the format)
           settings: o.settings ?? {},
           timeoutMs: 30_000,
         },

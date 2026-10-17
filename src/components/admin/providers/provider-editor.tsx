@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Save, Trash2 } from "lucide-react";
+import { Loader2, RotateCcw, Save, Trash2 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,20 @@ import { deleteProvider, updateProvider } from "@/server/admin/providers-actions
 import type { ProviderDetail } from "@/server/admin/providers-queries";
 import { ProviderFormFields, providerPayload, type ProviderFormState } from "./provider-form";
 
-export function ProviderEditor({ provider, canEdit, routeCount, keyCount }: { provider: ProviderDetail["provider"]; canEdit: boolean; routeCount: number; keyCount: number }) {
+export function ProviderEditor({
+  provider,
+  canEdit,
+  routeCount,
+  keyCount,
+  presetFormats,
+}: {
+  provider: ProviderDetail["provider"];
+  canEdit: boolean;
+  routeCount: number;
+  keyCount: number;
+  /** The provider preset's CURRENT format list (null for custom / unknown presets). */
+  presetFormats: string[] | null;
+}) {
   const router = useRouter();
   const initial: ProviderFormState = {
     name: provider.name, slug: provider.slug, preset: provider.preset, baseUrl: provider.baseUrl, authStyle: provider.authStyle,
@@ -23,6 +36,7 @@ export function ProviderEditor({ provider, canEdit, routeCount, keyCount }: { pr
   const [state, setState] = useState<ProviderFormState>(initial);
   const { run, pending, fieldErrors } = useAction();
   const dirty = JSON.stringify(state) !== JSON.stringify(initial);
+  const presetDiffers = !!presetFormats && JSON.stringify([...presetFormats].sort()) !== JSON.stringify([...provider.formats].sort());
 
   return (
     <Card>
@@ -40,6 +54,34 @@ export function ProviderEditor({ provider, canEdit, routeCount, keyCount }: { pr
         <fieldset disabled={!canEdit || pending} className="contents">
           <ProviderFormFields state={state} set={(p) => setState((s) => ({ ...s, ...p }))} errors={fieldErrors} />
         </fieldset>
+        {canEdit && presetFormats && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 p-3 text-sm">
+            <span className="text-muted-foreground">
+              {presetDiffers ? "The preset now lists formats this provider does not have yet (e.g. the Files APIs)." : "Formats match the current preset."}{" "}
+              <span className="font-mono text-xs">{presetFormats.join(", ")}</span>
+            </span>
+            <ConfirmDialog
+              title="Apply preset formats?"
+              description={
+                <>
+                  Replaces this provider&apos;s native endpoint formats with the preset&apos;s current list and saves immediately. Other fields are not touched.
+                  <span className="mt-2 block font-mono text-xs">{presetFormats.join(", ")}</span>
+                </>
+              }
+              confirmLabel="Apply and save"
+              onConfirm={async () => {
+                const res = await run(() => updateProvider(provider.id, providerPayload({ ...initial, formats: presetFormats })), { success: "Preset formats applied" });
+                if (!res.ok) throw new Error(res.error);
+                setState((s) => ({ ...s, formats: presetFormats }));
+              }}
+              trigger={
+                <Button variant="outline" size="sm" disabled={pending}>
+                  <RotateCcw className="size-4" /> Apply preset formats
+                </Button>
+              }
+            />
+          </div>
+        )}
         {canEdit && (
           <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-4">
             <ConfirmDialog

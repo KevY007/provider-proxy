@@ -30,9 +30,20 @@ export const AUTH_STYLE_OPTIONS = [
 
 // keep in sync with ENDPOINT_FORMATS (gateway/providers/presets); duplicated so client bundles don't import gateway code
 export const FORMAT_OPTIONS = [
-  "openai_chat", "openai_completions", "openai_responses", "openai_embeddings", "openai_images",
-  "openai_audio", "openai_moderations", "openai_videos", "openai_files", "anthropic_messages", "anthropic_files", "gemini", "gemini_files",
-].map((f) => ({ value: f, label: f }));
+  ["openai_chat", "Chat Completions"],
+  ["openai_completions", "legacy Completions"],
+  ["openai_responses", "Responses API"],
+  ["openai_embeddings", "Embeddings"],
+  ["openai_images", "Images"],
+  ["openai_audio", "Speech / transcription"],
+  ["openai_moderations", "Moderations"],
+  ["openai_videos", "Videos"],
+  ["openai_files", "Files + Uploads (/v1/files)"],
+  ["anthropic_messages", "Messages API"],
+  ["anthropic_files", "Files API (/v1/files)"],
+  ["gemini", "generateContent"],
+  ["gemini_files", "Files API (resumable upload)"],
+].map(([value, hint]) => ({ value, label: value, hint }));
 
 export function emptyProviderForm(): ProviderFormState {
   return {
@@ -113,7 +124,7 @@ export function ProviderFormFields({
           value={state.settings}
           onChange={(v) => set({ settings: v })}
           error={errors.settings}
-          description="anthropicVersion, azureApiVersion, stripFields, forceStreamUsage, anthropicBaseUrl, geminiBaseUrl..."
+          description="anthropicVersion, azureApiVersion, stripFields, forceStreamUsage, anthropicBaseUrl, geminiBaseUrl, idleTimeoutSec (cut a silent stream), http2 (OPT-IN, default off: true = HTTP/2 to this https upstream; enable only for providers known to speak h2)."
         />
       </div>
       <TextAreaField label="Notes" value={state.notes} onChange={(v) => set({ notes: v })} rows={2} description="Internal only." />

@@ -628,6 +628,9 @@ multipart / Files uploads aborted mid-flight (spool file removed), heartbeats on
 200 MB JSON byte-identical at the upstream (sha-256), RSS growth ~100 MB / ~620 MB. `pnpm chaos --docker ...` - 1000 concurrent 120 s streams over the built container with SIGTERM at 40 s: 1000/1000 complete, new connection refused,
 exit 143 0.4 s after the last stream, 1000 RequestLogs, balance debit == sum of prices.
 
+Final numbers (scenario table, 1000 x 120 s drain over HTTP/1.1 and h2c, 1 GB / 200 MB container runs, live OpenAI check incl. `--live-h2`) are recorded in [CONNECTION-FIDELITY.md](CONNECTION-FIDELITY.md).
+Lead decisions: upstream HTTP/2 stays opt-in (`provider.settings.http2`, default off); `VideoJob` is not migrated (new sticky objects use `UpstreamObject`).
+
 **Not achievable / limits (stated plainly).** A TCP RST discards whatever the peer had not read yet, so after an upstream reset the client may lose the last few events (real providers behave the same). Cloud Run force-kills 10 s after SIGTERM:
 only graceful shutdowns (deploys, scale-in of idle instances, `docker stop -t`) are lossless. `connection: keep-alive` is sent on SSE responses (HTTP/1 only meaningful; Node drops it on h2). Windows cannot deliver SIGTERM to a child process,
 so the drain run needs Docker/Linux. In-memory slots/holds are per instance (Redis shares them across instances as before).

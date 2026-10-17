@@ -48,3 +48,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Claude Code local worktrees / session state
+/.claude/worktrees/
+
+# live workload artifacts
+live-output/
