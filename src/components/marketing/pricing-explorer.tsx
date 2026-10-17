@@ -19,7 +19,7 @@ export interface PricingGroup {
   isDefault: boolean;
 }
 
-const CAP_FILTERS = ["chat", "vision", "tools", "reasoning", "images", "embeddings"];
+const CAP_FILTERS = ["chat", "vision", "tools", "reasoning", "images", "video", "embeddings"];
 
 /** Interactive public pricing table: pick a pool, filter by vendor / capability, search. */
 export function PricingExplorer({ models, groups }: { models: PriceModel[]; groups: PricingGroup[] }) {

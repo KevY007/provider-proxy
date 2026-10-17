@@ -12,6 +12,11 @@ export interface ModelSellPrices {
   cacheWritePrice?: MoneyLike;
   imagePrice?: MoneyLike;
   requestPrice?: MoneyLike;
+  audioInputPrice?: MoneyLike;
+  audioOutputPrice?: MoneyLike;
+  perMinutePrice?: MoneyLike;
+  perMillionChars?: MoneyLike;
+  perSecondPrice?: MoneyLike;
 }
 
 export interface OfficialPrices {
@@ -29,6 +34,14 @@ export interface EffectivePrices {
   image: string | null;
   /** USD flat per request. */
   request: string | null;
+  audioInput: string | null;
+  audioOutput: string | null;
+  /** USD per minute (transcription). */
+  perMinute: string | null;
+  /** USD per 1M characters (speech). */
+  perMillionChars: string | null;
+  /** USD per generated second (video). */
+  perSecond: string | null;
 }
 
 /** (user override ?? 1) x group multiplier. */
@@ -51,6 +64,11 @@ export function effectivePrices(model: ModelSellPrices, multiplier: MoneyLike): 
     cacheWrite: mul(model.cacheWritePrice, m),
     image: mul(model.imagePrice, m),
     request: mul(model.requestPrice, m),
+    audioInput: mul(model.audioInputPrice, m),
+    audioOutput: mul(model.audioOutputPrice, m),
+    perMinute: mul(model.perMinutePrice, m),
+    perMillionChars: mul(model.perMillionChars, m),
+    perSecond: mul(model.perSecondPrice, m),
   };
 }
 
@@ -94,6 +112,32 @@ export function groupAllowsModel(group: Pick<GroupLike, "allowedModels">, slug: 
 /** Format a multiplier for UI: 0.8 -> "0.8x". */
 export function formatMultiplier(m: MoneyLike): string {
   return `${toDecimal(m, 1).toDecimalPlaces(4).toString()}×`;
+}
+
+export type OfficialUnitPrices = Partial<Record<"input" | "output" | "cachedInput" | "image" | "request", string | null>>;
+
+/**
+ * Estimated saving for one run = cost at official prices - cost at your prices (signed; negative = paid more).
+ * Returns null when the official prices needed for the usage are unknown.
+ */
+export function estimateSaving(
+  usage: { inputTokens: number; outputTokens: number; cachedTokens?: number; images?: number },
+  official: OfficialUnitPrices | null | undefined,
+  prices: Pick<EffectivePrices, "input" | "output" | "cachedInput" | "image" | "request">,
+): string | null {
+  if (!official) return null;
+  const hasTokens = usage.inputTokens > 0 || usage.outputTokens > 0;
+  if (hasTokens && (official.input == null || official.output == null)) return null;
+  if ((usage.images ?? 0) > 0 && official.image == null) return null;
+  if (!hasTokens && !(usage.images ?? 0)) return null;
+  const off = estimateCost(usage, {
+    input: official.input ?? "0",
+    output: official.output ?? "0",
+    cachedInput: official.cachedInput ?? null,
+    image: official.image ?? null,
+    request: official.request ?? null,
+  });
+  return off.minus(estimateCost(usage, prices)).toString();
 }
 
 /** Cost of a usage report under effective per-million prices (inputTokens is the TOTAL prompt tokens incl. cached). */

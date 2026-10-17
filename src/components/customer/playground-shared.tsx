@@ -4,7 +4,8 @@ import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import type { EffectivePrices } from "@/server/customer/pricing";
+import { formatUSD } from "@/lib/money";
+import type { EffectivePrices, OfficialUnitPrices } from "@/server/customer/pricing";
 import type { GatewayError } from "./playground-api";
 
 export interface PlaygroundModel {
@@ -13,6 +14,20 @@ export interface PlaygroundModel {
   vendor: string;
   capabilities: string[];
   prices: EffectivePrices;
+  /** Official list prices (reference for the per-run "saved" estimate). */
+  official: OfficialUnitPrices;
+}
+
+/** "saved $0.0123" / "$0.0040 more than official" for a run (renders nothing when unknown or zero). */
+export function SavedNote({ saved }: { saved: string | null | undefined }) {
+  if (saved == null) return null;
+  const n = Number(saved);
+  if (!Number.isFinite(n) || Math.abs(n) < 1e-9) return null;
+  return n > 0 ? (
+    <span className="text-emerald-600 dark:text-emerald-400">saved {formatUSD(n)}</span>
+  ) : (
+    <span className="text-amber-600 dark:text-amber-400">{formatUSD(Math.abs(n))} more than official</span>
+  );
 }
 
 /** Friendly rendering of gateway errors with a next step where one exists. */

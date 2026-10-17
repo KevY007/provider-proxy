@@ -144,7 +144,7 @@ export default async function HomePage() {
             </Link>
           </Button>
         </div>
-        <PriceTable rows={featured.length ? featured : rows.slice(0, 8)} />
+        <PriceTable rows={featured.length ? featured : rows.slice(0, 8)} compact />
       </section>
 
       {/* Model families */}

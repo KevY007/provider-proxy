@@ -13,6 +13,10 @@ export interface Totals {
   cachedTokens: number;
   errors: number;
   avgLatencyMs: number;
+  /** Sum of officialPrice over requests that recorded one (what they would cost at official prices). */
+  official: number;
+  /** Sum of price over those same requests; saved = official - comparable. */
+  comparable: number;
 }
 
 export interface SeriesPoint {
@@ -23,6 +27,8 @@ export interface SeriesPoint {
   outputTokens: number;
   cachedTokens: number;
   errors: number;
+  official: number;
+  comparable: number;
 }
 
 export interface BreakdownRow {
@@ -34,6 +40,8 @@ export interface BreakdownRow {
   cachedTokens: number;
   errors: number;
   avgLatencyMs: number;
+  official: number;
+  comparable: number;
 }
 
 const AGG = Prisma.sql`
@@ -43,13 +51,15 @@ const AGG = Prisma.sql`
   coalesce(sum(r."outputTokens"), 0)::float8 AS "outputTokens",
   coalesce(sum(r."cachedTokens"), 0)::float8 AS "cachedTokens",
   (count(*) FILTER (WHERE r."status" IN ('CLIENT_ERROR','UPSTREAM_ERROR','GATEWAY_ERROR')))::int AS errors,
-  coalesce(avg(r."latencyMs"), 0)::float8 AS "avgLatencyMs"`;
+  coalesce(avg(r."latencyMs"), 0)::float8 AS "avgLatencyMs",
+  coalesce(sum(r."officialPrice") FILTER (WHERE r."officialPrice" > 0), 0)::float8 AS official,
+  coalesce(sum(r."price") FILTER (WHERE r."officialPrice" > 0), 0)::float8 AS comparable`;
 
 export async function getTotals(userId: string, from: Date, to: Date): Promise<Totals> {
   const rows = await db.$queryRaw<Totals[]>(Prisma.sql`
     SELECT ${AGG} FROM "RequestLog" r
     WHERE r."userId" = ${userId} AND r."createdAt" >= ${from} AND r."createdAt" <= ${to}`);
-  return rows[0] ?? { requests: 0, spend: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, avgLatencyMs: 0 };
+  return rows[0] ?? { requests: 0, spend: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, avgLatencyMs: 0, official: 0, comparable: 0 };
 }
 
 export async function getSeries(userId: string, from: Date, to: Date, gran: Granularity): Promise<SeriesPoint[]> {
@@ -59,7 +69,7 @@ export async function getSeries(userId: string, from: Date, to: Date, gran: Gran
     FROM "RequestLog" r
     WHERE r."userId" = ${userId} AND r."createdAt" >= ${from} AND r."createdAt" <= ${to}
     GROUP BY 1 ORDER BY 1`);
-  const zero = (bucket: Date): SeriesPoint => ({ bucket, requests: 0, spend: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0 });
+  const zero = (bucket: Date): SeriesPoint => ({ bucket, requests: 0, spend: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, errors: 0, official: 0, comparable: 0 });
   return fillSeries(rows, from, to, gran, zero);
 }
 

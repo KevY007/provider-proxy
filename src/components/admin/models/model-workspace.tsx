@@ -10,16 +10,21 @@ import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/components/common/stat-card";
 import { StatusBadge } from "@/components/common/status-badge";
 import { TextField } from "@/components/common/form-fields";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
 import { MultiSelectField, NumberField, SelectField, SwitchField, TagsField, TextAreaField } from "@/components/admin/fields";
 import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
 import { deleteModel, duplicateModel, updateModel } from "@/server/admin/models-actions";
-import { MODEL_CAPABILITIES, MODEL_PRICE_PAIRS, MODEL_STATUSES, OFFICIAL_PRICE_FIELDS } from "@/server/admin/models-calc";
-import type { ModelForm, RouteRow } from "@/server/admin/models-queries";
+import { primaryEnabledRoute, MODEL_CAPABILITIES, MODEL_PRICE_PAIRS, MODEL_STATUSES } from "@/server/admin/models-calc";
+import type { ModelForm, RouteRow, WizardProvider } from "@/server/admin/models-queries";
+import type { PriceUnitKey } from "@/server/pricing/preview";
 import { formatCompact, formatPercent } from "@/lib/utils";
 import { ModelExplainer } from "./explainer";
+import { PriceExplainer, PriceGrid, RuleSelector, usePricingPreview } from "./pricing-editor";
 import { RoutesPanel, type GroupOption, type ProviderOption } from "./routes-panel";
 
 type Usage = { requests: number; revenue: number; cost: number; profit: number; errorRate: number } | null;
@@ -29,12 +34,14 @@ export function ModelWorkspace({
   routes,
   providers,
   groups,
+  wizardProviders,
   usage,
 }: {
   model: ModelForm;
   routes: RouteRow[];
   providers: ProviderOption[];
   groups: GroupOption[];
+  wizardProviders: WizardProvider[];
   usage: Usage;
 }) {
   const router = useRouter();
@@ -45,9 +52,45 @@ export function ModelWorkspace({
   const [dupOpen, setDupOpen] = useState(false);
   const [dupSlug, setDupSlug] = useState(`${model.slug}-copy`);
   const dirty = useMemo(() => JSON.stringify(f) !== JSON.stringify(initial), [f, initial]);
-  const rec = f as unknown as Record<string, string>;
   const set = <K extends keyof ModelForm>(k: K, v: ModelForm[K]) => setF((s) => ({ ...s, [k]: v }));
   const setStr = (k: string, v: string) => setF((s) => ({ ...s, [k]: v }));
+
+  // Our cost = the cheapest enabled route; the price grid reads cost fields from it.
+  const costRoute = useMemo(() => primaryEnabledRoute(routes), [routes]);
+  const gridValues = useMemo(() => ({ ...(f as unknown as Record<string, string>), ...((costRoute as unknown as Record<string, string> | null) ?? {}) }), [f, costRoute]);
+  const focusUnits = useMemo<PriceUnitKey[]>(() => {
+    const u: PriceUnitKey[] = [];
+    if (f.capabilities.includes("images")) u.push("image");
+    if (f.capabilities.includes("video")) u.push("perSecond");
+    if (f.capabilities.includes("audio_speech")) u.push("perMillionChars");
+    if (f.capabilities.includes("audio_transcription")) u.push("perMinute");
+    return u;
+  }, [f.capabilities]);
+  // What customers actually pay (derived when a rule is active) feeds the route margin previews.
+  const preview = usePricingPreview(gridValues, f.pricingMode, f.pricingValue);
+  const effectiveSell = useMemo<Record<string, string>>(() => {
+    const rec = { ...(f as unknown as Record<string, string>) };
+    if (f.pricingMode !== "FIXED") {
+      for (const p of MODEL_PRICE_PAIRS) {
+        const v = p.unitKey ? preview.customer[p.unitKey] : null;
+        if (v !== null && v !== undefined) rec[p.sell] = String(v);
+      }
+    }
+    return rec;
+  }, [f, preview]);
+
+  // Rule-driven prices are recomputed server-side when official prices / route costs change: pull them in without losing other edits.
+  const sellSig = MODEL_PRICE_PAIRS.map((p) => (model as unknown as Record<string, string>)[p.sell]).join("|");
+  const [seenSig, setSeenSig] = useState(sellSig);
+  if (seenSig !== sellSig) {
+    setSeenSig(sellSig);
+    if (model.pricingMode !== "FIXED") {
+      const patch: Record<string, string> = {};
+      for (const p of MODEL_PRICE_PAIRS) patch[p.sell] = (model as unknown as Record<string, string>)[p.sell];
+      setInitial((s) => ({ ...s, ...patch }));
+      setF((s) => (s.pricingMode === model.pricingMode ? { ...s, ...patch } : s));
+    }
+  }
 
   async function save() {
     const res = await run(() => updateModel(model.id, f), {
@@ -68,6 +111,11 @@ export function ModelWorkspace({
           <span className="flex flex-wrap items-center gap-3">
             {initial.displayName}
             <StatusBadge status={initial.status} />
+            {initial.retiresAt && (
+              <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400">
+                Retiring {initial.retiresAt}
+              </Badge>
+            )}
           </span>
         }
         description={<span className="font-mono">{initial.slug}</span>}
@@ -124,35 +172,58 @@ export function ModelWorkspace({
 
           <Card>
             <CardHeader>
-              <CardTitle>Sell prices</CardTitle>
-              <CardDescription>What customers pay before group and customer multipliers. Blank optional fields fall back as noted.</CardDescription>
+              <CardTitle>Pricing</CardTitle>
+              <CardDescription>
+                Choose how the <strong>Customer price</strong> is set. The table updates live: <strong>Official price</strong> (reference), <strong>Our cost</strong> (primary route), what customers pay, their <strong>Savings</strong> and our <strong>Margin</strong>.
+              </CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {MODEL_PRICE_PAIRS.map((p) => (
-                <NumberField
-                  key={p.sell}
-                  label={p.label}
-                  value={rec[p.sell] ?? ""}
-                  onChange={(v) => setStr(p.sell, v)}
-                  error={fieldErrors[p.sell]}
-                  description={p.unit}
-                  min={0}
-                />
-              ))}
-              <NumberField label="Long-context threshold" suffix="input tokens" step="1" min={1} value={f.longContextThreshold} onChange={(v) => set("longContextThreshold", v)} error={fieldErrors.longContextThreshold} description="Above this many input tokens the multiplier applies." />
-              <NumberField label="Long-context multiplier" suffix="x" value={f.longContextMultiplier} onChange={(v) => set("longContextMultiplier", v)} error={fieldErrors.longContextMultiplier} description="Applied to price and cost, e.g. 2" min={0} />
+            <CardContent className="space-y-4">
+              <PriceExplainer audience="admin" />
+              <RuleSelector
+                mode={f.pricingMode}
+                value={f.pricingValue}
+                onMode={(m) => setF((s) => ({ ...s, pricingMode: m, pricingValue: m === "FIXED" ? s.pricingValue : s.pricingValue || (m === "PERCENT_OF_OFFICIAL" ? "70" : "30") }))}
+                onValue={(v) => set("pricingValue", v)}
+                valueError={fieldErrors.pricingValue}
+              />
+              {costRoute ? (
+                <p className="text-xs text-muted-foreground">
+                  Our cost comes from the primary route (highest priority, enabled): <span className="font-mono">{costRoute.upstreamModel}</span> on {costRoute.providerName}.
+                </p>
+              ) : (
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">No enabled route yet, so margins can&apos;t be calculated. Add a route below.</p>
+              )}
+              <PriceGrid
+                values={gridValues}
+                mode={f.pricingMode}
+                ruleValue={f.pricingValue}
+                onChange={setStr}
+                errors={fieldErrors}
+                cols={{ official: "edit", cost: "show", customer: "edit", savings: true, margin: true }}
+                focusUnits={focusUnits}
+              />
+              {f.pricingMode !== "FIXED" && (
+                <p className="text-xs text-muted-foreground">Customer prices follow the rule and are recomputed whenever the official price or a route cost changes. Switch to Fixed prices to type them yourself.</p>
+              )}
             </CardContent>
           </Card>
 
           <Card>
             <CardHeader>
-              <CardTitle>Official prices</CardTitle>
-              <CardDescription>Reference prices for the marketing &ldquo;savings&rdquo; display only. Never used for billing.</CardDescription>
+              <CardTitle>More price settings</CardTitle>
+              <CardDescription>Cache write (1h), long-context surcharge and the upstream retirement date.</CardDescription>
             </CardHeader>
-            <CardContent className="grid gap-4 sm:grid-cols-3">
-              {OFFICIAL_PRICE_FIELDS.map((p) => (
-                <NumberField key={p.key} label={p.label} value={rec[p.key] ?? ""} onChange={(v) => setStr(p.key, v)} error={fieldErrors[p.key]} description={p.unit} min={0} />
-              ))}
+            <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <NumberField label="Cache write (1h)" value={f.cacheWrite1hPrice} onChange={(v) => set("cacheWrite1hPrice", v)} error={fieldErrors.cacheWrite1hPrice} description="USD / 1M tokens (customer price)" min={0} />
+              <NumberField label="Long-context threshold" suffix="input tokens" step="1" min={1} value={f.longContextThreshold} onChange={(v) => set("longContextThreshold", v)} error={fieldErrors.longContextThreshold} description="Above this many input tokens the multiplier applies." />
+              <NumberField label="Long-context multiplier" suffix="x" value={f.longContextMultiplier} onChange={(v) => set("longContextMultiplier", v)} error={fieldErrors.longContextMultiplier} description="Applied to price and cost, e.g. 2" min={0} />
+              <Field data-invalid={!!fieldErrors.retiresAt}>
+                <FieldLabel htmlFor="retires-at">Retires on</FieldLabel>
+                <Input id="retires-at" type="date" value={f.retiresAt} onChange={(e) => set("retiresAt", e.target.value)} aria-invalid={!!fieldErrors.retiresAt} />
+                <FieldDescription className={fieldErrors.retiresAt ? "text-destructive" : undefined}>
+                  {fieldErrors.retiresAt ?? "The date the provider shuts this model down. Shows a “retiring” badge to you and customers."}
+                </FieldDescription>
+              </Field>
             </CardContent>
           </Card>
         </div>
@@ -163,7 +234,7 @@ export function ModelWorkspace({
       </div>
 
       <div className="mt-6">
-        <RoutesPanel modelId={model.id} publicSlug={f.slug || initial.slug} sell={rec} routes={routes} providers={providers} groups={groups} />
+        <RoutesPanel modelId={model.id} publicSlug={f.slug || initial.slug} sell={effectiveSell} model={f} routes={routes} providers={providers} wizardProviders={wizardProviders} groups={groups} />
       </div>
 
       {dirty && (

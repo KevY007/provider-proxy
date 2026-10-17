@@ -18,8 +18,9 @@ import { JsonField, MultiSelectField, NumberField, SelectField, SwitchField, jso
 import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
 import { createRoute, deleteRoute, duplicateRoute, toggleRoute, updateRoute } from "@/server/admin/models-actions";
-import { formatMargin, MODEL_PRICE_PAIRS, marginTone, pairMargin, routeMargins, trafficShares } from "@/server/admin/models-calc";
-import type { RouteRow } from "@/server/admin/models-queries";
+import { compactUnits, fmtPct, formatMargin, MODEL_PRICE_PAIRS, marginTone, pairMargin, routeMargins, rowUnits, summarizeRow, toNum, trafficShares } from "@/server/admin/models-calc";
+import type { RouteRow, WizardProvider } from "@/server/admin/models-queries";
+import { AddRouteWizard } from "./add-route-wizard";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
@@ -43,19 +44,26 @@ export function RoutesPanel({
   modelId,
   publicSlug,
   sell,
+  model,
   routes,
   providers,
+  wizardProviders,
   groups,
 }: {
   modelId: string;
   publicSlug: string;
+  /** Effective customer prices (derived when a pricing rule is active). */
   sell: SellValues;
+  /** The model form (official prices + capabilities) for the Add route flow. */
+  model: Record<string, unknown> & { capabilities: string[] };
   routes: RouteRow[];
   providers: ProviderOption[];
+  wizardProviders: WizardProvider[];
   groups: GroupOption[];
 }) {
   const { run } = useAction();
   const [editing, setEditing] = useState<RouteRow | "new" | null>(null);
+  const [wizard, setWizard] = useState(false);
   const [deleting, setDeleting] = useState<RouteRow | null>(null);
   const shares = useMemo(() => trafficShares(routes), [routes]);
 
@@ -69,9 +77,21 @@ export function RoutesPanel({
             share traffic by weight. Failed attempts fall through to the next route.
           </CardDescription>
         </div>
-        <Button size="sm" onClick={() => setEditing("new")} disabled={providers.length === 0}>
-          <Plus className="size-4" /> Add route
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          <Button size="sm" onClick={() => setWizard(true)} disabled={providers.length === 0}>
+            <Plus className="size-4" /> Add route
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="size-8" aria-label="More ways to add a route" disabled={providers.length === 0}>
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onSelect={() => setEditing("new")}>Add manually (all fields)</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </CardHeader>
       <CardContent>
         {routes.length === 0 ? (
@@ -80,7 +100,7 @@ export function RoutesPanel({
             description={providers.length ? "Without an enabled route this model returns no_available_provider. Add a route to a provider." : "Create a provider first, then add a route here."}
             action={
               providers.length ? (
-                <Button size="sm" onClick={() => setEditing("new")}>
+                <Button size="sm" onClick={() => setWizard(true)}>
                   <Plus className="size-4" /> Add route
                 </Button>
               ) : (
@@ -101,17 +121,16 @@ export function RoutesPanel({
                   <TableHead className="text-right">Prio</TableHead>
                   <TableHead className="text-right">Traffic</TableHead>
                   <TableHead>Pools</TableHead>
-                  <TableHead className="text-right">Cost in / out / cached</TableHead>
-                  <TableHead className="text-right">Margin in / out / cached</TableHead>
+                  <TableHead className="text-right">Our cost</TableHead>
+                  <TableHead className="text-right">Margin</TableHead>
                   <TableHead className="w-10" />
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {routes.map((r) => {
-                  const m = routeMargins(
-                    { inputPrice: sell.inputPrice, outputPrice: sell.outputPrice, cachedInputPrice: sell.cachedInputPrice },
-                    { inputCost: r.inputCost, outputCost: r.outputCost, cachedInputCost: r.cachedInputCost },
-                  );
+                  const units = rowUnits(sell, r as unknown as Record<string, string>);
+                  const costText = compactUnits(units, "cost");
+                  const sum = summarizeRow(units);
                   const s = shares[r.id];
                   return (
                     <TableRow key={r.id} className={cn(!r.enabled && "opacity-60")}>
@@ -160,11 +179,10 @@ export function RoutesPanel({
                           </div>
                         )}
                       </TableCell>
+                      <TableCell className="whitespace-nowrap text-right text-xs">{costText.text}</TableCell>
                       <TableCell className="whitespace-nowrap text-right text-xs">
-                        <MoneyText value={r.inputCost} /> / <MoneyText value={r.outputCost} /> / {r.cachedInputCost ? <MoneyText value={r.cachedInputCost} /> : <span className="text-muted-foreground">-</span>}
-                      </TableCell>
-                      <TableCell className="whitespace-nowrap text-right text-xs">
-                        <Margin v={m.input} /> / <Margin v={m.output} /> / <Margin v={m.cached} />
+                        <span className={cn("tabular-nums", marginTone(sum.marginPct))}>{fmtPct(sum.marginPct, 1)}</span>
+                        {sum.loss && <span className="ml-1 rounded bg-red-500/15 px-1 text-[10px] font-semibold uppercase text-red-500">loss</span>}
                       </TableCell>
                       <TableCell>
                         <DropdownMenu>
@@ -195,6 +213,17 @@ export function RoutesPanel({
           </div>
         )}
       </CardContent>
+
+      {wizard && (
+        <AddRouteWizard
+          modelId={modelId}
+          publicSlug={publicSlug}
+          model={{ ...(model as unknown as Record<string, string>), ...sell }}
+          providers={wizardProviders}
+          capabilities={model.capabilities}
+          onClose={() => setWizard(false)}
+        />
+      )}
 
       {editing && (
         <RouteDialog
@@ -244,7 +273,7 @@ type RouteForm = {
   maxOutputTokens: string;
 } & Record<string, string | boolean | string[]>;
 
-const PRIMARY_PAIRS = 5; // input, output, cached, cache write, cache write 1h
+const PRIMARY_SELL = new Set(["inputPrice", "outputPrice", "cachedInputPrice", "cacheWritePrice", "cacheWrite1hPrice"]);
 
 function RouteDialog({
   modelId,
@@ -281,7 +310,7 @@ function RouteDialog({
   });
   const set = (k: string, v: string | boolean | string[]) => setF((s) => ({ ...s, [k]: v }));
   const costs = f as unknown as Record<string, string>;
-  const [showAll, setShowAll] = useState(() => MODEL_PRICE_PAIRS.slice(PRIMARY_PAIRS).some((p) => !!costs[p.cost]));
+  const [showAll, setShowAll] = useState(() => MODEL_PRICE_PAIRS.some((p) => !PRIMARY_SELL.has(p.sell) && (!!costs[p.cost] || (toNum(sell[p.sell]) ?? 0) > 0)));
   const margins = routeMargins(
     { inputPrice: sell.inputPrice, outputPrice: sell.outputPrice, cachedInputPrice: sell.cachedInputPrice },
     { inputCost: costs.inputCost, outputCost: costs.outputCost, cachedInputCost: costs.cachedInputCost },
@@ -381,7 +410,7 @@ function RouteDialog({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {MODEL_PRICE_PAIRS.slice(0, showAll ? undefined : PRIMARY_PAIRS).map((p) => (
+              {MODEL_PRICE_PAIRS.filter((p) => showAll || PRIMARY_SELL.has(p.sell)).map((p) => (
                 <TableRow key={p.cost}>
                   <TableCell>
                     <span className="text-sm">{p.label}</span>
@@ -412,7 +441,7 @@ function RouteDialog({
         </div>
         <Button type="button" variant="ghost" size="sm" onClick={() => setShowAll((s) => !s)}>
           {showAll ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-          {showAll ? "Hide" : "Show"} image, audio, per-request and other costs
+          {showAll ? "Hide" : "Show"} image, video (per second), audio, per-request and other costs
         </Button>
       </section>
     </FormDialog>

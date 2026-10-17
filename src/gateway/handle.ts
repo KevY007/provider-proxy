@@ -1,8 +1,6 @@
 import { getClientIp } from "@/lib/http";
 import { logger } from "@/lib/logger";
-import { Decimal } from "@/lib/money";
 import { authenticate } from "./auth";
-import { getBalance, refreshBalanceNow } from "./balance";
 import { resolveModel } from "./cache";
 import { getConfig } from "./cache";
 import { catalogResponse } from "./catalog";
@@ -10,16 +8,18 @@ import { corsHeaders, failWith, logOutcome, newCtx, releaseAll, withCommon, type
 import { execute } from "./execute";
 import { GatewayError, toGatewayError } from "./errors";
 import { checkRpm, checkTpm } from "./limits";
-import { fileBytes, getField, parseMultipart } from "./multipart";
+import { getField, parseMultipart } from "./multipart";
 import { guessErrorFormat, parsePath } from "./path";
-import { computeAmount, effectiveMultiplier } from "./pricing";
+import { effectiveMultiplier } from "./pricing";
+import { closeFunds, reserveFunds } from "./reserve";
+import { validateRequest } from "./validate";
 import { lookupResponse } from "./responses-sticky";
 import { eligibleRoutes, orderRoutes, type RoutePlan } from "./select";
 import { acquireSlots, type SlotPool } from "./slots";
-import { countRequestTokens, estimateInputTokens } from "./tokenizer";
-import { emptyUsage, type Json, type JsonObject, type Operation } from "./types";
+import { countRequestTokens } from "./tokenizer";
+import { emptyUsage, type Json, type Operation } from "./types";
 import { isObject, newId, safeJsonParse } from "./util";
-import { requestedSeconds, videoContentPlan, videoDelete, videoGet, videoList } from "./video";
+import { videoContentPlan, videoDelete, videoGet, videoList } from "./video";
 
 export { guessErrorFormat, parsePath } from "./path";
 
@@ -37,7 +37,10 @@ export async function handle(req: Request): Promise<Response> {
   try {
     if (req.method === "OPTIONS") return preflight(ctx);
     const res = await run(ctx);
-    if (!ctx.deferRelease) releaseAll(ctx);
+    if (!ctx.deferRelease) {
+      releaseAll(ctx);
+      closeFunds(ctx); // safety net: normally the hold was settled when the request was logged
+    }
     return res;
   } catch (e) {
     if (!(e instanceof GatewayError)) logger.error("gateway internal error", { requestId: ctx.requestId, err: e });
@@ -46,6 +49,7 @@ export async function handle(req: Request): Promise<Response> {
     } catch (e2) {
       logger.error("gateway failWith crashed", { requestId: ctx.requestId, err: e2 });
       releaseAll(ctx);
+      closeFunds(ctx);
       return new Response(JSON.stringify({ error: { message: "Internal server error.", type: "server_error", code: "internal_error", param: null } }), {
         status: 500,
         headers: { "content-type": "application/json", "x-request-id": ctx.requestId },
@@ -91,8 +95,9 @@ async function run(ctx: Ctx): Promise<Response> {
 
   await readBody(ctx);
   resolveRequestModel(ctx);
+  validateRequest(ctx);
   await checkLimits(ctx);
-  await checkBalance(ctx);
+  await reserveFunds(ctx);
   return dispatch(ctx);
 }
 
@@ -225,84 +230,6 @@ function rateLimited(what: string, retryAfterSec: number, limit: number): Gatewa
     retryAfterSec,
     headers: { "x-ratelimit-limit-requests": String(limit), "x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": `${retryAfterSec}s` },
     internal: `rate limit (${what}) limit=${limit}`,
-  });
-}
-
-// ------------------------------------------------------------------ balance
-function numField(o: JsonObject | null, ...names: string[]): number | undefined {
-  if (!o) return undefined;
-  for (const n of names) {
-    const v = o[n];
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) return v;
-  }
-  return undefined;
-}
-
-/** Rough worst-case price of this request, used only for the pre-flight balance check. */
-function estimateCost(ctx: Ctx): Decimal {
-  const model = ctx.model!;
-  const path = ctx.path!;
-  const body = ctx.body;
-  const u = emptyUsage();
-  switch (path.op) {
-    case "chat":
-    case "completions":
-    case "responses":
-    case "messages":
-    case "gemini_generate":
-    case "gemini_stream": {
-      u.inputTokens = ctx.inputEstimate;
-      const gc = body && isObject(body.generationConfig) ? body.generationConfig : null;
-      const maxOut = numField(body, "max_completion_tokens", "max_tokens", "max_output_tokens") ?? numField(gc, "maxOutputTokens");
-      u.outputTokens = Math.min(maxOut ?? 4096, 4096);
-      break;
-    }
-    case "embeddings":
-    case "gemini_embed":
-    case "gemini_batch_embed":
-      u.inputTokens = ctx.inputEstimate;
-      break;
-    case "images_generations":
-    case "images_edits":
-    case "images_variations": {
-      const n = numField(body, "n") ?? Number(ctx.form ? getField(ctx.form, "n") : 1);
-      u.imageCount = Number.isFinite(n) && n > 0 ? Math.min(Math.trunc(n), 10) : 1;
-      u.inputTokens = ctx.inputEstimate;
-      break;
-    }
-    case "audio_speech":
-      u.characters = typeof body?.input === "string" ? body.input.length : 0;
-      break;
-    case "videos_create":
-      u.videoSeconds = requestedSeconds(ctx);
-      break;
-    case "audio_transcriptions":
-    case "audio_translations":
-      u.audioSeconds = ctx.form ? fileBytes(ctx.form) / 16_000 : 0;
-      break;
-    default:
-      break;
-  }
-  return computeAmount(u, model.sell, { multiplier: ctx.multiplier, longContext: model.longContext });
-}
-
-async function checkBalance(ctx: Ctx): Promise<void> {
-  const snap = ctx.snap!;
-  const { user } = ctx.auth!;
-  ctx.inputEstimate = ctx.body ? estimateInputTokens(ctx.body) : 0;
-  const estimate = estimateCost(ctx);
-  const minBalance = new Decimal(snap.settings.minBalanceToCall);
-  const ok = (bal: Decimal) => {
-    const headroom = bal.plus(user.creditLimit).minus(minBalance);
-    return headroom.gt(0) && headroom.gte(estimate);
-  };
-  let bal = await getBalance(user.id, { balance: user.balance, at: ctx.auth!.loadedAt });
-  if (ok(bal)) return;
-  // the cache may predate a top-up made on another instance: confirm against the DB before rejecting
-  bal = await refreshBalanceNow(user.id);
-  if (ok(bal)) return;
-  throw new GatewayError("insufficient_balance", undefined, {
-    internal: `balance=${bal.toFixed(6)} creditLimit=${user.creditLimit.toFixed(6)} estimate=${estimate.toFixed(6)} minBalanceToCall=${minBalance.toString()}`,
   });
 }
 

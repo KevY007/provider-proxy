@@ -22,6 +22,13 @@ export interface StreamProcessor {
   error(): { status: number; message: string; type?: string } | null;
   /** Response id created by this stream (Responses API stickiness). */
   responseId?(): string | null;
+  /** Characters of assistant output accumulated so far (cheap; used by the funds guard to estimate accrued cost). */
+  outputChars?(): number;
+  /**
+   * The stream is cut short by the gateway (funds exhausted): the blocks to send to the client instead of the
+   * normal ending. `errorEvent` is the serialized native error event (already in the inbound format).
+   */
+  abortEvents?(errorEvent: string): string[];
 }
 
 /** Bounded text accumulator. */

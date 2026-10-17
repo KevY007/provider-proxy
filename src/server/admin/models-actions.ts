@@ -5,9 +5,14 @@ import type { Prisma } from "@/generated/prisma/client";
 import { audit } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { invalidateGatewayConfig } from "@/gateway/cache";
-import { ActionFail, adminAction, parseInput } from "./action";
+import { lookupKnownPrice, type KnownPrice } from "@/gateway/price-catalog";
+import { listUpstreamModels, type UpstreamModel } from "@/gateway/upstream-models";
+import { applyPricingRule } from "@/server/pricing/rules";
+import { afterPricingChange } from "./pricing-hooks";
+import { ActionFail, adminAction, parseInput, zodFieldErrors } from "./action";
 import {
   modelFieldsSchema,
+  PRICING_MODES,
   modelToExport,
   parseModelImport,
   routeFormSchema,
@@ -40,11 +45,23 @@ function modelData(f: ModelFields) {
     audioOutputPrice: f.audioOutputPrice,
     perMinutePrice: f.perMinutePrice,
     perMillionChars: f.perMillionChars,
+    perSecondPrice: f.perSecondPrice,
     longContextThreshold: f.longContextThreshold,
     longContextMultiplier: f.longContextMultiplier,
     officialInputPrice: f.officialInputPrice,
     officialOutputPrice: f.officialOutputPrice,
     officialCachedPrice: f.officialCachedPrice,
+    officialCacheWritePrice: f.officialCacheWritePrice,
+    officialImagePrice: f.officialImagePrice,
+    officialRequestPrice: f.officialRequestPrice,
+    officialAudioInputPrice: f.officialAudioInputPrice,
+    officialAudioOutputPrice: f.officialAudioOutputPrice,
+    officialPerMinutePrice: f.officialPerMinutePrice,
+    officialPerMillionChars: f.officialPerMillionChars,
+    officialPerSecondPrice: f.officialPerSecondPrice,
+    pricingMode: f.pricingMode,
+    pricingValue: f.pricingValue,
+    retiresAt: f.retiresAt,
   };
 }
 
@@ -69,6 +86,7 @@ function routeData(f: RouteFields) {
     audioOutputCost: f.audioOutputCost,
     perMinuteCost: f.perMinuteCost,
     perMillionCharsCost: f.perMillionCharsCost,
+    perSecondCost: f.perSecondCost,
   };
 }
 
@@ -102,6 +120,7 @@ export async function createModel(input: unknown) {
     await assertNamesFree(f.slug, f.aliases);
     const m = await db.model.create({ data: modelData(f), select: { id: true } });
     await audit(admin.id, "model.create", { type: "Model", id: m.id }, { slug: f.slug }, ip);
+    await afterPricingChange(m.id);
     await invalidateGatewayConfig("models", m.id);
     return { data: { id: m.id }, message: `Model ${f.slug} created` };
   });
@@ -123,6 +142,7 @@ export async function updateModel(id: string, input: unknown) {
     });
     const changed = Object.keys(modelData(f)).filter((k) => String((before as Record<string, unknown>)[k] ?? "") !== String((modelData(f) as Record<string, unknown>)[k] ?? ""));
     await audit(admin.id, "model.update", { type: "Model", id }, { slug: f.slug, changed, prevSlug: before.slug }, ip);
+    await afterPricingChange(id);
     await invalidateGatewayConfig("models", id);
     return { message: "Model saved" };
   });
@@ -178,12 +198,14 @@ export async function duplicateModel(id: string, newSlug: string) {
             audioOutputCost: r.audioOutputCost,
             perMinuteCost: r.perMinuteCost,
             perMillionCharsCost: r.perMillionCharsCost,
+            perSecondCost: r.perSecondCost,
           })),
         },
       },
       select: { id: true },
     });
     await audit(admin.id, "model.duplicate", { type: "Model", id: created.id }, { from: src.slug, slug, routes: src.routes.length }, ip);
+    await afterPricingChange(created.id);
     await invalidateGatewayConfig("models", created.id);
     return { data: { id: created.id }, message: `Duplicated as ${slug} (hidden)` };
   });
@@ -213,6 +235,7 @@ export async function createRoute(modelId: string, input: unknown) {
     const { providerId, ...rest } = f;
     const r = await db.modelRoute.create({ data: { modelId, providerId, ...routeData(rest) }, select: { id: true } }).catch(routeConflict);
     await audit(admin.id, "route.create", { type: "ModelRoute", id: r.id }, { model: model.slug, providerId, upstreamModel: f.upstreamModel }, ip);
+    await afterPricingChange(modelId);
     await invalidateGatewayConfig("models", modelId);
     return { data: { id: r.id }, message: "Route added" };
   });
@@ -226,6 +249,7 @@ export async function updateRoute(routeId: string, input: unknown) {
     const { providerId, ...rest } = f;
     await db.modelRoute.update({ where: { id: routeId }, data: { providerId, ...routeData(rest) } }).catch(routeConflict);
     await audit(admin.id, "route.update", { type: "ModelRoute", id: routeId }, { modelId: existing.modelId, providerId, upstreamModel: f.upstreamModel }, ip);
+    await afterPricingChange(existing.modelId);
     await invalidateGatewayConfig("models", existing.modelId);
     return { message: "Route saved" };
   });
@@ -235,6 +259,7 @@ export async function toggleRoute(routeId: string, enabled: boolean) {
   return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
     const r = await db.modelRoute.update({ where: { id: routeId }, data: { enabled: z.boolean().parse(enabled) }, select: { modelId: true } });
     await audit(admin.id, enabled ? "route.enable" : "route.disable", { type: "ModelRoute", id: routeId }, {}, ip);
+    await afterPricingChange(r.modelId);
     await invalidateGatewayConfig("models", r.modelId);
     return { message: enabled ? "Route enabled" : "Route disabled" };
   });
@@ -244,6 +269,7 @@ export async function deleteRoute(routeId: string) {
   return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
     const r = await db.modelRoute.delete({ where: { id: routeId }, select: { modelId: true, upstreamModel: true, providerId: true } });
     await audit(admin.id, "route.delete", { type: "ModelRoute", id: routeId }, { upstreamModel: r.upstreamModel, providerId: r.providerId }, ip);
+    await afterPricingChange(r.modelId);
     await invalidateGatewayConfig("models", r.modelId);
     return { message: "Route deleted" };
   });
@@ -264,6 +290,7 @@ export async function duplicateRoute(routeId: string) {
       select: { id: true },
     });
     await audit(admin.id, "route.duplicate", { type: "ModelRoute", id: created.id }, { from: routeId, upstreamModel: name }, ip);
+    await afterPricingChange(src.modelId);
     await invalidateGatewayConfig("models", src.modelId);
     return { data: { id: created.id }, message: `Route duplicated as ${name} (disabled)` };
   });
@@ -328,6 +355,9 @@ export async function importModels(text: string, dryRun: boolean) {
     }
     const okCount = results.filter((r) => r.ok).length;
     if (!dryRun && okCount > 0) {
+      const slugs = results.filter((r) => r.ok).map((r) => r.slug);
+      const ids = await db.model.findMany({ where: { slug: { in: slugs } }, select: { id: true } });
+      for (const m of ids) await afterPricingChange(m.id);
       await audit(admin.id, "model.import", null, { ok: okCount, failed: results.length - okCount }, ip);
       await invalidateGatewayConfig("models");
     }
@@ -350,5 +380,105 @@ export async function exportModels() {
     });
     await audit(admin.id, "model.export", null, { count: out.length }, ip);
     return { data: { json: JSON.stringify(out, null, 2), count: out.length } };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// guided "Add model" flow (provider -> real model -> names & prices -> pricing rule)
+
+export interface ProviderModelsResult {
+  models: UpstreamModel[];
+  /** Set when the provider could not be listed (we still let the admin type a model id). */
+  error?: string;
+}
+
+/** Step 2: the real models a provider offers (live /models list + known prices + "already added"). */
+export async function listProviderModels(providerId: string) {
+  return adminAction<ProviderModelsResult>({ adminOnly: true }, async () => {
+    const id = parseInput(z.string().min(1, "Choose a provider"), providerId);
+    try {
+      const models = await listUpstreamModels(id);
+      return { data: { models } };
+    } catch (err) {
+      return { data: { models: [], error: err instanceof Error ? err.message : "Could not list this provider's models" } };
+    }
+  });
+}
+
+const VENDOR_BY_PREFIX: Array<[RegExp, string]> = [
+  [/^(gpt|o\d|chatgpt|text-embedding|dall-e|whisper|tts|sora|codex)/i, "openai"],
+  [/^claude/i, "anthropic"],
+  [/^(gemini|imagen|veo|gemma)/i, "google"],
+  [/^grok/i, "xai"],
+];
+
+export interface KnownLookup {
+  known: KnownPrice | null;
+  /** The provider is the model maker itself (OpenAI key for an OpenAI model): our cost = official price. */
+  direct: boolean;
+  vendor: string | null;
+}
+
+/** For a custom / typed model id: find the built-in known price and whether this provider is the maker itself. */
+export async function lookupKnownForProvider(providerId: string, upstreamModel: string) {
+  return adminAction<KnownLookup>({ adminOnly: true }, async () => {
+    const provider = await db.provider.findUnique({ where: { id: providerId }, select: { preset: true, slug: true } });
+    if (!provider) throw new ActionFail("Provider not found");
+    const id = upstreamModel.trim();
+    let known = id ? lookupKnownPrice(provider.preset, id) : null;
+    let vendor: string | null = known?.vendor ?? null;
+    if (!known && id) {
+      vendor = VENDOR_BY_PREFIX.find(([re]) => re.test(id))?.[1] ?? null;
+      known = vendor ? lookupKnownPrice(vendor, id) : null;
+    }
+    return { data: { known, vendor, direct: !!known && (known.vendor === provider.preset || known.vendor === provider.slug) } };
+  });
+}
+
+export async function bulkApplyPricingRule(modelIds: string[], rule: { mode: string; value: unknown }) {
+  return adminAction<{ updated: number }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const ids = parseInput(z.array(z.string().min(1)).min(1, "Select at least one model").max(500), modelIds);
+    const mode = parseInput(z.enum(PRICING_MODES, { error: "Choose how prices are set" }), rule.mode);
+    let value: number | null = null;
+    if (mode !== "FIXED") {
+      value = Number(rule.value);
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new ActionFail(mode === "PERCENT_OF_OFFICIAL" ? "Enter a percent of the official price, e.g. 70" : "Enter a markup percent, e.g. 30", { value: "Enter a number above 0" });
+      }
+    }
+    const res = await applyPricingRule(ids, { mode, value });
+    await audit(admin.id, "model.bulk_pricing_rule", null, { mode, value, models: ids.length, updated: res.updated }, ip);
+    await invalidateGatewayConfig("models");
+    return { data: { updated: res.updated }, message: `Pricing rule applied to ${res.updated} model${res.updated === 1 ? "" : "s"}` };
+  });
+}
+
+/** Step 4: create the Model and its first ModelRoute in one go, then derive prices from the rule. */
+export async function createModelWithRoute(input: unknown) {
+  return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const raw = (input ?? {}) as { providerId?: unknown; upstreamModel?: unknown; model?: unknown; costs?: unknown };
+    const modelRes = modelFieldsSchema.safeParse(raw.model ?? {});
+    const routeRes = routeFormSchema.safeParse({ ...(raw.costs as object), providerId: raw.providerId, upstreamModel: raw.upstreamModel });
+    if (!modelRes.success || !routeRes.success) {
+      const fieldErrors = {
+        ...(routeRes.success ? {} : zodFieldErrors(routeRes.error)),
+        ...(modelRes.success ? {} : zodFieldErrors(modelRes.error)),
+      };
+      const first = Object.entries(fieldErrors)[0];
+      throw new ActionFail(first ? `${first[0]}: ${first[1]}` : "Invalid input", fieldErrors);
+    }
+    const f = modelRes.data;
+    const { providerId, ...rest } = routeRes.data;
+    const provider = await db.provider.findUnique({ where: { id: providerId }, select: { id: true, name: true } });
+    if (!provider) throw new ActionFail("Provider not found", { providerId: "Choose a provider" });
+    await assertNamesFree(f.slug, f.aliases);
+    const m = await db.model.create({
+      data: { ...modelData(f), routes: { create: { providerId, ...routeData(rest) } } },
+      select: { id: true },
+    });
+    await audit(admin.id, "model.create", { type: "Model", id: m.id }, { slug: f.slug, via: "guided", provider: provider.name, upstreamModel: rest.upstreamModel, pricingMode: f.pricingMode }, ip);
+    await afterPricingChange(m.id);
+    await invalidateGatewayConfig("models", m.id);
+    return { data: { id: m.id }, message: `Model ${f.slug} is ready` };
   });
 }

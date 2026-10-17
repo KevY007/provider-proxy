@@ -9,6 +9,7 @@ import { classifyStatus, recordKeyFailure, recordKeySuccess, type FailureKind } 
 import { checkRpm, checkTpm, providerKeyDailyCost } from "./limits";
 import { fileBytes } from "./multipart";
 import type { StreamProcessor } from "./processor";
+import { streamExceedsHold } from "./reserve";
 import { rememberResponse } from "./responses-sticky";
 import { buildCandidates, type Candidate, type RoutePlan } from "./select";
 import {
@@ -212,6 +213,8 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
       responseId: opts.responseId ?? ctx.path!.responseId,
       videoId: opts.upstreamVideoId,
       query: opts.upstreamQuery,
+      outputCap: ctx.funds?.injectOutput ?? null,
+      fillOutput: ctx.funds?.fillOutput ?? null,
     });
     if (opts.externalUrl) {
       const range = ctx.req.headers.get("range");
@@ -602,6 +605,17 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
       else ge = new GatewayError("upstream_error");
       return streamErrorEvent(ctx.errorFormat, ge, ctx.requestId);
     },
+    guard: ctx.funds?.outputTokens
+      ? {
+          exceeded: () => streamExceedsHold(ctx, processor),
+          events: () => {
+            const f = ctx.funds!;
+            f.cut = true;
+            const ev = streamErrorEvent(ctx.errorFormat, new GatewayError("insufficient_balance", "Your available balance was used up while the response was streaming. Add credit to continue."), ctx.requestId);
+            return processor.abortEvents ? processor.abortEvents(ev) : [ev];
+          },
+        }
+      : undefined,
     onFinish: (info) => {
       h.dispose();
       releaseAll(ctx); // free slots first, bookkeeping after
@@ -661,6 +675,18 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   if (info.reason === "completed") {
     recordKeySuccess(cand.key);
     logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage, ttftMs: info.firstOutputMs });
+  } else if (info.reason === "budget") {
+    recordKeySuccess(cand.key);
+    logOutcome(ctx, {
+      status: "CLIENT_ERROR",
+      httpStatus: 402,
+      errorCode: "insufficient_balance",
+      errorMessage: "The response was cut off because the available balance was used up.",
+      internalError: `funds: stream cut at the credit hold (${ctx.funds?.outputTokens ?? "?"} reserved output tokens); the output produced was metered`,
+      usage,
+      ttftMs: info.firstOutputMs,
+      billable: true,
+    });
   } else if (info.reason === "cancelled") {
     logOutcome(ctx, { status: "CANCELLED", httpStatus: 499, errorCode: "client_closed", errorMessage: "Client closed the request.", usage, ttftMs: info.firstOutputMs });
   } else {

@@ -5,7 +5,9 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, Download, Zap } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
 import { MoneyText } from "@/components/common/money-text";
+import { CopyButton } from "@/components/common/copy-button";
 import { StatusBadge } from "@/components/common/status-badge";
+import { logStatusInfo } from "@/server/customer/log-status";
 import { fmtDateTime } from "@/components/admin/format";
 import { FilterInput, FilterSelect, ResetFilters, UrlRangePicker, useUrlFilters } from "@/components/admin/url-filters";
 import { Button } from "@/components/ui/button";
@@ -82,7 +84,13 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
             <TableBody>
               {rows.map((r) => (
                 <TableRow key={r.id} className="cursor-pointer" onClick={() => setOpenId(r.id)}>
-                  <TableCell className="whitespace-nowrap tabular-nums">{fmtDateTime(r.createdAt)}</TableCell>
+                  <TableCell className="whitespace-nowrap tabular-nums">
+                    {fmtDateTime(r.createdAt)}
+                    <span className="flex items-center gap-0.5 font-mono text-[10px] text-muted-foreground" onClick={(e) => e.stopPropagation()}>
+                      {r.id.slice(0, 10)}…
+                      <CopyButton value={r.id} size="icon-xs" toastMessage="Request id copied" className="size-5" />
+                    </span>
+                  </TableCell>
                   <TableCell>
                     {r.userId ? (
                       <Link href={`/admin/customers/${r.userId}`} className="text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
@@ -106,8 +114,14 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
                     {r.stream && <Zap className="ml-1 inline size-3 text-amber-500" aria-label="streaming" />}
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
-                    <StatusBadge status={r.status} />
-                    <span className="ml-2 text-xs text-muted-foreground">{r.httpStatus}{r.errorCode ? ` ${r.errorCode}` : ""}</span>
+                    {(() => {
+                      const st = logStatusInfo(r.status, r.httpStatus);
+                      return <StatusBadge status={r.status} label={st.label} tone={st.tone} />;
+                    })()}
+                    <span className="ml-2 text-xs text-muted-foreground" title={r.errorCode ? "Open the row for an explanation" : undefined}>
+                      {r.httpStatus}
+                      {r.errorCode ? ` ${r.errorCode}` : ""}
+                    </span>
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatNumber(r.inputTokens)} / {formatNumber(r.outputTokens)}

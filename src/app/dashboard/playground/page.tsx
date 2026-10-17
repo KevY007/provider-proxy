@@ -12,7 +12,7 @@ export default async function PlaygroundPage() {
   const { models, currentPool } = await getModelsForUser(user);
   const slug = currentPool?.slug ?? "";
   const toPlayground = (m: (typeof models)[number]): PlaygroundModel | null =>
-    m.prices[slug] ? { slug: m.slug, displayName: m.displayName, vendor: m.vendor, capabilities: m.capabilities, prices: m.prices[slug] } : null;
+    m.prices[slug] ? { slug: m.slug, displayName: m.displayName, vendor: m.vendor, capabilities: m.capabilities, prices: m.prices[slug], official: m.official } : null;
   const chatModels = models.filter((m) => m.capabilities.includes("chat")).map(toPlayground).filter((m): m is PlaygroundModel => !!m);
   const imageModels = models.filter((m) => m.capabilities.includes("images")).map(toPlayground).filter((m): m is PlaygroundModel => !!m);
 

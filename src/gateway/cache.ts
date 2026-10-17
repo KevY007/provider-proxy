@@ -5,7 +5,7 @@ import { Decimal, toDecimal } from "@/lib/money";
 import { logger } from "@/lib/logger";
 import { CONFIG_INVALIDATE_CHANNEL, getRedis, getRedisSubscriber, publishConfigInvalidate } from "@/lib/redis";
 import { getSettings, invalidateSettingsCache, type SettingValues } from "@/lib/settings";
-import { costTable, sellTable, type LongContext, type PriceTable } from "./pricing";
+import { costTable, officialTable, sellTable, type LongContext, type OptTable, type PriceTable } from "./pricing";
 import type { JsonObject } from "./types";
 import { isObject } from "./util";
 
@@ -71,6 +71,10 @@ export interface ModelRec {
   sortOrder: number;
   maskUpstreamModel: boolean;
   sell: PriceTable;
+  /** Official (maker list) prices; null per unit = unknown. Used for the per-request savings (`RequestLog.officialPrice`). */
+  official: OptTable;
+  /** Upstream retirement date (ms) when announced. */
+  retiresAt: number | null;
   longContext: LongContext;
   createdAt: number;
 }
@@ -98,6 +102,7 @@ export interface GroupRec {
   providerTags: string[];
   allowedModels: Set<string> | null;
   isDefault: boolean;
+  isPublic: boolean;
   rpmLimit: number | null;
   maxConcurrency: number | null;
 }
@@ -227,6 +232,8 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       sortOrder: m.sortOrder,
       maskUpstreamModel: m.maskUpstreamModel,
       sell: sellTable(m),
+      official: officialTable(m),
+      retiresAt: m.retiresAt ? m.retiresAt.getTime() : null,
       longContext: { threshold: m.longContextThreshold, multiplier: m.longContextMultiplier ? toDecimal(m.longContextMultiplier) : null },
       createdAt: m.createdAt.getTime(),
     };
@@ -275,6 +282,7 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       providerTags: gr.providerTags,
       allowedModels: gr.allowedModels.length ? new Set(gr.allowedModels) : null,
       isDefault: gr.isDefault,
+      isPublic: gr.isPublic,
       rpmLimit: gr.rpmLimit,
       maxConcurrency: gr.maxConcurrency,
     };

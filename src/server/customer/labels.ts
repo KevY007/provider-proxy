@@ -28,4 +28,5 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   vision: "Vision",
   tools: "Tools",
   reasoning: "Reasoning",
+  video: "Video",
 };

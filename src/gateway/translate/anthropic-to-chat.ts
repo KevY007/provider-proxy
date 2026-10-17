@@ -332,6 +332,9 @@ export class ChatToAnthropicStream implements StreamProcessor {
   outputText(): string {
     return this.text.toString();
   }
+  outputChars(): number {
+    return this.text.length;
+  }
   completed(): boolean {
     return this.done;
   }

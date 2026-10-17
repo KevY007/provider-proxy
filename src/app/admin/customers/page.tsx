@@ -8,7 +8,7 @@ export const metadata = { title: "Customers" };
 export const dynamic = "force-dynamic";
 
 export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
-  await requireAdmin();
+  const { user: viewer } = await requireAdmin();
   const sp = await searchParams;
   const params = parseCustomerListParams(sp);
   const [{ rows, total }, groups] = await Promise.all([listCustomers(params), listGroupOptions()]);
@@ -18,7 +18,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
   return (
     <>
       <PageHeader title="Customers" description="Accounts, balances and 30-day usage. Click a row for the full profile." />
-      <CustomersTable rows={rows} total={total} page={params.page} pageSize={params.pageSize} groups={groups} exportQuery={exportQuery} />
+      <CustomersTable isAdmin={viewer.role === "ADMIN"} rows={rows} total={total} page={params.page} pageSize={params.pageSize} groups={groups} exportQuery={exportQuery} />
     </>
   );
 }

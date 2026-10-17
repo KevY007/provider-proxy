@@ -12,10 +12,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/common/empty-state";
 import { MoneyText } from "@/components/common/money-text";
 import { cn, formatNumber } from "@/lib/utils";
-import { estimateCost } from "@/server/customer/pricing";
+import { estimateCost, estimateSaving } from "@/server/customer/pricing";
 import { Markdown } from "./markdown";
 import { gatewayFetch, readChatStream, readGatewayError, type ChatTurn, type ChatUsage, type GatewayError, type usePlaygroundKey } from "./playground-api";
-import { GatewayErrorAlert, type PlaygroundModel } from "./playground-shared";
+import { GatewayErrorAlert, SavedNote, type PlaygroundModel } from "./playground-shared";
 
 interface Msg {
   id: number;
@@ -24,6 +24,7 @@ interface Msg {
   model?: string;
   usage?: ChatUsage;
   cost?: string;
+  saved?: string | null;
   error?: GatewayError;
   streaming?: boolean;
   stopped?: boolean;
@@ -48,6 +49,8 @@ export function ChatTab({ models, keyApi, keyError }: { models: PlaygroundModel[
   }, [msgs]);
 
   const total = msgs.reduce((a, m) => a + Number(m.cost ?? 0), 0);
+  const totalSaved = msgs.reduce((a, m) => a + Number(m.saved ?? 0), 0);
+  const anySaved = msgs.some((m) => m.saved != null);
 
   function patch(id: number, p: Partial<Msg>) {
     setMsgs((all) => all.map((m) => (m.id === id ? { ...m, ...p } : m)));
@@ -97,7 +100,7 @@ export function ChatTab({ models, keyApi, keyError }: { models: PlaygroundModel[
         },
       );
       const u = usage as ChatUsage | null;
-      patch(aId, { streaming: false, usage: u ?? undefined, cost: u ? estimateCost(u, current.prices).toString() : undefined });
+      patch(aId, { streaming: false, usage: u ?? undefined, cost: u ? estimateCost(u, current.prices).toString() : undefined, saved: u ? estimateSaving(u, current.official, current.prices) : undefined });
     } catch (err) {
       if (ac.signal.aborted) {
         patch(aId, { streaming: false, stopped: true });
@@ -191,6 +194,12 @@ export function ChatTab({ models, keyApi, keyError }: { models: PlaygroundModel[
             <span className="text-muted-foreground">Session cost</span>
             <MoneyText value={total} />
           </div>
+          {anySaved && (
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-muted-foreground">Saved vs official</span>
+              <SavedNote saved={String(totalSaved)} />
+            </div>
+          )}
           <Button variant="outline" size="sm" onClick={() => setMsgs([])} disabled={busy || msgs.length === 0}>
             <Eraser className="size-4" /> Clear conversation
           </Button>
@@ -233,6 +242,12 @@ function Bubble({ m }: { m: Msg }) {
                   <>
                     {" - "}
                     <MoneyText value={m.cost} />
+                    {m.saved != null && Number(m.saved) !== 0 && (
+                      <>
+                        {" - "}
+                        <SavedNote saved={m.saved} />
+                      </>
+                    )}
                   </>
                 )}
               </>

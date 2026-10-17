@@ -1,5 +1,6 @@
 "use client";
 
+import { creditLabelFromDescription } from "@/server/admin/credits";
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import { EmptyState } from "@/components/common/empty-state";
@@ -173,7 +174,7 @@ export function LedgerTable({ ledger }: { ledger: CustomerDetail["ledger"] }) {
             <TableRow key={l.id}>
               <TableCell>{fmtDateTime(l.createdAt, false)}</TableCell>
               <TableCell>
-                <Badge variant="outline">{l.type.replace(/_/g, " ").toLowerCase()}</Badge>
+                <Badge variant="outline">{creditLabelFromDescription(l.type, l.description) ?? l.type.replace(/_/g, " ").toLowerCase()}</Badge>
               </TableCell>
               <TableCell className="text-right">
                 <MoneyText value={l.amount} signed colorize />

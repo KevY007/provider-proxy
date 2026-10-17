@@ -9,6 +9,7 @@ import {
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type RowSelectionState,
   type SortingState,
   type VisibilityState,
 } from "@tanstack/react-table";
@@ -22,6 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -73,6 +75,11 @@ export interface DataTableProps<TData, TValue> {
   getRowId?: (row: TData, index: number) => string;
   /** Hide the column-visibility menu. */
   hideColumnToggle?: boolean;
+  /**
+   * Adds a checkbox column. While at least one row is selected the returned node is shown in a bar above the table
+   * (bulk actions). Needs `getRowId` so selection survives sorting/filtering.
+   */
+  bulkActions?: (ctx: { selected: TData[]; clear: () => void }) => React.ReactNode;
   className?: string;
 }
 
@@ -118,17 +125,36 @@ export function DataTable<TData, TValue>({
   onRowClick,
   getRowId,
   hideColumnToggle,
+  bulkActions,
   className,
 }: DataTableProps<TData, TValue>) {
   const [sorting, setSorting] = useState<SortingState>(initialSorting);
   const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(initialColumnVisibility);
   const [globalFilter, setGlobalFilter] = useState("");
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+
+  const selectColumn: ColumnDef<TData, TValue> = {
+    id: "__select",
+    enableSorting: false,
+    enableHiding: false,
+    meta: { noExport: true, className: "w-10" },
+    header: ({ table: t }) => (
+      <Checkbox
+        aria-label="Select all rows on this page"
+        checked={t.getIsAllPageRowsSelected() || (t.getIsSomePageRowsSelected() && "indeterminate")}
+        onCheckedChange={(v) => t.toggleAllPageRowsSelected(!!v)}
+      />
+    ),
+    cell: ({ row }) => <Checkbox aria-label="Select row" checked={row.getIsSelected()} onCheckedChange={(v) => row.toggleSelected(!!v)} onClick={(e) => e.stopPropagation()} />,
+  };
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
     data,
-    columns,
-    state: { sorting, columnVisibility, globalFilter },
+    columns: bulkActions ? [selectColumn, ...columns] : columns,
+    state: { sorting, columnVisibility, globalFilter, rowSelection },
+    onRowSelectionChange: setRowSelection,
+    enableRowSelection: !!bulkActions,
     onSortingChange: setSorting,
     onColumnVisibilityChange: setColumnVisibility,
     onGlobalFilterChange: setGlobalFilter,
@@ -142,6 +168,7 @@ export function DataTable<TData, TValue>({
   });
 
   const rows = table.getRowModel().rows;
+  const selectedRows = bulkActions ? table.getSelectedRowModel().flatRows.map((r) => r.original) : [];
   const visibleCols = table.getVisibleLeafColumns();
   const hideable = table.getAllLeafColumns().filter((c) => c.getCanHide());
 
@@ -213,7 +240,17 @@ export function DataTable<TData, TValue>({
         </div>
       )}
 
-      <div className="overflow-hidden rounded-lg border">
+      {bulkActions && selectedRows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm" role="region" aria-label="Bulk actions">
+          <span className="font-medium">{selectedRows.length} selected</span>
+          {bulkActions({ selected: selectedRows, clear: () => setRowSelection({}) })}
+          <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setRowSelection({})}>
+            Clear selection
+          </Button>
+        </div>
+      )}
+
+      <div className="overflow-x-auto rounded-lg border">
         <Table>
           <TableHeader className="bg-muted/40">
             {table.getHeaderGroups().map((hg) => (

@@ -12,6 +12,8 @@ import { formatUSD } from "@/lib/money";
 import { emailTemplates, sendTemplate } from "@/lib/email";
 import { adminAction, ActionFail, parseInput } from "./action";
 import { adjustBalanceSchema, canManageTarget, customerSettingsSchema } from "./customers-calc";
+import { addCreditSchema, creditDescription, CREDIT_KIND_INFO, grantCreditsSchema, type CreditKind } from "./credits";
+import { credit, debit, LedgerError } from "@/server/billing/ledger";
 
 async function loadTarget(userId: string) {
   const u = await db.user.findUnique({
@@ -125,6 +127,56 @@ export async function adjustCustomerBalance(input: unknown) {
       if (err instanceof Error && err.name === "LedgerError") throw new ActionFail(err.message, { amount: err.message });
       throw err;
     }
+  });
+}
+
+/** One ledger movement for a credit kind (kind is recorded in the description prefix and metadata.kind). */
+async function applyCredit(adminId: string, userId: string, kind: CreditKind, amount: string, reason: string) {
+  const info = CREDIT_KIND_INFO[kind];
+  const meta = { kind: `${kind}_credit`, creditKind: kind, reason, adminId };
+  const desc = creditDescription(kind, reason);
+  const opts = { createdById: adminId, metadata: meta };
+  return Number(amount) < 0 ? debit(userId, amount.replace(/^-/, ""), info.ledger, desc, opts) : credit(userId, amount, info.ledger, desc, opts);
+}
+
+/** "Add credit" on the customer page: Promotional credit / Refund / Correction + reason (ledger + audit). */
+export async function addCustomerCredit(input: unknown) {
+  return adminAction<{ balance: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const d = parseInput(addCreditSchema, input);
+    const target = await loadTarget(d.userId);
+    try {
+      const res = await applyCredit(admin.id, d.userId, d.kind, d.amount, d.reason);
+      await audit(admin.id, "billing.add_credit", { type: "User", id: d.userId }, { email: target.email, kind: d.kind, amount: d.amount, reason: d.reason, ledgerEntryId: res.entry.id }, ip);
+      await invalidateGatewayConfig("users", d.userId);
+      return { data: { balance: res.balance.toFixed() }, message: `${CREDIT_KIND_INFO[d.kind].label} recorded. New balance: ${formatUSD(res.balance)}` };
+    } catch (err) {
+      if (err instanceof LedgerError) throw new ActionFail(err.message, { amount: err.message });
+      throw err;
+    }
+  });
+}
+
+/** Bulk "Grant credit" from the customers table (same amount + reason for each selected customer). */
+export async function grantCreditToCustomers(input: unknown) {
+  return adminAction<{ granted: number; failed: Array<{ email: string; error: string }> }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const d = parseInput(grantCreditsSchema, input);
+    const users = await db.user.findMany({ where: { id: { in: d.userIds } }, select: { id: true, email: true } });
+    if (users.length === 0) throw new ActionFail("None of the selected customers exist any more");
+    let granted = 0;
+    const failed: Array<{ email: string; error: string }> = [];
+    for (const u of users) {
+      try {
+        const res = await applyCredit(admin.id, u.id, d.kind, d.amount, d.reason);
+        await audit(admin.id, "billing.add_credit", { type: "User", id: u.id }, { email: u.email, kind: d.kind, amount: d.amount, reason: d.reason, ledgerEntryId: res.entry.id, bulk: true }, ip);
+        await invalidateGatewayConfig("users", u.id);
+        granted++;
+      } catch (err) {
+        failed.push({ email: u.email, error: err instanceof Error ? err.message : "Failed" });
+      }
+    }
+    if (granted === 0) throw new ActionFail(failed[0]?.error ?? "No credit was granted");
+    const message = `${CREDIT_KIND_INFO[d.kind].label} of ${formatUSD(d.amount)} granted to ${granted} customer${granted === 1 ? "" : "s"}${failed.length ? `; ${failed.length} failed` : ""}`;
+    return { data: { granted, failed }, message };
   });
 }
 

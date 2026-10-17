@@ -7,6 +7,8 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { TimeSeriesChart } from "@/components/admin/analytics-charts";
 import { SlotBar } from "@/components/admin/misc";
+import { QuickStartChecklist } from "@/components/admin/quickstart-checklist";
+import { getQuickStart } from "@/server/admin/quickstart-data";
 import { UrlRangePicker } from "@/components/admin/url-filters";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -35,7 +37,8 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
   const { range, gran, filter } = parseAnalyticsParams(sp, { defaultRange: "7d" });
   const prev = previousRange(range);
 
-  const [totals, prevTotals, series, topModels, topCustomers, errors, providers, slots] = await Promise.all([
+  const [quickStart, totals, prevTotals, series, topModels, topCustomers, errors, providers, slots] = await Promise.all([
+    getQuickStart(),
     getTotals(filter),
     getTotals({ ...filter, ...prev }),
     getTimeSeries(filter, gran),
@@ -68,6 +71,8 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
         description="Revenue, cost, profit and platform health."
         actions={<UrlRangePicker initial={{ preset: range.preset, from: range.from.toISOString(), to: range.to.toISOString() }} />}
       />
+
+      <QuickStartChecklist state={quickStart} />
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
         <StatCard label="Revenue" icon={DollarSign} value={formatUSD(totals.revenue)} trend={trendPct(totals.revenue, prevTotals.revenue)} hint="vs prev. period" />

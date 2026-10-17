@@ -2,37 +2,37 @@ import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { Decimal, toDecimal } from "@/lib/money";
 import { onGatewayInvalidate } from "./cache";
+import { forgetSharedBalance } from "./holds";
 
 /**
- * Cached customer balance for the pre-flight check (PLAN 9b): refreshed from the DB at most every 5s
- * (stale-while-revalidate) and debited locally on settle, so the request path does not query the DB.
+ * Cached DB balance of a customer (PLAN 9b): refreshed from the DB at most every 5s (stale-while-revalidate) and
+ * re-based on the authoritative balance every time the meter writer commits a debit (`rebaseBalance`), so the request
+ * path does not query the DB.
  *
- *   effective = last DB balance - (debits settled locally but not yet flushed by the meter writer)
+ * This is ONLY the database side of the equation. What is owed but not yet in the database (open credit holds and
+ * settled debits waiting for the meter writer) lives in `holds.ts`; the funds check is
  *
- * The DB stays authoritative: the meter-writer's flush returns each user's real new balance
- * (`settleFlushed`) which re-bases the cache and corrects drift between instances.
+ *     available = getBalance() + creditLimit - minBalanceToCall - holds.obligations
+ *
+ * (see `reserve.ts`). That is why this value must NOT be reduced by local debits any more.
  */
 const REFRESH_MS = 5_000;
 const IDLE_EVICT_MS = 10 * 60_000;
 
 interface Entry {
-  balance: Decimal; // effective (db - pending)
-  at: number; // when `balance` was last re-based on the DB
+  balance: Decimal; // last known DB balance
+  at: number; // when `balance` was read from / re-based on the DB
   touched: number;
   refreshing: Promise<void> | null;
+  rebasedAt: number;
 }
 
 interface Store {
   entries: Map<string, Entry>;
-  pending: Map<string, Decimal>;
   sweeper?: NodeJS.Timeout;
 }
-const g = globalThis as unknown as { __ppBal?: Store };
-const store: Store = (g.__ppBal ??= { entries: new Map(), pending: new Map() });
-
-function pendingOf(userId: string): Decimal {
-  return store.pending.get(userId) ?? new Decimal(0);
-}
+const g = globalThis as unknown as { __ppBal2?: Store };
+const store: Store = (g.__ppBal2 ??= { entries: new Map() });
 
 async function fetchDb(userId: string): Promise<Decimal | null> {
   const row = await db.user.findUnique({ where: { id: userId }, select: { balance: true } });
@@ -43,14 +43,14 @@ function startSweeper(): void {
   if (store.sweeper) return;
   store.sweeper = setInterval(() => {
     const now = Date.now();
-    for (const [id, e] of store.entries) if (now - e.touched > IDLE_EVICT_MS && !store.pending.has(id)) store.entries.delete(id);
+    for (const [id, e] of store.entries) if (now - e.touched > IDLE_EVICT_MS) store.entries.delete(id);
   }, 60_000);
   store.sweeper.unref?.();
 }
 
 /**
- * Effective balance of a user. `seed` is the balance read from the DB at `seedAt` (the auth record load);
- * it is used only when there is no cache entry and it is fresh.
+ * Last known DB balance of a user. `seed` is the balance read from the DB at `seedAt` (the auth record load); it is
+ * used only when there is no cache entry and it is fresh.
  */
 export async function getBalance(userId: string, seed?: { balance: Decimal; at: number }): Promise<Decimal> {
   startSweeper();
@@ -58,10 +58,10 @@ export async function getBalance(userId: string, seed?: { balance: Decimal; at: 
   let e = store.entries.get(userId);
   if (!e) {
     if (seed && now - seed.at < REFRESH_MS) {
-      e = { balance: seed.balance.minus(pendingOf(userId)), at: seed.at, touched: now, refreshing: null };
+      e = { balance: seed.balance, at: seed.at, touched: now, refreshing: null, rebasedAt: 0 };
     } else {
       const v = (await fetchDb(userId)) ?? new Decimal(0);
-      e = { balance: v.minus(pendingOf(userId)), at: Date.now(), touched: now, refreshing: null };
+      e = { balance: v, at: Date.now(), touched: now, refreshing: null, rebasedAt: 0 };
     }
     store.entries.set(userId, e);
     return e.balance;
@@ -69,10 +69,12 @@ export async function getBalance(userId: string, seed?: { balance: Decimal; at: 
   e.touched = now;
   if (now - e.at > REFRESH_MS && !e.refreshing) {
     const entry = e;
+    const startedAt = Date.now();
     entry.refreshing = fetchDb(userId)
       .then((v) => {
-        if (v) {
-          entry.balance = v.minus(pendingOf(userId));
+        // a flush re-based the entry while we were reading: our (older) read must not overwrite it
+        if (v && entry.rebasedAt < startedAt) {
+          entry.balance = v;
           entry.at = Date.now();
         }
       })
@@ -89,39 +91,28 @@ export async function refreshBalanceNow(userId: string): Promise<Decimal> {
   // a user hammering the API with an empty balance must not turn into one DB read per request
   const cur = store.entries.get(userId);
   if (cur && Date.now() - cur.at < 1_000) return cur.balance;
+  const startedAt = Date.now();
   const v = (await fetchDb(userId)) ?? new Decimal(0);
-  const eff = v.minus(pendingOf(userId));
   const e = store.entries.get(userId);
   if (e) {
-    e.balance = eff;
-    e.at = Date.now();
-  } else store.entries.set(userId, { balance: eff, at: Date.now(), touched: Date.now(), refreshing: null });
-  return eff;
-}
-
-/** Apply a settled charge locally (immediately visible to the next request on this instance). */
-export function debitLocal(userId: string, price: Decimal): void {
-  if (price.isZero()) return;
-  store.pending.set(userId, pendingOf(userId).plus(price));
-  const e = store.entries.get(userId);
-  if (e) e.balance = e.balance.minus(price);
-}
-
-/**
- * The meter writer committed `amount` of this user's charges. `dbBalance` is the authoritative balance after the
- * commit (null if the entries were dropped without being applied).
- */
-export function settleFlushed(userId: string, amount: Decimal, dbBalance: Decimal | null): void {
-  const left = pendingOf(userId).minus(amount);
-  if (left.lte(0)) store.pending.delete(userId);
-  else store.pending.set(userId, left);
-  if (dbBalance) {
-    const e = store.entries.get(userId);
-    const eff = dbBalance.minus(pendingOf(userId));
-    if (e) {
-      e.balance = eff;
+    if (e.rebasedAt < startedAt) {
+      e.balance = v;
       e.at = Date.now();
     }
+    return e.balance;
+  }
+  store.entries.set(userId, { balance: v, at: Date.now(), touched: Date.now(), refreshing: null, rebasedAt: 0 });
+  return v;
+}
+
+/** The meter writer committed debits: `dbBalance` is the authoritative balance after the commit. */
+export function rebaseBalance(userId: string, dbBalance: Decimal): void {
+  const now = Date.now();
+  const e = store.entries.get(userId);
+  if (e) {
+    e.balance = dbBalance;
+    e.at = now;
+    e.rebasedAt = now;
   }
 }
 
@@ -130,15 +121,13 @@ export function dropBalance(userId?: string): void {
   else store.entries.clear();
 }
 
-export function pendingDebit(userId: string): Decimal {
-  return pendingOf(userId);
-}
-
 onGatewayInvalidate((scope, id) => {
-  if (scope === "users" || scope === "all") dropBalance(id);
+  if (scope === "users" || scope === "all") {
+    dropBalance(id);
+    if (id) forgetSharedBalance(id);
+  }
 });
 
 export function __resetBalanceForTests(): void {
   store.entries.clear();
-  store.pending.clear();
 }

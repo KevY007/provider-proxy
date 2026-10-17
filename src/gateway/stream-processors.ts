@@ -35,6 +35,12 @@ abstract class Base implements StreamProcessor {
   outputText(): string {
     return this.text.toString();
   }
+  outputChars(): number {
+    return this.text.length;
+  }
+  abortEvents(errorEvent: string): string[] {
+    return [errorEvent];
+  }
   completed(): boolean {
     return this.done;
   }
@@ -53,6 +59,10 @@ abstract class Base implements StreamProcessor {
 /** OpenAI chat/completions + legacy completions streams (also Google's OpenAI-compat endpoint). */
 export class OpenAIStreamPassthrough extends Base {
   private finished = false;
+  private lastId: string | null = null;
+  private lastModel: string | null = null;
+  private lastCreated: number | null = null;
+  private legacy = false;
   constructor(
     private readonly publicModel: string | null,
     /** The client asked for stream_options.include_usage itself. */
@@ -76,6 +86,10 @@ export class OpenAIStreamPassthrough extends Base {
       return [];
     }
     let modified = false;
+    if (typeof d.id === "string") this.lastId = d.id;
+    if (typeof d.model === "string") this.lastModel = d.model;
+    if (typeof d.created === "number") this.lastCreated = d.created;
+    if (d.object === "text_completion") this.legacy = true;
     if (isObject(d.usage)) this.addUsage(usageFromOpenAI(d.usage));
     if (Array.isArray(d.choices)) {
       for (const c of d.choices) {
@@ -105,12 +119,35 @@ export class OpenAIStreamPassthrough extends Base {
   override completed(): boolean {
     return this.done || this.finished;
   }
+
+  /** Final chunk (finish_reason "length") + the native error event + [DONE]. */
+  override abortEvents(errorEvent: string): string[] {
+    const base = { id: this.lastId ?? "chatcmpl-cut", created: this.lastCreated ?? Math.floor(Date.now() / 1000), model: this.publicModel ?? this.lastModel ?? "unknown" };
+    const chunk = this.legacy
+      ? { ...base, object: "text_completion", choices: [{ index: 0, text: "", logprobs: null, finish_reason: "length" }] }
+      : { ...base, object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, logprobs: null, finish_reason: "length" }] };
+    return [`data: ${JSON.stringify(chunk)}\n\n`, errorEvent, "data: [DONE]\n\n"];
+  }
 }
 
 /** OpenAI Responses API streams (typed events). */
 export class ResponsesStreamPassthrough extends Base {
   constructor(private readonly publicModel: string | null) {
     super();
+  }
+
+  /** Funds exhausted: a typed Responses `error` event. */
+  override abortEvents(errorEvent: string): string[] {
+    const m = /^data: (.*)$/m.exec(errorEvent);
+    let e: Record<string, unknown> = {};
+    try {
+      const j = m ? JSON.parse(m[1]) : {};
+      e = isObject(j) && isObject(j.error) ? j.error : {};
+    } catch {
+      /* fall through with defaults */
+    }
+    const body = { type: "error", code: e.code ?? "insufficient_balance", message: e.message ?? "Insufficient balance.", param: null };
+    return [`event: error\ndata: ${JSON.stringify(body)}\n\n`];
   }
 
   onEvent(ev: SseEvent): string[] {

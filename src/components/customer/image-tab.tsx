@@ -11,9 +11,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/common/empty-state";
 import { MoneyText } from "@/components/common/money-text";
 import { Skeleton } from "@/components/ui/skeleton";
-import { estimateCost } from "@/server/customer/pricing";
+import { estimateCost, estimateSaving } from "@/server/customer/pricing";
 import { gatewayFetch, readGatewayError, type GatewayError, type usePlaygroundKey } from "./playground-api";
-import { GatewayErrorAlert, type PlaygroundModel } from "./playground-shared";
+import { GatewayErrorAlert, SavedNote, type PlaygroundModel } from "./playground-shared";
 
 interface GalleryItem {
   id: string;
@@ -35,6 +35,7 @@ export function ImageTab({ models, keyApi, keyError }: { models: PlaygroundModel
   const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [pending, setPending] = useState(0);
   const [cost, setCost] = useState(0);
+  const [saved, setSaved] = useState<number | null>(null);
   const current = models.find((m) => m.slug === model);
   const count = Number(n);
 
@@ -58,7 +59,10 @@ export function ImageTab({ models, keyApi, keyError }: { models: PlaygroundModel
         return;
       }
       setGallery((g) => [...items, ...g]);
-      setCost((c) => c + Number(estimateCost({ inputTokens: body.usage?.input_tokens ?? 0, outputTokens: body.usage?.output_tokens ?? 0, images: current.prices.image ? items.length : 0 }, current.prices)));
+      const usage = { inputTokens: body.usage?.input_tokens ?? 0, outputTokens: body.usage?.output_tokens ?? 0, images: current.prices.image ? items.length : 0 };
+      setCost((c) => c + Number(estimateCost(usage, current.prices)));
+      const runSaved = estimateSaving(usage, current.official, current.prices);
+      if (runSaved !== null) setSaved((s) => (s ?? 0) + Number(runSaved));
       toast.success(`Generated ${items.length} image${items.length === 1 ? "" : "s"}`);
     } catch (err) {
       setError({ status: 0, code: null, message: err instanceof Error ? err.message : "Network error" });
@@ -154,6 +158,12 @@ export function ImageTab({ models, keyApi, keyError }: { models: PlaygroundModel
           <span className="text-muted-foreground">Session cost</span>
           <MoneyText value={cost} />
         </div>
+        {saved !== null && (
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Saved vs official</span>
+            <SavedNote saved={String(saved)} />
+          </div>
+        )}
       </Card>
 
       <div className="space-y-4">

@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import { PricingExplorer } from "@/components/marketing/pricing-explorer";
+import { toPriceModel } from "@/server/customer/price-rows";
 import { getCatalogModels, getPublicGroups } from "@/server/customer/catalog";
 
 export const metadata: Metadata = {
   title: "Pricing",
-  description: "Live per-token pricing for every model, by pool, compared with official list prices.",
+  description: "Live pricing for every model, by pool, compared with the original providers' official prices.",
 };
 export const dynamic = "force-dynamic";
 
@@ -15,26 +16,11 @@ export default async function PricingPage() {
       <div className="mb-8 max-w-2xl space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">Simple, transparent pricing</h1>
         <p className="text-muted-foreground">
-          Pay per token, billed from a prepaid balance. Pick a pool for your API key to unlock lower multipliers. Prices below are live from our catalog.
+          Pay only for what you use, billed from a prepaid balance. For every model you see the official price (what OpenAI, Anthropic and others charge directly), your price with us, and how much you save. If we are ever more expensive, we show that too.
         </p>
       </div>
       <PricingExplorer
-        models={models.map((m) => ({
-          slug: m.slug,
-          displayName: m.displayName,
-          vendor: m.vendor,
-          capabilities: m.capabilities,
-          contextWindow: m.contextWindow,
-          inputPrice: m.inputPrice,
-          outputPrice: m.outputPrice,
-          cachedInputPrice: m.cachedInputPrice,
-          cacheWritePrice: m.cacheWritePrice,
-          imagePrice: m.imagePrice,
-          requestPrice: m.requestPrice,
-          officialInputPrice: m.officialInputPrice,
-          officialOutputPrice: m.officialOutputPrice,
-          officialCachedPrice: m.officialCachedPrice,
-        }))}
+        models={models.map(toPriceModel)}
         groups={groups
           .filter((g) => g.isPublic)
           .map((g) => ({ slug: g.slug, name: g.name, description: g.description, priceMultiplier: g.priceMultiplier, isDefault: g.isDefault }))}

@@ -1,6 +1,8 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { effectiveMultiplier, groupAllowsModel, type GroupLike } from "./pricing";
+import { PRICE_UNITS } from "./price-units";
+import type { UnitPriceMap } from "./price-rows";
 
 /** Serializable (strings for Decimals) model row for catalog views. Never includes cost/route/provider info. */
 export interface CatalogModel {
@@ -24,6 +26,12 @@ export interface CatalogModel {
   officialInputPrice: string | null;
   officialOutputPrice: string | null;
   officialCachedPrice: string | null;
+  /** Base customer prices for every unit (before multipliers), keyed by unit id. */
+  sell: UnitPriceMap;
+  /** Official prices for every unit, keyed by unit id. */
+  official: UnitPriceMap;
+  /** ISO date when the model is retired (shown as a "retiring" badge). */
+  retiresAt: string | null;
 }
 
 export interface CatalogGroup {
@@ -43,7 +51,15 @@ const s = (v: { toString(): string } | null | undefined) => (v === null || v ===
 /** Active public models, ordered. */
 export async function getCatalogModels(): Promise<CatalogModel[]> {
   const rows = await db.model.findMany({ where: { status: "ACTIVE" }, orderBy: [{ sortOrder: "asc" }, { displayName: "asc" }] });
-  return rows.map((m) => ({
+  return rows.map((m) => {
+    const rec = m as unknown as Record<string, { toString(): string } | null | undefined>;
+    const sell: UnitPriceMap = {};
+    const official: UnitPriceMap = {};
+    for (const u of PRICE_UNITS) {
+      sell[u.id] = s(rec[u.price]);
+      official[u.id] = s(rec[u.official]);
+    }
+    return {
     id: m.id,
     slug: m.slug,
     aliases: m.aliases,
@@ -64,7 +80,11 @@ export async function getCatalogModels(): Promise<CatalogModel[]> {
     officialInputPrice: s(m.officialInputPrice),
     officialOutputPrice: s(m.officialOutputPrice),
     officialCachedPrice: s(m.officialCachedPrice),
-  }));
+    sell,
+    official,
+    retiresAt: m.retiresAt ? m.retiresAt.toISOString() : null,
+  };
+  });
 }
 
 /** Public groups (pools) customers can pick, default first by sortOrder. */

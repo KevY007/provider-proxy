@@ -5,13 +5,14 @@ import { encrypt, secretHint, sha256 } from "../src/lib/crypto";
 import { hashPassword } from "../src/lib/auth/password";
 import { Decimal } from "../src/lib/money";
 import { SETTING_KEYS, SETTING_DEFS } from "../src/lib/settings";
-import { LEGACY_SELL_FACTOR, MODELS, PROVIDERS, SELL_FACTOR } from "./seed-data";
+import { lookupKnownPrice } from "../src/gateway/price-catalog";
+import { knownCostFields, knownOfficialFields, knownSellFields, toDec } from "../src/server/pricing/fields";
+import { LEGACY_SELL_FACTOR, MODELS, PROVIDERS, SEED_MARKUP_PERCENT, SELL_FACTOR } from "./seed-data";
 
 /**
  * Idempotent seed. Re-running never overwrites values an admin may have edited
  * (settings, groups, providers, models, routes use create-if-missing semantics).
  */
-const sell = (official: string) => new Decimal(official).times(SELL_FACTOR).toFixed(12);
 const legacySell = (official: string) => new Decimal(official).times(LEGACY_SELL_FACTOR).toFixed(12);
 const money = (v: string | Decimal) => new Decimal(v).toFixed(12);
 
@@ -122,71 +123,84 @@ async function seedProviders() {
 }
 
 async function seedModels() {
+  const rule = { mode: "MARKUP_OVER_COST" as const, value: SEED_MARKUP_PERCENT };
+  let created = 0;
+  let ruled = 0;
+  let backfilled = 0;
   for (const m of MODELS) {
     const provider = await db.provider.findUniqueOrThrow({ where: { slug: m.provider } });
-    const input = m.input ? new Decimal(m.input) : null;
-    const cacheWrite = input && m.cacheWriteMult ? input.times(m.cacheWriteMult) : null;
-    const cacheWrite1h = input && m.cacheWrite1hMult ? input.times(m.cacheWrite1hMult) : null;
-    const sellInput = input ? sell(m.input!) : money("0");
-    const model = await db.model.upsert({
-      where: { slug: m.slug },
-      create: {
-        slug: m.slug,
-        displayName: m.displayName,
-        vendor: m.vendor,
-        description: m.description,
-        capabilities: m.capabilities,
-        contextWindow: m.contextWindow,
-        maxOutput: m.maxOutput || null,
-        sortOrder: m.sortOrder,
-        inputPrice: sellInput,
-        outputPrice: m.output ? sell(m.output) : money("0"),
-        cachedInputPrice: m.cached ? sell(m.cached) : null,
-        cacheWritePrice: cacheWrite ? sell(cacheWrite.toString()) : null,
-        cacheWrite1hPrice: cacheWrite1h ? sell(cacheWrite1h.toString()) : null,
-        imagePrice: m.image ? sell(m.image) : null,
-        perSecondPrice: m.perSecond ? sell(m.perSecond) : null,
-        longContextThreshold: m.longContext?.threshold ?? null,
-        longContextMultiplier: m.longContext?.multiplier ?? null,
-        officialInputPrice: m.input ? money(m.input) : null,
-        officialOutputPrice: m.output ? money(m.output) : null,
-        officialCachedPrice: m.cached ? money(m.cached) : null,
-      },
-      update: {},
-    });
-    await db.modelRoute.upsert({
-      where: { modelId_providerId_upstreamModel: { modelId: model.id, providerId: provider.id, upstreamModel: m.slug } },
-      create: {
-        modelId: model.id,
-        providerId: provider.id,
-        upstreamModel: m.slug,
-        label: provider.name,
-        inputCost: m.input ? money(m.input) : money("0"),
-        outputCost: m.output ? money(m.output) : money("0"),
-        cachedInputCost: m.cached ? money(m.cached) : null,
-        cacheWriteCost: cacheWrite ? money(cacheWrite) : null,
-        cacheWrite1hCost: cacheWrite1h ? money(cacheWrite1h) : null,
-        imageCost: m.image ? money(m.image) : null,
-        perSecondCost: m.perSecond ? money(m.perSecond) : null,
-      },
-      update: {},
-    });
-    // A dev DB seeded under the old policy (official x 0.5) would sell BELOW cost: re-price rows that still carry the
-    // untouched legacy default. Anything an admin edited (or setup:live priced) is left alone.
-    if (m.input && new Decimal(model.inputPrice.toString()).equals(legacySell(m.input))) {
-      await db.model.update({
-        where: { id: model.id },
+    const upstream = m.upstream ?? m.slug;
+    const known = lookupKnownPrice(provider.preset, upstream);
+    if (!known) throw new Error(`seed model ${m.slug}: no known price for ${provider.preset}/${upstream} (src/gateway/price-catalog.ts)`);
+    const official = knownOfficialFields(known);
+    const cost = knownCostFields(known);
+    const sellNew = knownSellFields(known, rule); // cost x (1 + 30%) for every unit with a cost basis
+
+    let model = await db.model.findUnique({ where: { slug: m.slug } });
+    if (!model) {
+      model = await db.model.create({
         data: {
-          inputPrice: sellInput,
-          outputPrice: m.output ? sell(m.output) : money("0"),
-          cachedInputPrice: m.cached ? sell(m.cached) : null,
-          cacheWritePrice: cacheWrite ? sell(cacheWrite.toString()) : null,
-          cacheWrite1hPrice: cacheWrite1h ? sell(cacheWrite1h.toString()) : null,
+          slug: m.slug,
+          displayName: m.displayName,
+          vendor: m.vendor,
+          description: m.description,
+          capabilities: known.capabilities ?? ["chat"],
+          contextWindow: known.contextWindow || null,
+          maxOutput: known.maxOutput || null,
+          sortOrder: m.sortOrder,
+          longContextThreshold: known.longContext?.threshold ?? null,
+          longContextMultiplier: known.longContext ? String(known.longContext.multiplier) : null,
+          retiresAt: known.retiresAt ? new Date(known.retiresAt) : null,
+          ...official,
+          ...sellNew,
+          pricingMode: rule.mode,
+          pricingValue: String(rule.value),
         },
       });
+      created++;
+    } else {
+      // Backfill for rows created by older seeds. Never overwrites anything an admin may have edited:
+      //  - official prices only where still NULL,
+      //  - the pricing rule only where the sell prices still equal the old seed-derived values (cost x 1.3) - then the
+      //    prices themselves stay exactly as they are.
+      const row = model as unknown as Record<string, unknown>;
+      const data: Record<string, unknown> = {};
+      for (const [col, v] of Object.entries(official)) if (row[col] === null && v !== null) data[col] = v;
+      if (model.retiresAt === null && known.retiresAt) data.retiresAt = new Date(known.retiresAt);
+      if (model.pricingMode === "FIXED" && model.pricingValue === null) {
+        const untouchedSeedPrices = Object.entries(sellNew).every(([col, v]) => toDec(row[col])?.equals(new Decimal(v)) ?? false);
+        // a dev DB seeded under the old policy (official x 0.5) would sell BELOW cost: re-price rows that still carry it
+        const legacy = !!known.official.input && new Decimal(model.inputPrice.toString()).equals(legacySell(String(known.official.input)));
+        if (legacy) Object.assign(data, sellNew);
+        if (untouchedSeedPrices || legacy) {
+          data.pricingMode = rule.mode;
+          data.pricingValue = String(rule.value);
+          ruled++;
+        }
+      }
+      if (Object.keys(data).length) {
+        model = await db.model.update({ where: { id: model.id }, data });
+        backfilled++;
+      }
     }
+    await db.modelRoute.upsert({
+      where: { modelId_providerId_upstreamModel: { modelId: model.id, providerId: provider.id, upstreamModel: upstream } },
+      create: { modelId: model.id, providerId: provider.id, upstreamModel: upstream, label: provider.name, ...cost },
+      update: {},
+    });
   }
-  console.log(`models: ${MODELS.length} catalog entries with routes (sell = cost x ${SELL_FACTOR})`);
+  console.log(
+    `models: ${MODELS.length} catalog entries with routes (price rule: cost +${SEED_MARKUP_PERCENT}% = cost x ${SELL_FACTOR}; ${created} created, ${ruled} switched to the rule, ${backfilled} backfilled)`,
+  );
+}
+
+/** Fill official-price columns that are still NULL (never overwrites an admin's value). */
+async function backfillOfficial(modelId: string, values: Record<string, string | null>) {
+  const row = (await db.model.findUnique({ where: { id: modelId } })) as unknown as Record<string, unknown> | null;
+  if (!row) return;
+  const data: Record<string, string> = {};
+  for (const [col, v] of Object.entries(values)) if (v !== null && row[col] === null) data[col] = v;
+  if (Object.keys(data).length) await db.model.update({ where: { id: modelId }, data });
 }
 
 async function seedMock() {
@@ -220,10 +234,11 @@ async function seedMock() {
     }
   }
 
+  // "off*" = the pretend official list price, so the dev UI can show savings (the mock models sell below it)
   const mocks = [
-    { slug: "mock-gpt", name: "Mock GPT", upstream: "gpt-mock", caps: ["chat", "completions", "responses", "vision", "tools"], inP: "1", outP: "2", cachedP: "0.5", inC: "0.5", outC: "1", cachedC: "0.25", sort: 900 },
-    { slug: "mock-claude", name: "Mock Claude", upstream: "claude-mock", caps: ["chat", "vision", "tools"], inP: "3", outP: "15", cachedP: "0.3", inC: "1.5", outC: "7.5", cachedC: "0.15", sort: 910 },
-    { slug: "mock-embed", name: "Mock Embeddings", upstream: "embed-mock", caps: ["embeddings"], inP: "0.1", outP: "0", cachedP: null, inC: "0.05", outC: "0", cachedC: null, sort: 920 },
+    { slug: "mock-gpt", name: "Mock GPT", upstream: "gpt-mock", caps: ["chat", "completions", "responses", "vision", "tools"], inP: "1", outP: "2", cachedP: "0.5", inC: "0.5", outC: "1", cachedC: "0.25", offIn: "3", offOut: "6", offCached: "1.5", sort: 900 },
+    { slug: "mock-claude", name: "Mock Claude", upstream: "claude-mock", caps: ["chat", "vision", "tools"], inP: "3", outP: "15", cachedP: "0.3", inC: "1.5", outC: "7.5", cachedC: "0.15", offIn: "5", offOut: "25", offCached: "0.5", sort: 910 },
+    { slug: "mock-embed", name: "Mock Embeddings", upstream: "embed-mock", caps: ["embeddings"], inP: "0.1", outP: "0", cachedP: null, inC: "0.05", outC: "0", cachedC: null, offIn: "0.13", offOut: "0", offCached: null, sort: 920 },
   ];
   for (const m of mocks) {
     const model = await db.model.upsert({
@@ -240,9 +255,13 @@ async function seedMock() {
         inputPrice: money(m.inP),
         outputPrice: money(m.outP),
         cachedInputPrice: m.cachedP ? money(m.cachedP) : null,
+        officialInputPrice: money(m.offIn),
+        officialOutputPrice: money(m.offOut),
+        officialCachedPrice: m.offCached ? money(m.offCached) : null,
       },
       update: {},
     });
+    await backfillOfficial(model.id, { officialInputPrice: money(m.offIn), officialOutputPrice: money(m.offOut), officialCachedPrice: m.offCached ? money(m.offCached) : null });
     await db.modelRoute.upsert({
       where: { modelId_providerId_upstreamModel: { modelId: model.id, providerId: provider.id, upstreamModel: m.upstream } },
       create: {
@@ -260,9 +279,10 @@ async function seedMock() {
   // image model (flat per-image price)
   const img = await db.model.upsert({
     where: { slug: "mock-image" },
-    create: { slug: "mock-image", displayName: "Mock Image", vendor: "mock", description: "Mock image generation (dev only).", capabilities: ["images"], sortOrder: 930, imagePrice: money("0.02") },
+    create: { slug: "mock-image", displayName: "Mock Image", vendor: "mock", description: "Mock image generation (dev only).", capabilities: ["images"], sortOrder: 930, imagePrice: money("0.02"), officialImagePrice: money("0.04") },
     update: {},
   });
+  await backfillOfficial(img.id, { officialImagePrice: money("0.04") });
   await db.modelRoute.upsert({
     where: { modelId_providerId_upstreamModel: { modelId: img.id, providerId: provider.id, upstreamModel: "image-mock" } },
     create: { modelId: img.id, providerId: provider.id, upstreamModel: "image-mock", label: "Mock", imageCost: money("0.01") },

@@ -1,10 +1,13 @@
 /**
- * Static seed data: provider presets (no secrets, created DISABLED) and the model catalog with
- * official prices. Pricing policy is PROFITABLE by default: route cost = the upstream list price and the
- * public sell price = route cost x SELL_FACTOR (30% margin); `official*` fields keep the vendor list price
- * for reference only. Prices are USD per 1M tokens unless stated.
+ * Static seed data: provider presets (no secrets, created DISABLED) and the model catalog.
+ * Official prices, capabilities and context sizes are NOT duplicated here: they come from the built-in known-price
+ * catalog (src/gateway/price-catalog.ts). Pricing policy is PROFITABLE by default: route cost = the upstream list
+ * price (the supplier is the maker itself) and the public sell price follows the rule MARKUP_OVER_COST +30%
+ * (= cost x SELL_FACTOR); `official*` fields keep the vendor list price for the savings display.
  */
 export const SELL_FACTOR = "1.3";
+/** The pricing rule new seed models get (MARKUP_OVER_COST, +30%). */
+export const SEED_MARKUP_PERCENT = 30;
 /** Former default (official x 0.5): seed re-prices rows still carrying it so a dev DB never sells below cost. */
 export const LEGACY_SELL_FACTOR = "0.5";
 
@@ -144,44 +147,39 @@ export interface ModelSeed {
   vendor: string;
   /** provider slug that natively serves this model */
   provider: string;
+  /** model id sent upstream (default: the slug); looked up in the known-price catalog together with the provider preset */
+  upstream?: string;
   description: string;
-  capabilities: string[];
-  contextWindow: number;
-  maxOutput: number;
-  /** official USD per 1M tokens */
-  input?: string;
-  output?: string;
-  cached?: string;
-  /** Anthropic-style cache write multipliers over input price */
-  cacheWriteMult?: string;
-  cacheWrite1hMult?: string;
-  /** official USD per generated image */
-  image?: string;
-  /** official USD per generated video second */
-  perSecond?: string;
-  longContext?: { threshold: number; multiplier: string };
   sortOrder: number;
 }
 
-const CHAT_CAPS = ["chat", "responses", "vision", "tools", "reasoning"];
+const m = (slug: string, displayName: string, vendor: string, provider: string, description: string, sortOrder: number, upstream?: string): ModelSeed => ({
+  slug,
+  displayName,
+  vendor,
+  provider,
+  description,
+  sortOrder,
+  ...(upstream ? { upstream } : {}),
+});
 
 export const MODELS: ModelSeed[] = [
-  { slug: "gpt-6-astra", displayName: "GPT-6 Astra", vendor: "openai", provider: "openai", description: "OpenAI flagship reasoning model.", capabilities: CHAT_CAPS, contextWindow: 1_000_000, maxOutput: 128_000, input: "10", output: "50", cached: "1", sortOrder: 10 },
-  { slug: "gpt-6.1-sol", displayName: "GPT-6.1 Sol", vendor: "openai", provider: "openai", description: "Balanced GPT-6.1 model for everyday workloads.", capabilities: CHAT_CAPS, contextWindow: 1_000_000, maxOutput: 128_000, input: "2", output: "10", cached: "0.10", sortOrder: 20 },
-  { slug: "gpt-6-sol", displayName: "GPT-6 Sol", vendor: "openai", provider: "openai", description: "Balanced GPT-6 model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 128_000, input: "2", output: "10", cached: "0.20", sortOrder: 30 },
-  { slug: "gpt-6-luna", displayName: "GPT-6 Luna", vendor: "openai", provider: "openai", description: "Fast, low-cost GPT-6 model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 64_000, input: "0.10", output: "0.50", cached: "0.01", sortOrder: 40 },
-  { slug: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", vendor: "openai", provider: "openai", description: "GPT-5.6 high-capability model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 128_000, input: "5", output: "30", cached: "0.50", sortOrder: 50 },
-  { slug: "gpt-5.6-terra", displayName: "GPT-5.6 Terra", vendor: "openai", provider: "openai", description: "GPT-5.6 mid-tier model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 128_000, input: "2", output: "12", cached: "0.20", sortOrder: 60 },
-  { slug: "gpt-5.6-luna", displayName: "GPT-5.6 Luna", vendor: "openai", provider: "openai", description: "GPT-5.6 small, fast model.", capabilities: CHAT_CAPS, contextWindow: 400_000, maxOutput: 64_000, input: "0.20", output: "1.20", cached: "0.02", sortOrder: 70 },
-  { slug: "gpt-image-2", displayName: "GPT Image 2", vendor: "openai", provider: "openai", description: "Image generation and editing.", capabilities: ["images"], contextWindow: 32_000, maxOutput: 0, image: "0.04", sortOrder: 80 },
-  { slug: "sora-2", displayName: "Sora 2", vendor: "openai", provider: "openai", description: "Text/image-to-video generation with synced audio (720p).", capabilities: ["video"], contextWindow: 0, maxOutput: 0, perSecond: "0.10", sortOrder: 85 },
-  { slug: "text-embedding-3-small", displayName: "Text Embedding 3 Small", vendor: "openai", provider: "openai", description: "Low-cost text embeddings.", capabilities: ["embeddings"], contextWindow: 8_191, maxOutput: 0, input: "0.02", output: "0", sortOrder: 90 },
-  { slug: "claude-fable-5-1", displayName: "Claude Fable 5.1", vendor: "anthropic", provider: "anthropic", description: "Anthropic's most capable model.", capabilities: CHAT_CAPS, contextWindow: 1_000_000, maxOutput: 128_000, input: "10", output: "50", cached: "0.25", cacheWriteMult: "1.25", cacheWrite1hMult: "2", sortOrder: 100 },
-  { slug: "claude-opus-5-5", displayName: "Claude Opus 5.5", vendor: "anthropic", provider: "anthropic", description: "Frontier reasoning and coding.", capabilities: CHAT_CAPS, contextWindow: 500_000, maxOutput: 64_000, input: "4", output: "20", cached: "0.20", cacheWriteMult: "1.25", cacheWrite1hMult: "2", sortOrder: 110 },
-  { slug: "claude-sonnet-5-5", displayName: "Claude Sonnet 5.5", vendor: "anthropic", provider: "anthropic", description: "Best balance of speed and intelligence.", capabilities: CHAT_CAPS, contextWindow: 500_000, maxOutput: 64_000, input: "2", output: "10", cached: "0.10", cacheWriteMult: "1.25", cacheWrite1hMult: "2", sortOrder: 120 },
-  { slug: "claude-haiku-5-5", displayName: "Claude Haiku 5.5", vendor: "anthropic", provider: "anthropic", description: "Fastest, most affordable Claude.", capabilities: CHAT_CAPS, contextWindow: 200_000, maxOutput: 32_000, input: "0.10", output: "0.50", cached: "0.01", cacheWriteMult: "1.25", cacheWrite1hMult: "2", sortOrder: 130 },
-  { slug: "gemini-3.1-pro", displayName: "Gemini 3.1 Pro", vendor: "google", provider: "google", description: "Google's flagship multimodal model.", capabilities: CHAT_CAPS, contextWindow: 1_000_000, maxOutput: 65_000, input: "2", output: "12", cached: "0.20", longContext: { threshold: 200_000, multiplier: "2" }, sortOrder: 140 },
-  { slug: "gemini-3.8-flash", displayName: "Gemini 3.8 Flash", vendor: "google", provider: "google", description: "Fast, cost-efficient multimodal model.", capabilities: CHAT_CAPS, contextWindow: 1_000_000, maxOutput: 65_000, input: "0.75", output: "3.75", cached: "0.075", sortOrder: 150 },
-  { slug: "grok-4.7", displayName: "Grok 4.7", vendor: "xai", provider: "xai", description: "xAI's flagship model.", capabilities: CHAT_CAPS, contextWindow: 256_000, maxOutput: 64_000, input: "3", output: "15", cached: "0.75", sortOrder: 160 },
-  { slug: "deepseek-v4", displayName: "DeepSeek V4", vendor: "deepseek", provider: "deepseek", description: "Open-weights frontier model.", capabilities: ["chat", "completions", "tools", "reasoning"], contextWindow: 128_000, maxOutput: 32_000, input: "0.30", output: "1.20", cached: "0.03", sortOrder: 170 },
+  m("gpt-6-astra", "GPT-6 Astra", "openai", "openai", "OpenAI flagship reasoning model.", 10),
+  m("gpt-6.1-sol", "GPT-6.1 Sol", "openai", "openai", "Balanced GPT-6.1 model for everyday workloads.", 20),
+  m("gpt-6-sol", "GPT-6 Sol", "openai", "openai", "Balanced GPT-6 model.", 30),
+  m("gpt-6-luna", "GPT-6 Luna", "openai", "openai", "Fast, low-cost GPT-6 model.", 40),
+  m("gpt-5.6-sol", "GPT-5.6 Sol", "openai", "openai", "GPT-5.6 high-capability model.", 50),
+  m("gpt-5.6-terra", "GPT-5.6 Terra", "openai", "openai", "GPT-5.6 mid-tier model.", 60),
+  m("gpt-5.6-luna", "GPT-5.6 Luna", "openai", "openai", "GPT-5.6 small, fast model.", 70),
+  m("gpt-image-2", "GPT Image 2", "openai", "openai", "Image generation and editing.", 80),
+  m("sora-2", "Sora 2", "openai", "openai", "Text/image-to-video generation with synced audio (720p).", 85),
+  m("text-embedding-3-small", "Text Embedding 3 Small", "openai", "openai", "Low-cost text embeddings.", 90),
+  m("claude-fable-5-1", "Claude Fable 5.1", "anthropic", "anthropic", "Anthropic's most capable model.", 100),
+  m("claude-opus-5-5", "Claude Opus 5.5", "anthropic", "anthropic", "Frontier reasoning and coding.", 110),
+  m("claude-sonnet-5-5", "Claude Sonnet 5.5", "anthropic", "anthropic", "Best balance of speed and intelligence.", 120),
+  m("claude-haiku-5-5", "Claude Haiku 5.5", "anthropic", "anthropic", "Fastest, most affordable Claude.", 130),
+  m("gemini-3.1-pro", "Gemini 3.1 Pro", "google", "google", "Google's flagship multimodal model.", 140),
+  m("gemini-3.8-flash", "Gemini 3.8 Flash", "google", "google", "Fast, cost-efficient multimodal model.", 150),
+  m("grok-4.7", "Grok 4.7", "xai", "xai", "xAI's flagship model.", 160),
+  m("deepseek-v4", "DeepSeek V4", "deepseek", "deepseek", "Open-weights frontier model.", 170),
 ];

@@ -9,7 +9,7 @@ import { ClientAbortError, UpstreamTimeoutError } from "./upstream";
  *   - client disconnect (`cancel`) is observed and aborts the upstream immediately,
  *   - `onFinish` fires exactly once (completed / cancelled / upstream error / idle timeout / truncated).
  */
-export type FinishReason = "completed" | "cancelled" | "upstream_error" | "timeout" | "truncated";
+export type FinishReason = "completed" | "cancelled" | "upstream_error" | "timeout" | "truncated" | "budget";
 
 export interface FinishInfo {
   reason: FinishReason;
@@ -31,6 +31,19 @@ export interface StreamOptions {
   errorEvent?: (err: unknown) => string;
   /** Called with every upstream text chunk (for logBodies); optional. */
   startedAt?: number;
+  /**
+   * Funds guard: checked after every upstream chunk. When `exceeded()` turns true the upstream is aborted, `events()`
+   * (native error ending) is sent to the client and the stream finishes with reason "budget".
+   */
+  guard?: { exceeded(): boolean; events(): string[] };
+}
+
+/** Abort reason used when the funds guard cuts a stream. */
+export class BudgetCutError extends Error {
+  constructor() {
+    super("stream cut: credit hold exhausted");
+    this.name = "BudgetCutError";
+  }
 }
 
 const enc = new TextEncoder();
@@ -56,6 +69,7 @@ export class StreamSession {
   private readonly t0: number;
   private primeError: unknown = null;
   private errorSent = false;
+  private cutDone = false;
   /** true once at least one byte was produced for the client (before that, errors cause failover instead). */
   private started = false;
 
@@ -95,8 +109,33 @@ export class StreamSession {
         if (msg) this.pending.push(enc.encode(msg));
       }
       if (out.length) this.started = true;
+      if (chunk && this.checkGuard()) break; // checked per event: the cut lands on the event that used the funds up, not at the end of the network chunk
     }
     if (!chunk) for (const s of p.onEnd()) if (s) this.pending.push(enc.encode(s));
+  }
+
+  /** Funds guard (see StreamOptions.guard): end the stream right here when the reserved amount is used up. Returns true when it cut. */
+  private checkGuard(): boolean {
+    const g = this.o.guard;
+    if (!g || this.cutDone || this.finished) return false;
+    let exceeded = false;
+    try {
+      exceeded = g.exceeded();
+    } catch {
+      return false;
+    }
+    if (!exceeded) return false;
+    this.cutDone = true;
+    this.upstreamDone = true;
+    for (const s of g.events()) if (s) this.pending.push(enc.encode(s));
+    this.started = true;
+    try {
+      this.o.abort(new BudgetCutError());
+    } catch {
+      /* already aborted */
+    }
+    this.reader.cancel().catch(() => undefined);
+    return true;
   }
 
   /**
@@ -157,7 +196,8 @@ export class StreamSession {
               if (this.upstreamDone) {
                 const p = this.o.processor;
                 const err = p?.error();
-                this.finish(err ? "upstream_error" : p && !p.completed() ? "truncated" : "completed", err ?? undefined);
+                if (this.cutDone) this.finish("budget");
+                else this.finish(err ? "upstream_error" : p && !p.completed() ? "truncated" : "completed", err ?? undefined);
                 controller.close();
                 return;
               }

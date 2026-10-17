@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Activity, AlertTriangle, ArrowRight, BarChart3, Clock, Coins, Gauge, Hash, KeyRound, Wallet } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, BarChart3, Clock, Coins, Gauge, Hash, KeyRound, PiggyBank, Wallet } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,7 +10,9 @@ import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/components/common/stat-card";
 import { LocalTime } from "@/components/customer/local-time";
 import { ModelDonutCard, SpendOverTimeCard } from "@/components/customer/overview-charts";
-import { QuickstartCard } from "@/components/customer/quickstart-card";
+import { CodeBlock } from "@/components/customer/code-block";
+import { OnboardingChecklist } from "@/components/customer/onboarding-checklist";
+import { buildSnippets } from "@/components/customer/snippets";
 import { VerifyBanner } from "@/components/customer/verify-banner";
 import { requireUser } from "@/lib/auth/session";
 import { db } from "@/lib/db";
@@ -18,7 +20,10 @@ import { appUrl } from "@/lib/env";
 import { getSetting } from "@/lib/settings";
 import { formatCompact, formatDuration, formatPercent } from "@/lib/utils";
 import { getOverview } from "@/server/customer/analytics";
-import { describeErrorCode } from "@/server/customer/error-codes";
+import { explainError } from "@/server/customer/log-status";
+import { getOnboarding } from "@/server/customer/onboarding-data";
+import { summarizeSavings, type SavingsSummary } from "@/server/customer/savings";
+import { getSavingsTotals } from "@/server/customer/savings-totals";
 
 export const metadata = { title: "Overview" };
 export const dynamic = "force-dynamic";
@@ -30,14 +35,38 @@ const levelStyle: Record<string, string> = {
   error: "border-red-500/30 bg-red-500/5",
 };
 
+function SavingsFigure({ label, s }: { label: string; s: SavingsSummary & { hasData: boolean } }) {
+  const tone = s.kind === "saved" ? "text-emerald-600 dark:text-emerald-400" : s.kind === "paid_more" ? "text-amber-600 dark:text-amber-400" : undefined;
+  return (
+    <div className="space-y-1">
+      <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className={`text-2xl font-semibold tabular-nums ${tone ?? ""}`}>{s.hasData ? (s.kind === "paid_more" ? `+${s.value}` : s.value) : "-"}</p>
+      <p className="text-xs text-muted-foreground">
+        {!s.hasData
+          ? "No priced requests yet"
+          : s.kind === "saved"
+            ? `saved${s.pct !== null ? ` (${Math.round(s.pct)}% below official)` : ""}`
+            : s.kind === "paid_more"
+              ? `more than official${s.pct !== null ? ` (${Math.abs(Math.round(s.pct))}% above)` : ""}`
+              : "same as official"}
+      </p>
+    </div>
+  );
+}
+
 export default async function DashboardPage() {
   const { user } = await requireUser();
-  const [ov, announcements, siteName] = await Promise.all([
+  const [ov, announcements, siteName, onboarding, totals] = await Promise.all([
     getOverview(user.id),
     db.announcement.findMany({ where: { active: true }, orderBy: { createdAt: "desc" }, take: 3 }),
     getSetting("siteName"),
+    getOnboarding(user),
+    getSavingsTotals(user.id),
   ]);
   const { today, week, series, models, errors, keyCount } = ov;
+  const savings = summarizeSavings(week.official, week.comparable);
+  const hasSavings = week.official > 0;
+  const curl = buildSnippets({ appUrl, siteName })[0].blocks[0];
   const tokens7 = week.inputTokens + week.outputTokens;
   const errorRate = week.requests ? week.errors / week.requests : 0;
   const spendByModel = models.some((m) => m.spend > 0);
@@ -86,7 +115,30 @@ export default async function DashboardPage() {
         </Alert>
       )}
 
-      {keyCount === 0 && <QuickstartCard appUrl={appUrl} hasBalance={!balanceLow} siteName={siteName} />}
+      <OnboardingChecklist state={onboarding} siteName={siteName}>
+        <CodeBlock block={curl} maxHeight="14rem" />
+      </OnboardingChecklist>
+
+      <Card className="mb-4 border-emerald-500/20 bg-emerald-500/[0.03]">
+        <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <PiggyBank className="size-4 text-emerald-600 dark:text-emerald-400" /> Your savings vs official prices
+            </CardTitle>
+            <CardDescription>What the same requests would have cost directly at OpenAI, Anthropic, Google and others, minus what you paid us.</CardDescription>
+          </div>
+          <Button asChild variant="ghost" size="sm">
+            <Link href="/dashboard/usage">
+              Details <ArrowRight className="size-3.5" />
+            </Link>
+          </Button>
+        </CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-3">
+          <SavingsFigure label="This month" s={totals.month} />
+          <SavingsFigure label="Last 7 days" s={{ ...savings, hasData: hasSavings }} />
+          <SavingsFigure label="All time" s={totals.allTime} />
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Balance" icon={Wallet} value={<MoneyText value={user.balance.toString()} />} hint={<Link href="/dashboard/billing" className="hover:text-foreground hover:underline">Manage billing</Link>} />
@@ -122,7 +174,7 @@ export default async function DashboardPage() {
           ) : (
             <ul className="divide-y">
               {errors.map((e) => {
-                const info = describeErrorCode(e.errorCode);
+                const info = explainError(e.errorCode, e.errorMessage);
                 return (
                   <li key={e.id} className="flex flex-wrap items-start gap-x-4 gap-y-1 py-3">
                     <Badge variant="destructive" className="font-mono">
@@ -130,7 +182,13 @@ export default async function DashboardPage() {
                     </Badge>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm">
-                        <span className="font-mono text-xs text-muted-foreground">{e.errorCode ?? "error"}</span>
+                        {info ? (
+                          <Link href={info.docsHref} className="font-mono text-xs text-muted-foreground hover:text-foreground hover:underline">
+                            {info.code}
+                          </Link>
+                        ) : (
+                          <span className="font-mono text-xs text-muted-foreground">error</span>
+                        )}
                         {e.modelSlug && <span className="text-muted-foreground"> - {e.modelSlug}</span>}
                       </p>
                       <p className="line-clamp-2 text-sm">{e.errorMessage ?? info?.meaning ?? "Request failed"}</p>
