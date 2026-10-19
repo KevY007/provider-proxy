@@ -4,6 +4,7 @@ import path from "node:path";
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
+import { getRedis, redisReady } from "@/lib/redis";
 import { Decimal, ZERO, toDecimal, toDbString } from "@/lib/money";
 import { maybeSendLowBalanceAlert, triggerAutoRecharge } from "@/server/billing/auto-recharge";
 import { rebaseBalance } from "./balance";
@@ -511,16 +512,45 @@ function fromRecord(r: DeadLetterRecord): MeterEntry {
   };
 }
 
+/** Redis list mirroring the dead-letter file: survives the instance (Cloud Run's /tmp is per-instance memory). */
+const DEADLETTER_KEY = "meter:deadletter";
+
 function appendRecords(records: DeadLetterRecord[], fileName = DEADLETTER_FILE): boolean {
   if (!records.length) return true;
+  const lines = records.map((r) => JSON.stringify(r));
+  let ok = false;
   try {
     const file = path.join(path.dirname(deadLetterPath()), fileName);
     mkdirSync(path.dirname(file), { recursive: true });
-    appendFileSync(file, records.map((r) => JSON.stringify(r)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
-    return true;
+    appendFileSync(file, lines.join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
+    ok = true;
   } catch (err) {
     logger.error("METER_DEAD_LETTER_FILE_WRITE_FAILED", { err, rows: records.length });
-    return false;
+  }
+  // replay is idempotent (skipDuplicates + financials only for inserted rows), so a row may safely live in both places
+  const r = fileName === DEADLETTER_FILE && redisReady() ? getRedis() : null;
+  if (r) {
+    r.rpush(DEADLETTER_KEY, ...lines).catch((err) => logger.error("METER_DEAD_LETTER_REDIS_WRITE_FAILED", { err, rows: records.length }));
+    ok = true;
+  }
+  return ok;
+}
+
+/** Take (and remove) up to `max` dead-letter rows mirrored into Redis. */
+async function takeRedisDeadLetters(max = 5000): Promise<string[]> {
+  const r = redisReady() ? getRedis() : null;
+  if (!r) return [];
+  try {
+    const out: string[] = [];
+    while (out.length < max) {
+      const batch = (await r.lpop(DEADLETTER_KEY, Math.min(500, max - out.length))) as string[] | null;
+      if (!batch?.length) break;
+      out.push(...batch);
+    }
+    return out;
+  } catch (err) {
+    logger.warn("meter dead letter: redis read failed", { err });
+    return [];
   }
 }
 
@@ -554,6 +584,14 @@ function spillBuffer(reason: string): void {
   logger.error("METER_BUFFER_SPILLED", { reason, rows: entries.length, file: deadLetterPath() });
 }
 
+function unlinkSafe(file: string): void {
+  try {
+    unlinkSync(file);
+  } catch {
+    /* ignore */
+  }
+}
+
 export interface ReplayResult {
   found: number;
   replayed: number;
@@ -575,18 +613,24 @@ export function replayDeadLetters(): Promise<ReplayResult> {
 async function replayOnce(): Promise<ReplayResult> {
   const result: ReplayResult = { found: 0, replayed: 0, failed: 0 };
   const file = deadLetterPath();
-  if (!existsSync(file)) return result;
-  const claimed = `${file}.replay-${process.pid}-${Date.now()}`;
-  try {
-    renameSync(file, claimed);
-  } catch {
-    return result; // another instance claimed it
+  let claimed: string | null = null;
+  let lines: string[] = [];
+  if (existsSync(file)) {
+    const name = `${file}.replay-${process.pid}-${Date.now()}`;
+    try {
+      renameSync(file, name);
+      claimed = name;
+      lines = readFileSync(name, "utf8").split("\n").filter((l) => l.trim());
+    } catch (err) {
+      if (claimed) logger.error("meter dead letter unreadable", { err }); // (a failed rename = another instance claimed it)
+    }
   }
-  let lines: string[];
-  try {
-    lines = readFileSync(claimed, "utf8").split("\n").filter((l) => l.trim());
-  } catch (err) {
-    logger.error("meter dead letter unreadable", { err });
+  // rows mirrored to Redis by any instance (the file of a stopped instance is gone; duplicates of file rows are harmless)
+  const fromRedis = await takeRedisDeadLetters();
+  const seenLines = new Set(lines);
+  for (const l of fromRedis) if (!seenLines.has(l)) lines.push(l);
+  if (!lines.length) {
+    if (claimed) unlinkSafe(claimed);
     return result;
   }
   const keep: DeadLetterRecord[] = [];
@@ -629,11 +673,7 @@ async function replayOnce(): Promise<ReplayResult> {
     appendRecords(poisoned, POISON_FILE);
     for (const p of poisoned) logger.error("METER_DEAD_LETTER_POISONED", { requestId: p.entry.log.id, attempts: p.replayAttempts, entry: JSON.stringify(p.entry) });
   }
-  try {
-    unlinkSync(claimed);
-  } catch {
-    /* ignore */
-  }
+  if (claimed) unlinkSafe(claimed);
   if (result.found) logger.info("meter dead letter replayed", { ...result, kept: keep.length });
   return result;
 }

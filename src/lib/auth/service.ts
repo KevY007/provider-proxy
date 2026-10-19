@@ -59,7 +59,7 @@ async function findValidToken(token: string, type: TokenType) {
 export interface TrialGrantResult {
   granted: boolean;
   amount?: Decimal;
-  reason?: "no_trial_configured" | "already_granted" | "user_not_active" | "not_found";
+  reason?: "no_trial_configured" | "already_granted" | "user_not_active" | "not_found" | "card_already_used";
 }
 
 /**
@@ -67,12 +67,22 @@ export interface TrialGrantResult {
  * Idempotent and safe to call from anywhere (e.g. Billing after a card is attached when
  * `requireCardForTrial` is on). Row-locks the user for the balance update.
  */
-export async function grantTrialCredit(userId: string): Promise<TrialGrantResult> {
+/**
+ * Grant the one-time trial credit. With `cardFingerprint` (card-gated trials) the same card can unlock the trial only
+ * once across all accounts; the advisory lock serialises grants for one card.
+ */
+export async function grantTrialCredit(userId: string, opts: { cardFingerprint?: string | null } = {}): Promise<TrialGrantResult> {
   const { trialCredit } = await getSettings();
   const amount = toDecimal(trialCredit);
   if (!amount.gt(0)) return { granted: false, reason: "no_trial_configured" };
+  const fp = opts.cardFingerprint ?? null;
 
   return db.$transaction(async (tx) => {
+    if (fp) {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`trialcard:${fp}`}))`;
+      const used = await tx.user.findFirst({ where: { trialCardFingerprint: fp, id: { not: userId } }, select: { id: true } });
+      if (used) return { granted: false, reason: "card_already_used" as const };
+    }
     const rows = await tx.$queryRaw<Array<{ trialGrantedAt: Date | null; status: string }>>(
       Prisma.sql`SELECT "trialGrantedAt", "status"::text AS "status" FROM "User" WHERE "id" = ${userId} FOR UPDATE`,
     );
@@ -82,7 +92,7 @@ export async function grantTrialCredit(userId: string): Promise<TrialGrantResult
     if (row.status !== "ACTIVE") return { granted: false, reason: "user_not_active" as const };
     const updated = await tx.user.update({
       where: { id: userId },
-      data: { balance: { increment: toDbString(amount) }, trialGrantedAt: new Date() },
+      data: { balance: { increment: toDbString(amount) }, trialGrantedAt: new Date(), ...(fp ? { trialCardFingerprint: fp } : {}) },
       select: { balance: true },
     });
     await tx.ledgerEntry.create({

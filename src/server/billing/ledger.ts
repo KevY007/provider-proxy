@@ -150,6 +150,7 @@ export async function adminAdjustBalance(
   userId: string,
   amount: MoneyLike,
   reason: string,
+  ip?: string | null,
 ): Promise<LedgerResult> {
   const trimmed = reason.trim();
   if (trimmed.length < 3) throw new LedgerError("invalid_amount", "A reason is required");
@@ -164,6 +165,6 @@ export async function adminAdjustBalance(
     reason: trimmed,
     balanceAfter: res.balance.toFixed(12),
     ledgerEntryId: res.entry.id,
-  });
+  }, ip);
   return res;
 }

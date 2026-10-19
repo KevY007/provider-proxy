@@ -27,6 +27,7 @@ export const HANDLED_EVENTS = [
   "checkout.session.expired",
   "charge.refunded",
   "charge.dispute.created",
+  "charge.dispute.closed",
   "setup_intent.succeeded",
   "payment_method.detached",
 ] as const;
@@ -99,6 +100,9 @@ export async function handleStripeEvent(event: Stripe.Event): Promise<HandleResu
     case "charge.dispute.created":
       return handleDispute(event.data.object, log);
 
+    case "charge.dispute.closed":
+      return handleDisputeClosed(event.data.object, log);
+
     case "setup_intent.succeeded": {
       const si = event.data.object;
       const pmId = typeof si.payment_method === "string" ? si.payment_method : si.payment_method?.id;
@@ -165,7 +169,8 @@ async function handleRefund(charge: Stripe.Charge, log: Log): Promise<HandleResu
   return { handled: true, note: outcome.applied ? "debited" : "duplicate" };
 }
 
-async function handleDispute(dispute: Stripe.Dispute, log: Log): Promise<HandleResult> {
+/** The payment a dispute is about (via its payment intent, else its charge). */
+async function paymentOfDispute(dispute: Stripe.Dispute, log: Log) {
   let piId = typeof dispute.payment_intent === "string" ? dispute.payment_intent : dispute.payment_intent?.id;
   if (!piId) {
     const chargeId = typeof dispute.charge === "string" ? dispute.charge : dispute.charge?.id;
@@ -178,7 +183,46 @@ async function handleDispute(dispute: Stripe.Dispute, log: Log): Promise<HandleR
       }
     }
   }
-  const payment = piId ? await db.payment.findUnique({ where: { stripePaymentIntentId: piId } }) : null;
+  return piId ? db.payment.findUnique({ where: { stripePaymentIntentId: piId } }) : null;
+}
+
+/**
+ * A dispute closed. Won (the bank sided with us): the chargeback is reversed exactly once, the payment counts as paid
+ * again, and the customer is re-activated - but only when OUR chargeback suspension is the latest status change
+ * (an admin suspension for another reason stays). Lost / other outcomes: nothing changes (already debited).
+ */
+async function handleDisputeClosed(dispute: Stripe.Dispute, log: Log): Promise<HandleResult> {
+  if (dispute.status !== "won") return { handled: true, note: `closed_${dispute.status}` };
+  const payment = await paymentOfDispute(dispute, log);
+  if (!payment) return { handled: false, note: "unknown_payment" };
+  const amount = fromCents(dispute.amount);
+  const outcome = await db.$transaction(async (tx) => {
+    await lockUser(tx, payment.userId);
+    const charged = await tx.ledgerEntry.findFirst({ where: { userId: payment.userId, type: "CHARGEBACK", metadata: { path: ["stripeDisputeId"], equals: dispute.id } }, select: { id: true } });
+    if (!charged) return { applied: false as const };
+    const reversed = await tx.ledgerEntry.findFirst({ where: { userId: payment.userId, type: "ADJUSTMENT", metadata: { path: ["reversedDisputeId"], equals: dispute.id } }, select: { id: true } });
+    if (reversed) return { applied: false as const };
+    await appendEntryTx(tx, payment.userId, amount, "ADJUSTMENT", "Dispute won: chargeback reversed", { metadata: { reversedDisputeId: dispute.id, paymentId: payment.id } });
+    await tx.payment.updateMany({ where: { id: payment.id, status: "DISPUTED" }, data: { status: "SUCCEEDED" } });
+    const last = await tx.auditLog.findFirst({
+      where: { targetId: payment.userId, action: { in: ["billing.chargeback", "customer.suspend", "customer.activate"] } },
+      orderBy: { createdAt: "desc" },
+      select: { action: true },
+    });
+    const reactivate = last?.action === "billing.chargeback";
+    if (reactivate) await tx.user.updateMany({ where: { id: payment.userId, status: "SUSPENDED" }, data: { status: "ACTIVE" } });
+    return { applied: true as const, reactivate };
+  });
+  if (outcome.applied) {
+    await afterLedgerCommit(payment.userId);
+    await audit(null, "billing.dispute_won", { type: "User", id: payment.userId }, { disputeId: dispute.id, paymentId: payment.id, amount: amount.toString(), reactivated: outcome.reactivate });
+    log.info("dispute won: chargeback reversed", { userId: payment.userId, disputeId: dispute.id, reactivated: outcome.reactivate });
+  }
+  return { handled: true, note: outcome.applied ? "reversed" : "duplicate" };
+}
+
+async function handleDispute(dispute: Stripe.Dispute, log: Log): Promise<HandleResult> {
+  const payment = await paymentOfDispute(dispute, log);
   if (!payment) {
     log.warn("charge.dispute.created for unknown payment", { disputeId: dispute.id });
     return { handled: false, note: "unknown_payment" };

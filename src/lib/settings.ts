@@ -37,6 +37,7 @@ export const SETTING_DEFS = {
   // --- access ---
   signupEnabled: def("boolean", "access", "Signups enabled", "Allow new customers to register.", z.boolean(), true),
   requireEmailVerification: def("boolean", "access", "Require email verification", "Customers must verify their email before they can log in and use API keys.", z.boolean(), true),
+  requireStaffTwoFactor: def("boolean", "access", "Require 2FA for staff", "Admins and support staff must enable two-factor authentication before they can use the admin console.", z.boolean(), process.env.NODE_ENV === "production"),
   defaultGroupSlug: def("string", "access", "Default group slug", "Group (pool) assigned to new customers.", z.string().min(1).max(64), "standard"),
   // --- billing ---
   trialCredit: def("number", "billing", "Trial credit (USD)", "Credit granted when a customer verifies their email (or adds a card when required).", z.number().min(0).max(100000), 0),

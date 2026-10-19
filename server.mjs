@@ -28,6 +28,8 @@ const require = createRequire(import.meta.url);
 const origCreateServer = http.createServer;
 
 const SOCKET_IP = process.env.TRUSTED_PROXY_HOPS?.trim() === "0";
+/** Open TCP connections per instance (slowloris / idle-connection exhaustion); 0 = unlimited. */
+const MAX_CONNECTIONS = Number.parseInt(process.env.MAX_CONNECTIONS ?? "", 10) >= 0 && process.env.MAX_CONNECTIONS ? Number.parseInt(process.env.MAX_CONNECTIONS, 10) : 20_000;
 /** A new connection must send its first bytes within this time (protocol sniffing; idle sockets are slowloris). */
 const FIRST_BYTES_MS = 15_000;
 const KEEP_ALIVE_MS = Number.parseInt(process.env.KEEP_ALIVE_TIMEOUT ?? "", 10) > 0 ? Number.parseInt(process.env.KEEP_ALIVE_TIMEOUT, 10) : 620_000;
@@ -155,6 +157,8 @@ function createDualServer(listener) {
     socket.on("data", onData);
     socket.resume();
   });
+
+  if (MAX_CONNECTIONS > 0) front.maxConnections = MAX_CONNECTIONS;
 
   // Next treats `h1` as THE server: make it listen / report / close through the sniffing front.
   h1.listen = (...args) => {

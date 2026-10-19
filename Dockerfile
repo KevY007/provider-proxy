@@ -2,8 +2,9 @@
 # ProviderProxy - one image serves the UI + gateway AND can run `prisma migrate deploy`
 # (Cloud Run Job uses the same image with a different command; see deploy/migrate.sh).
 
-ARG NODE_VERSION=24
-FROM node:${NODE_VERSION}-slim AS base
+# pinned by digest (reproducible builds; dependabot proposes updates). Override with --build-arg NODE_IMAGE=...
+ARG NODE_IMAGE=node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+FROM ${NODE_IMAGE} AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
 ENV NEXT_TELEMETRY_DISABLED=1
@@ -28,13 +29,14 @@ FROM base AS migrator
 WORKDIR /prisma-cli
 RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-RUN npm init -y >/dev/null 2>&1 && npm install --no-audit --no-fund prisma@7.10.1 dotenv@^18
+COPY prisma/migrator/package.json prisma/migrator/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY prisma.config.ts ./
 COPY prisma/schema.prisma ./prisma/schema.prisma
 COPY prisma/migrations ./prisma/migrations
 
 # ---- 4. runtime --------------------------------------------------------------------------
-FROM node:${NODE_VERSION}-slim AS runner
+FROM ${NODE_IMAGE} AS runner
 RUN apt-get update \
     && apt-get install -y --no-install-recommends openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*

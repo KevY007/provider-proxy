@@ -1,4 +1,5 @@
 "use server";
+import { sealHeaders, sealKeyExtra } from "@/lib/secret-headers";
 
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -58,7 +59,7 @@ export async function createProvider(input: unknown) {
     const created = await db.provider.create({
       data: {
         name: d.name, slug, preset: d.preset, baseUrl: d.baseUrl.replace(/\/+$/, ""), authStyle: d.authStyle,
-        formats: d.formats, tags: d.tags, extraHeaders: d.extraHeaders as never, settings: d.settings as never,
+        formats: d.formats, tags: d.tags, extraHeaders: sealHeaders(d.extraHeaders) as never, settings: d.settings as never,
         status: d.status, timeoutMs: d.timeoutMs, priority: d.priority, maxConcurrency: d.maxConcurrency,
         notes: d.notes?.trim() || null,
       },
@@ -72,13 +73,13 @@ export async function createProvider(input: unknown) {
 export async function updateProvider(id: string, input: unknown) {
   return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
     const d = parseInput(providerSchema, input);
-    const existing = await db.provider.findUnique({ where: { id }, select: { slug: true } });
+    const existing = await db.provider.findUnique({ where: { id }, select: { slug: true, extraHeaders: true } });
     if (!existing) throw new ActionFail("Provider not found");
     await db.provider.update({
       where: { id },
       data: {
         name: d.name, slug: d.slug || existing.slug, preset: d.preset, baseUrl: d.baseUrl.replace(/\/+$/, ""),
-        authStyle: d.authStyle, formats: d.formats, tags: d.tags, extraHeaders: d.extraHeaders as never,
+        authStyle: d.authStyle, formats: d.formats, tags: d.tags, extraHeaders: sealHeaders(d.extraHeaders, existing.extraHeaders) as never,
         settings: d.settings as never, status: d.status, timeoutMs: d.timeoutMs, priority: d.priority,
         maxConcurrency: d.maxConcurrency, notes: d.notes?.trim() || null,
       },
@@ -136,7 +137,7 @@ export async function addProviderKey(input: unknown) {
       data: {
         providerId: d.providerId, label: d.label, secretEncrypted: encrypt(d.secret), secretHint: secretHint(d.secret),
         weight: d.weight, priority: d.priority, rpmLimit: d.rpmLimit, tpmLimit: d.tpmLimit, maxConcurrency: d.maxConcurrency,
-        dailyBudget: d.dailyBudget, extra: d.extra as never,
+        dailyBudget: d.dailyBudget, extra: sealKeyExtra(d.extra) as never,
       },
       select: { id: true },
     });
@@ -211,11 +212,12 @@ export async function updateProviderKey(id: string, input: unknown) {
   return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
     const d = parseInput(updateKeySchema, input);
     const k = await keyProvider(id);
+    const prevExtra = (await db.providerKey.findUnique({ where: { id }, select: { extra: true } }))?.extra;
     await db.providerKey.update({
       where: { id },
       data: {
         label: d.label, status: d.status, weight: d.weight, priority: d.priority, rpmLimit: d.rpmLimit,
-        tpmLimit: d.tpmLimit, maxConcurrency: d.maxConcurrency, dailyBudget: d.dailyBudget, extra: d.extra as never,
+        tpmLimit: d.tpmLimit, maxConcurrency: d.maxConcurrency, dailyBudget: d.dailyBudget, extra: sealKeyExtra(d.extra, prevExtra) as never,
         ...(d.status === "ACTIVE" ? { cooldownUntil: null } : {}),
       },
     });

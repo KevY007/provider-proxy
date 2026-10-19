@@ -1,3 +1,4 @@
+import { openHeaders } from "@/lib/secret-headers";
 import type { BillingMode, KeyStatus, ModelStatus, ProviderKeyStatus, ProviderStatus, Role, UserStatus } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
@@ -159,9 +160,7 @@ function asRecord(v: unknown): JsonObject {
 }
 
 function headersRecord(v: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (isObject(v)) for (const [k, x] of Object.entries(v)) if (typeof x === "string") out[k.toLowerCase()] = x;
-  return out;
+  return openHeaders(v); // (credential-like values are stored encrypted)
 }
 
 async function loadSnapshot(): Promise<ConfigSnapshot> {

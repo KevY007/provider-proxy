@@ -1,3 +1,4 @@
+import { openHeaders } from "@/lib/secret-headers";
 import type { InboundFormat, JsonObject, Operation } from "../types";
 
 /**
@@ -285,9 +286,7 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
 
   Object.assign(h, p.extraHeaders);
   const extraKeyHeaders = i.keyExtra?.headers;
-  if (extraKeyHeaders && typeof extraKeyHeaders === "object") {
-    for (const [k, v] of Object.entries(extraKeyHeaders as Record<string, unknown>)) if (typeof v === "string") h[k.toLowerCase()] = v;
-  }
+  if (extraKeyHeaders && typeof extraKeyHeaders === "object") Object.assign(h, openHeaders(extraKeyHeaders));
   // auth last: admin extraHeaders can never clobber the credential
   Object.assign(h, authHeaders(p, surface, i.secret));
   return h;

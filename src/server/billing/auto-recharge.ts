@@ -95,24 +95,26 @@ export async function runAutoRecharge(userId: string): Promise<AutoRechargeOutco
     if (!toDecimal(user.balance).lt(toDecimal(user.autoRechargeThreshold))) return { status: "skipped", reason: "balance_ok" };
     if (!user.stripeCustomerId || !user.defaultPaymentMethodId) return { status: "skipped", reason: "no_card" };
 
-    const now = Date.now();
     const maxPerDay = await getSetting("autoRechargeMaxPerDay");
-    const last24h = await db.payment.findMany({
-      where: { userId, kind: "auto_recharge", createdAt: { gt: new Date(now - 24 * 3600_000) } },
-      orderBy: { createdAt: "desc" },
-      select: { status: true, createdAt: true },
-    });
-    if (last24h.some((p) => p.status === "PENDING" && now - p.createdAt.getTime() < 10 * 60_000)) {
-      return { status: "skipped", reason: "in_flight" };
-    }
-    if (last24h.length >= maxPerDay) return { status: "skipped", reason: "daily_limit" };
-    if (last24h[0] && now - last24h[0].createdAt.getTime() < MIN_RETRY_GAP_MS) return { status: "skipped", reason: "cooldown" };
-
     const amount = toDecimal(user.autoRechargeAmount);
     const clamped = amount.lt(STRIPE_MIN_USD) ? toDecimal(STRIPE_MIN_USD) : amount.gt(STRIPE_MAX_USD) ? toDecimal(STRIPE_MAX_USD) : amount;
-    const payment = await db.payment.create({
-      data: { userId, amount: toDbString(clamped), kind: "auto_recharge", status: "PENDING" },
+    // check + create the PENDING payment under a database lock: two instances can never both pass the in-flight check
+    // (the Redis lock above is only an optimisation and degrades to a per-instance lock without Redis)
+    const gate = await db.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`autorecharge:${userId}`}))`;
+      const now = Date.now();
+      const last24h = await tx.payment.findMany({
+        where: { userId, kind: "auto_recharge", createdAt: { gt: new Date(now - 24 * 3600_000) } },
+        orderBy: { createdAt: "desc" },
+        select: { status: true, createdAt: true },
+      });
+      if (last24h.some((p) => p.status === "PENDING" && now - p.createdAt.getTime() < 10 * 60_000)) return { skip: "in_flight" as const };
+      if (last24h.length >= maxPerDay) return { skip: "daily_limit" as const };
+      if (last24h[0] && now - last24h[0].createdAt.getTime() < MIN_RETRY_GAP_MS) return { skip: "cooldown" as const };
+      return { payment: await tx.payment.create({ data: { userId, amount: toDbString(clamped), kind: "auto_recharge", status: "PENDING" } }) };
     });
+    if ("skip" in gate) return { status: "skipped", reason: gate.skip! };
+    const payment = gate.payment;
 
     try {
       const pi = await getStripe().paymentIntents.create(

@@ -1,3 +1,4 @@
+import { maskHeaders, maskKeyExtra } from "@/lib/secret-headers";
 import "server-only";
 import { db } from "@/lib/db";
 import { getSlotSnapshot } from "@/gateway/slots";
@@ -120,7 +121,7 @@ export async function getProviderDetail(id: string) {
       rpmLimit: k.rpmLimit, tpmLimit: k.tpmLimit, maxConcurrency: k.maxConcurrency, dailyBudget: dstr(k.dailyBudget),
       cooldownUntil: iso(k.cooldownUntil), consecutiveFailures: k.consecutiveFailures, lastError: k.lastError,
       lastUsedAt: iso(k.lastUsedAt), totalRequests: k.totalRequests, totalCost: dstr0(k.totalCost),
-      extra: JSON.stringify(k.extra ?? {}, null, 2),
+      extra: JSON.stringify(maskKeyExtra(k.extra ?? {}), null, 2),
       req24h: s?.requests ?? 0, err24h: s?.errors ?? 0, cost24h: s?.cost ?? 0,
     };
   });
@@ -128,7 +129,7 @@ export async function getProviderDetail(id: string) {
     provider: {
       id: provider.id, name: provider.name, slug: provider.slug, preset: provider.preset, baseUrl: provider.baseUrl,
       authStyle: provider.authStyle, formats: provider.formats, tags: provider.tags,
-      extraHeaders: JSON.stringify(provider.extraHeaders ?? {}, null, 2),
+      extraHeaders: JSON.stringify(maskHeaders(provider.extraHeaders ?? {}), null, 2),
       settings: JSON.stringify(provider.settings ?? {}, null, 2),
       status: provider.status, timeoutMs: provider.timeoutMs, priority: provider.priority,
       maxConcurrency: provider.maxConcurrency, healthStatus: provider.healthStatus,

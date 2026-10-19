@@ -93,7 +93,11 @@ async function run(ctx: Ctx): Promise<Response> {
     return withCommon(ctx, new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
   }
 
-  if (path.raw) return path.op.startsWith("batches_") ? handleBatch(ctx) : handleRaw(ctx);
+  if (path.raw) {
+    // Files / Batch management calls count against the key's request rate like any other call
+    await checkLimits(ctx);
+    return path.op.startsWith("batches_") ? handleBatch(ctx) : handleRaw(ctx);
+  }
   if (path.op.startsWith("responses_")) return dispatchResponsesLookup(ctx);
   if (path.op.startsWith("videos_") && path.op !== "videos_create") return dispatchVideoLookup(ctx);
 

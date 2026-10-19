@@ -17,10 +17,10 @@ Severity is what the finding allowed **before** the fix. Status values:
 
 | Severity | Found | Fixed | Not fixed |
 |---|---|---|---|
-| High | 10 | 8 | S1 not reproduced (hardened anyway), D2 accepted (dev-only, no patch exists) |
-| Medium | 14 | 11 | B5, B6 open; I3 partly fixed |
-| Low | 20 | 15 | G9, B9, B10, I8 open; W7 lockout part open |
-| Info | 6 | 0 | I9 partly fixed; the rest open / documented |
+| High | 10 | 8 | S1 not reproduced (hardened anyway), D2 accepted (dev-only, no patched version exists) |
+| Medium | 14 | 14 | - |
+| Low | 20 | 20 | - |
+| Info | 6 | 6 | (B11's unbilled gateway errors are by design) |
 
 ## Findings
 
@@ -37,8 +37,8 @@ Severity is what the finding allowed **before** the fix. Status values:
 | G6 | Medium | Another customer's `previous_response_id` was forwarded unpinned. On a shared account it continued their conversation. | `src/gateway/handle.ts` | A foreign sticky record answers 404. | `G6` |
 | G7 | Low | Mirrored upstream errors leaked `org-…` / `proj_…` ids, account UUIDs and dated upstream model names. | `src/gateway/shape.ts` `scrubText` | These are redacted; suffixed upstream model names are replaced as a whole. | `G7` |
 | G8 | Low | URLs returned by vendors (fal/Replicate results, video CDN links, cross-origin redirects) were fetched without a private-address check, a potential SSRF steered through `extra_input`. | `driver-env.ts`, `execute.ts` | `src/gateway/ssrf.ts` `assertPublicUrl`: loopback, private, link-local/metadata, CGNAT, ULA and multicast are refused unless the host is the provider's own. | `G8` |
-| G9 | Low | Anonymous-log and bad-auth throttles are per instance and per exact IP: IPv6 rotation is possible, and the maps are cleared at 50k entries. | `src/gateway/limits.ts` | **Open (accepted).** Bounded by the global request volume. Suggested: /64 bucketing and LRU eviction. | |
-| G-i | Info | Files and batch management calls are not counted against key rpm/tpm limits (they are not model calls). | `handle.ts` | Open (by design; batch results are metered and held). | |
+| G9 | Low | Anonymous-log and bad-auth throttles are per instance and per exact IP: IPv6 rotation is possible, and the maps are cleared at 50k entries. | `src/gateway/limits.ts` | **Fixed (follow-up).** IPv6 throttled per /64 (`ipBucket`), oldest-half eviction instead of a full clear, a global per-instance ceiling for anonymous logs. | `G9 throttle buckets` |
+| G-i | Info | Files and batch management calls are not counted against key rpm/tpm limits (they are not model calls). | `handle.ts` | **Fixed (follow-up).** Files / batch management calls count against the key's rpm limit (`checkLimits` before the raw handlers). | |
 
 ### Billing / metering
 
@@ -48,13 +48,13 @@ Severity is what the finding allowed **before** the fix. Status values:
 | B2 | High | **Batch results could escape metering:** delete the OpenAI output file, or race the Anthropic batch delete, before metering ran, and the results could never be billed. | `batches.ts`, `files.ts` | `ensureMetered`: deleting a batch, or a batch output/error file, first meters the batch and waits for it (409 while it cannot). Listing an ended batch also triggers metering. | `B2` |
 | B3 | Medium | If an admin disabled the model, batch results were recorded at $0; if the key was gone, metering failed until the hold expired. | `batches.ts` | Fail closed: metering is postponed (logged as an error) while the model is missing, and the sweep keeps the hold of every unmetered batch in place. | |
 | B4 | Medium | The batch hold ignored `n` (choices per request). | `batches.ts` `worstPrice` | The output estimate is multiplied by `n` (capped at 128). | |
-| B5 | Medium | Trial credit can be farmed with one card across many accounts (no card-fingerprint check). | `src/lib/auth/service.ts`, `stripe.ts` | **Open: owner decision.** Store `card.fingerprint` and grant one trial per fingerprint (needs a column). | |
-| B6 | Medium | The metering dead-letter file defaults to `os.tmpdir()`, which on Cloud Run is per-instance memory and is lost on shutdown. | `meter-writer.ts` | **Open (documented).** Every row is also logged as `METER_DEAD_LETTER` (recoverable from Cloud Logging, see `docs/OPERATIONS.md`). Set `METER_DEADLETTER_DIR` to persistent storage when available. | |
+| B5 | Medium | Trial credit can be farmed with one card across many accounts (no card-fingerprint check). | `src/lib/auth/service.ts`, `stripe.ts` | **Fixed (follow-up).** `User.trialCardFingerprint`: a card-gated trial is granted once per card fingerprint across accounts (advisory lock per fingerprint). | `B5` (audit-regressions) |
+| B6 | Medium | The metering dead-letter file defaults to `os.tmpdir()`, which on Cloud Run is per-instance memory and is lost on shutdown. | `meter-writer.ts` | **Fixed (follow-up).** Dead-letter rows are mirrored into a Redis list (`meter:deadletter`) and replayed from it by any instance; replay is idempotent, so a row present in both places is written once. Also logged as `METER_DEAD_LETTER`. | |
 | B7 | Low | A foreign-key error (deleted provider key) also dropped the user's debit. | `meter-writer.ts` `writeRow` | Provider references are dropped first; the user debit is kept. | |
 | B8 | Low | The same log id twice in one flush was charged twice. | `meter-writer.ts` `writeBatch` | Entries are de-duplicated by id before insert and financials. | `B8` |
-| B9 | Low | Auto-recharge could double-charge when Redis is down (in-memory lock only). | `auto-recharge.ts` | Open (bounded by the daily cap, default 3, and the 5 min cooldown). | |
-| B10 | Low | `charge.dispute.closed` is not handled, so a won dispute leaves the customer debited and suspended. | `webhook.ts` | Open; documented in `deploy/README.md` (resolve manually in the admin console). | |
-| B11 | Info | `GATEWAY_ERROR` outcomes with usage are not billed; the admin balance-adjustment audit row has no IP. | | Open (no customer-triggerable path found). | |
+| B9 | Low | Auto-recharge could double-charge when Redis is down (in-memory lock only). | `auto-recharge.ts` | **Fixed (follow-up).** The in-flight / daily-cap / cooldown check and the PENDING payment are created under a Postgres advisory lock per customer. | billing tests |
+| B10 | Low | `charge.dispute.closed` is not handled, so a won dispute leaves the customer debited and suspended. | `webhook.ts` | **Fixed (follow-up).** `charge.dispute.closed` with status `won` reverses the chargeback once (ADJUSTMENT), marks the payment SUCCEEDED and re-activates the customer only if our chargeback suspension is their latest status change. | `webhook.test.ts` |
+| B11 | Info | `GATEWAY_ERROR` outcomes with usage are not billed; the admin balance-adjustment audit row has no IP. | | Open (no customer-triggerable path found). | **Fixed (follow-up)** for the audit IP (`adminAdjustBalance(..., ip)`); unbilled `GATEWAY_ERROR` usage stays by design (our fault, not the customer's). | |
 
 ### Web app
 
@@ -66,12 +66,12 @@ Severity is what the finding allowed **before** the fix. Status values:
 | W4 | Medium | Stored HTML/CSS injection into the admin analytics `<style>` through API-key names (chart config keys). | `src/components/ui/chart.tsx` | Keys and colours are reduced to safe characters before reaching the style text. | `W4` |
 | W5 | Medium | IP rate limits (login/signup/reset) could be bypassed with a forged `X-Forwarded-For` on the self-hosted setup; login had no per-account limit. | `src/lib/http.ts`, `service.ts`, `server.mjs` | `TRUSTED_PROXY_HOPS=0` makes `server.mjs` use the socket address (set in `docker-compose.prod.yml`); `x-real-ip` is never trusted; per-account login limit of 30 per hour. | |
 | W6 | Low | A pending (pre-2FA) session became a full session if 2FA was switched off later. | `session.ts`, `totp.ts` | `getSession` rejects every session that has not passed 2FA; enabling or disabling 2FA deletes pending sessions. | |
-| W7 | Low | TOTP codes could be replayed within their window. | `src/lib/auth/totp.ts` | Each matched time step is single-use. Lockout/notification on repeated failures: open. | `W7` |
+| W7 | Low | TOTP codes could be replayed within their window. | `src/lib/auth/totp.ts` | Each matched time step is single-use; 8 tries / 5 min and 30 / day (codes and recovery codes), and the owner is emailed (at most hourly) when the limit is hit. | `W7` |
 | W8 | Low | Email change: the old address was not told, sessions and reset links survived, and "already in use" revealed registered addresses. | `service.ts` | The old address gets a notice; on change all sessions and pending tokens end; the answer no longer reveals whether an address is taken. | |
 | W9 | Low | SUPPORT could verify staff accounts (e.g. a sign-up with `ADMIN_EMAIL`) and grant trial credit. | `customers-actions.ts` | `canManageTarget` on email verification and password-reset sending. | |
 | W10 | Low | Password change/reset left pending reset and email-change tokens valid. | `service.ts` | They are deleted. | |
 | W11 | Low | No clickjacking/CSP headers. | `next.config.ts` | See I2. | |
-| W12 | Info | 2FA is optional for staff; no recovery codes. | | Open (owner decision). | |
+| W12 | Info | 2FA is optional for staff; no recovery codes. | | Open (owner decision). | **Fixed (follow-up).** 10 single-use recovery codes (hashed, shown once) accepted at the 2FA step; setting `requireStaffTwoFactor` (default on in production) sends staff without 2FA to Settings and blocks admin actions until it is enabled. | `W12` |
 
 ### Infrastructure, secrets, dependencies
 
@@ -80,17 +80,17 @@ Severity is what the finding allowed **before** the fix. Status values:
 | S1 | High (reported) | "`.env` is copied into the Docker image." | `.dockerignore`, `Dockerfile` | **Not reproduced:** `.dockerignore` already excludes `.env` and `.env.*`. Defence in depth: the build stage now runs `rm -f .env .env.*` before `next build`. | |
 | I1 | Medium | Client-IP spoofing (`x-real-ip` fallback; direct `*.run.app` calls behind a load balancer) bypassed the per-key IP allowlist. | `src/lib/http.ts`, `deploy/README.md` | `x-real-ip` removed; `TRUSTED_PROXY_HOPS=0` mode; docs require `--ingress=internal-and-cloud-load-balancing` with a load balancer. | |
 | I2 | Medium | No browser security headers. | `next.config.ts` | App pages get `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, and HSTS in production. The gateway paths (`/v1`, `/v1beta`, `/upload`) are left untouched (faithful proxy). | |
-| I3 | Medium | Slowloris / idle-connection exhaustion on the self-hosted listener. | `server.mjs` | **Partly fixed:** new connections must send bytes within 15 s. Open: `maxConnections`, lower h2 `maxSessionMemory` (needs load testing against the h2 large-body guarantees). On Cloud Run the Google front end absorbs this. | |
+| I3 | Medium | Slowloris / idle-connection exhaustion on the self-hosted listener. | `server.mjs` | **Fixed (follow-up):** first bytes within 15 s, `MAX_CONNECTIONS` cap per instance (default 20000). h2 `maxSessionMemory` stays at 256 MB (large-body throughput, see CONNECTION-FIDELITY); Cloud Run's front end absorbs the rest. | |
 | I4 | Low | Build context can carry `live-output/`, `.next-*`, `*.pem` into the standalone trace. | `.dockerignore` | Added. | |
 | I5 | Low | IAM too broad (project-wide `secretAccessor`, `run.admin`). | `deploy/README.md` | Per-secret bindings, `run.developer`. | |
 | I6 | Low | An invalid `NODE_ENV` (e.g. `staging`) silently dropped every env var, which opened the health cron. | `src/lib/env.ts`, `api/cron/health` | Invalid env outside dev/test fails hard; the health cron is unauthenticated only with `NODE_ENV=development`. | |
 | I7 | Low | Session cookie `Secure` depended on `APP_URL` being https. | `session.ts`, `proxy.ts` | Always `Secure` in production, except a plain-http localhost `APP_URL`. | |
 | S2 | Low | A Gemini query key (`?key=`) could reach admin-visible error columns (`RequestLog.attempts`, `ProviderKey.lastError`, health checks) through fetch errors quoting the URL. | `util.ts`, `health.ts`, `providers-actions.ts` | `redactUrlSecrets` in `describeNetworkError` and the health probe; provider base URLs must parse. | `S2` |
 | S3 | Low | Dead-letter log lines carried request/response bodies; the file was world-readable. | `meter-writer.ts` | Bodies are left out of the log line; the file is written with mode 0600. | |
-| I8 | Low | Base image not pinned by digest; the migration CLI is installed without a lockfile. | `Dockerfile` | Open (pin `node:24.x-slim@sha256:…` at the next deploy). | |
-| I9 | Info | Dev compose publishes Postgres and Redis on all interfaces; prod compose defaulted `POSTGRES_PASSWORD`; Cloud SQL public IP. | compose files, deploy docs | Prod compose now requires `POSTGRES_PASSWORD`; the rest is open (dev only / documented). | |
-| S4 | Info | Provider `extraHeaders` and key `extra.headers` are stored in plaintext and shown to admins. | schema | Open: do not put credentials there (documented in the admin guide). | |
-| S5 | Info | Whether Google echoes `key=` into the resumable-upload session URL stored in `UpstreamObject.meta.url` is unverified. | `files.ts` | Open: check with one live upload. | |
+| I8 | Low | Base image not pinned by digest; the migration CLI is installed without a lockfile. | `Dockerfile` | **Fixed (follow-up).** `NODE_IMAGE` pinned by digest (dependabot updates it); the migration CLI is installed with `npm ci` from `prisma/migrator/package-lock.json`. | |
+| I9 | Info | Dev compose publishes Postgres and Redis on all interfaces; prod compose defaulted `POSTGRES_PASSWORD`; Cloud SQL public IP. | compose files, deploy docs | **Fixed (follow-up)** for compose: dev Postgres / Redis bound to 127.0.0.1; prod requires `POSTGRES_PASSWORD`. Cloud SQL private IP is a deployment choice (documented). | |
+| S4 | Info | Provider `extraHeaders` and key `extra.headers` are stored in plaintext and shown to admins. | schema | **Fixed (follow-up).** Credential-like header values (`auth`, `key`, `token`, `secret`, `cookie` ...) are stored encrypted (`enc:`), decrypted only for the upstream request, and shown to admins as `[encrypted]` (saving it back keeps the value). | `S4` |
+| S5 | Info | Whether Google echoes `key=` into the resumable-upload session URL stored in `UpstreamObject.meta.url` is unverified. | `files.ts` | **Fixed (follow-up)** defensively: the stored session URL is encrypted at rest (older rows still read). | |
 | D1 | High (dev-only) | lodash code injection / prototype pollution through prisma studio. | `pnpm audit` | `pnpm-workspace.yaml` override to `^4.18.1`. | `pnpm audit` |
 | D2 | High (dev-only) | braces ReDoS through shadcn's build tooling (GHSA-vfj7-8cjw-p6xm). | `pnpm audit` | **Accepted:** no patched version is published; not in the runtime image. `shadcn` moved to devDependencies. | |
 
@@ -115,7 +115,9 @@ Severity is what the finding allowed **before** the fix. Status values:
   - CORS `*` is set only on the gateway and the public pricing endpoint, never with credentials.
 - **Container:** non-root user, no secrets in layers, Secret Manager for every secret.
 
-## Follow-ups for the owner
+## Follow-up round (2026-10-19, same day)
 
-B5 (trial farming), B6 (persistent dead-letter storage), B9/B10 (auto-recharge lock without Redis, closed disputes), I3
-(connection caps), I8 (image digest pinning), W7 lockout, W12 (staff 2FA / recovery codes), S5 (one live check).
+Every item that was open after the first round was fixed at the owner's request ("fix all open decisions"): B5, B6, B9,
+B10, B11, G9, G-i, I3, I8, I9, W7, W12, S4, S5 (see the rows above). Only D2 remains accepted: the braces advisory has no
+patched release and the package is build tooling (devDependencies), not shipped in the runtime image. Re-check with
+`pnpm audit` when a fix is published (dependabot will propose it).
