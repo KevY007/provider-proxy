@@ -621,11 +621,28 @@ model HealthCheck {
   providerKeyId String?
   providerKey   ProviderKey? @relation(fields: [providerKeyId], references: [id], onDelete: Cascade)
   ok            Boolean
+  /// ok but slow / partly failing (traffic samples: 20-50% upstream errors)
+  degraded      Boolean      @default(false)
   latencyMs     Int?
   error         String?
+  /// "probe" = a ping (timed uptime monitoring or Run checks now); "traffic" = a sample derived from real calls
+  source        String       @default("probe")
   createdAt     DateTime     @default(now())
 
   @@index([providerId, createdAt])
+  @@index([createdAt])
+}
+
+/// Last run of each background job (src/server/maintenance.ts). A run is claimed atomically, so with several
+/// instances (or timers + Cloud Scheduler) a job runs once per interval.
+model JobRun {
+  name      String    @id
+  lastRunAt DateTime
+  lastOkAt  DateTime?
+  source    String    @default("")
+  result    Json?
+  error     String?
+  updatedAt DateTime  @updatedAt
 }
 
 model Setting {

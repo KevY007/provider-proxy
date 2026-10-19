@@ -78,7 +78,7 @@ export default async function Page({
 
       <Tabs defaultValue="usage">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <TabsList>
+          <TabsList className="h-auto max-w-full flex-wrap">
             <TabsTrigger value="usage">Usage</TabsTrigger>
             <TabsTrigger value="keys">API keys ({detail.keys.length})</TabsTrigger>
             <TabsTrigger value="logs">Recent logs</TabsTrigger>

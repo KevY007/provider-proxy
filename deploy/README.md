@@ -3,12 +3,16 @@
 Target architecture (see `docs/PLAN.md` section 10):
 
 ```
-Client -> Cloud Run (one container: UI + gateway) -> Cloud SQL (Postgres 16)
-                                   |-> Memorystore Redis (optional, via VPC connector)
-Cloud Scheduler -> POST /api/cron/billing (hourly), /api/cron/health (every 5 min)
+Client -> Cloud Run (one container: UI + gateway, scales to zero) -> Cloud SQL (Postgres 16)
+                                   |-> Memorystore Redis (scale-out profile only, Direct VPC egress)
+(optional) Cloud Scheduler -> POST /api/cron/billing, /api/cron/health
 Cloud Run Job (same image) -> prisma migrate deploy
 Secret Manager -> env vars
 ```
+
+**Two profiles.** Start with **lean**: one Cloud Run instance at most, no Redis, no VPC, scales to zero. The
+only always-on cost is Cloud SQL. Move to **scale-out** (Redis + several instances) when one instance is no longer
+enough. Steps marked *(scale-out)* are skipped in the lean profile. Costs: [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md#profiles-and-cost).
 
 Everything below is copy/paste `gcloud`. Replace the variables in step 0. Run from a Cloud Shell or any
 machine with `gcloud` authenticated (`gcloud auth login`).
@@ -37,7 +41,7 @@ gcloud config set project $PROJECT_ID
 gcloud services enable \
   run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
   sqladmin.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com \
-  redis.googleapis.com vpcaccess.googleapis.com compute.googleapis.com
+  redis.googleapis.com compute.googleapis.com     # redis + compute: scale-out profile only
 ```
 
 ## 2. Artifact Registry
@@ -52,8 +56,12 @@ gcloud artifacts repositories create $REPO --repository-format=docker --location
 ```bash
 gcloud sql instances create $SQL_INSTANCE \
   --database-version=POSTGRES_16 --region=$REGION \
-  --tier=db-custom-2-7680 --storage-type=SSD --storage-size=20GB --storage-auto-increase \
-  --availability-type=zonal            # use regional for HA in production
+  --edition=ENTERPRISE --tier=db-g1-small \
+  --storage-type=SSD --storage-size=10GB --storage-auto-increase \
+  --availability-type=zonal \
+  --backup-start-time=03:00 --enable-point-in-time-recovery --retained-backups-count=14
+# lean: db-g1-small (shared core, 1.7 GB). Scale-out / heavier traffic: --tier=db-custom-1-3840 or db-custom-2-7680,
+# and --availability-type=regional for automatic failover. Change later with `gcloud sql instances patch`.
 
 gcloud sql databases create proxy --instance=$SQL_INSTANCE
 export DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')
@@ -69,26 +77,29 @@ characters in the password):
 postgresql://proxy:DB_PASSWORD@localhost/proxy?host=/cloudsql/PROJECT_ID:REGION:SQL_INSTANCE
 ```
 
-Pool size per instance is `DB_POOL_SIZE` (default 20). Keep
-`max-instances x DB_POOL_SIZE` below the Cloud SQL connection limit (`db-custom-2-7680` allows ~400;
-raise `max_connections` flag or add PgBouncer for very large fleets).
+Pool size per instance is `DB_POOL_SIZE` (default 20). Keep `max-instances x DB_POOL_SIZE` (plus a few for the
+migration job and your own tools) below the Cloud SQL connection limit: about 50 on `db-g1-small` (the lean
+profile uses 1 instance x 20), about 100 on `db-custom-1-3840`, about 400 on `db-custom-2-7680`.
 
-## 4. Memorystore Redis + VPC connector (optional)
+## 4. Memorystore Redis (scale-out profile only)
 
-The app works without Redis (in-memory fallback), but with more than one instance you want Redis for
-shared rate limits, concurrency slots and cache invalidation.
+Skip this in the lean profile. Without Redis the app keeps rate limits, concurrency slots, funds holds and cache
+invalidation in memory, which is exact for **one** instance, so the lean profile pins `--max-instances=1`. As soon as
+you run more than one instance you need Redis, so those limits and holds are shared.
 
 ```bash
 gcloud redis instances create providerproxy-redis --region=$REGION --tier=basic --size=1 \
   --redis-version=redis_7_0
 
 export REDIS_HOST=$(gcloud redis instances describe providerproxy-redis --region=$REGION --format='value(host)')
-
-gcloud compute networks vpc-access connectors create pp-connector \
-  --region=$REGION --network=default --range=10.8.0.0/28 --min-instances=2 --max-instances=10
 ```
 
+The service reaches Redis through **Direct VPC egress** (flags in step 9). Unlike a Serverless VPC connector it has
+no VMs that bill while the service is idle.
+
 `REDIS_URL=redis://$REDIS_HOST:6379`
+
+> Memorystore bills around the clock, even when the service is idle (basic 1 GB is the smallest instance).
 
 ## 5. Secrets (Secret Manager)
 
@@ -101,7 +112,7 @@ mk ENCRYPTION_KEY  "$(openssl rand -base64 32)"        # 32 bytes base64 - BACK 
 mk CRON_SECRET     "$(openssl rand -hex 24)"
 mk ADMIN_PASSWORD  "choose-a-strong-admin-password"
 # Optional / when ready:
-mk REDIS_URL       "redis://$REDIS_HOST:6379"
+mk REDIS_URL       "redis://$REDIS_HOST:6379"       # scale-out profile only
 mk STRIPE_SECRET_KEY      "sk_live_..."
 mk STRIPE_PUBLISHABLE_KEY "pk_live_..."
 mk STRIPE_WEBHOOK_SECRET  "whsec_..."                  # created in step 11
@@ -116,6 +127,7 @@ export SA_EMAIL=$SA@$PROJECT_ID.iam.gserviceaccount.com
 
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$SA_EMAIL --role=roles/cloudsql.client
 # secrets: grant access per secret (least privilege; the runtime never needs e.g. ADMIN_PASSWORD)
+# (skip the names you did not create, e.g. REDIS_URL in the lean profile)
 for s in DATABASE_URL SESSION_SECRET ENCRYPTION_KEY CRON_SECRET REDIS_URL STRIPE_SECRET_KEY STRIPE_PUBLISHABLE_KEY STRIPE_WEBHOOK_SECRET SMTP_URL; do
   gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA_EMAIL --role=roles/secretmanager.secretAccessor
 done
@@ -163,7 +175,15 @@ Flags that matter for a streaming gateway:
   A single request (stream or upload) can never live longer than this on Cloud Run.
 * `--concurrency=250` - requests per instance (streams are I/O bound; lower if you see CPU saturation). With
   `--use-http2` many streams share one connection, so concurrency is not limited by connections.
-* `--min-instances=1` - no cold starts on the API.
+* `--max-instances=1` (lean, no Redis) - required without Redis (see step 4). One instance at `--concurrency=250`
+  carries a lot of proxy traffic because streams are I/O bound. Scale-out: raise it, together with Redis.
+* `--cpu=1 --memory=1Gi` (lean) or `--cpu=2 --memory=2Gi` (scale-out / large uploads).
+* `--cpu-boost` - extra CPU while an instance starts, which shortens cold starts.
+* `--startup-probe ... initialDelaySeconds=0,periodSeconds=1` - an instance gets traffic about as soon as it is ready
+  (the app is ready about 1 s after the container starts; a slower probe would add seconds to every cold start).
+* `--min-instances=0` - scale to zero while nobody calls: an idle service has no Cloud Run cost, and the app itself
+  runs no timer and pings nothing by default (docs/OPERATIONS.md, "Background jobs"). Use `1` to avoid cold starts
+  or to run the optional 24/7 monitoring timers (Settings > Monitoring).
 * `--no-cpu-throttling` - CPU stays allocated after the response so post-response metering completes and
   heartbeats keep flowing on silent streams.
 * `--execution-environment=gen2`.
@@ -173,6 +193,8 @@ Flags that matter for a streaming gateway:
   `--concurrency`) if you expect many large uploads at once. Streamed passthrough (Files API uploads, downloads,
   completions) uses only a few MB per request.
 
+Lean profile (no Redis, scales to zero):
+
 ```bash
 gcloud run deploy $SERVICE \
   --image=$IMAGE --region=$REGION --service-account=$SA_EMAIL \
@@ -180,18 +202,28 @@ gcloud run deploy $SERVICE \
   --execution-environment=gen2 \
   --use-http2 \
   --timeout=3600 --concurrency=250 \
-  --min-instances=1 --max-instances=20 \
-  --no-cpu-throttling --cpu=2 --memory=2Gi --cpu-boost \
+  --min-instances=0 --max-instances=1 \
+  --no-cpu-throttling --cpu=1 --memory=1Gi --cpu-boost \
   --add-cloudsql-instances=$SQL_CONN \
-  --vpc-connector=pp-connector --vpc-egress=private-ranges-only \
   --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=20,TRUSTED_PROXY_HOPS=1" \
-  --set-secrets="DATABASE_URL=DATABASE_URL:latest,SESSION_SECRET=SESSION_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,CRON_SECRET=CRON_SECRET:latest,REDIS_URL=REDIS_URL:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_PUBLISHABLE_KEY=STRIPE_PUBLISHABLE_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,SMTP_URL=SMTP_URL:latest" \
-  --startup-probe=httpGet.path=/api/healthz,initialDelaySeconds=2,periodSeconds=3,failureThreshold=20 \
+  --set-secrets="DATABASE_URL=DATABASE_URL:latest,SESSION_SECRET=SESSION_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,CRON_SECRET=CRON_SECRET:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_PUBLISHABLE_KEY=STRIPE_PUBLISHABLE_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,SMTP_URL=SMTP_URL:latest" \
+  --startup-probe=httpGet.path=/api/healthz,initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60 \
   --liveness-probe=httpGet.path=/api/healthz,periodSeconds=30
 ```
 
-Drop `--vpc-connector`/`--vpc-egress` and the `REDIS_URL` secret mapping if you skipped Redis, and drop
-the Stripe/SMTP secrets you did not create (the app treats them as optional).
+Scale-out profile (after step 4): change these flags and add the Redis secret:
+
+```bash
+  --max-instances=20 --cpu=2 --memory=2Gi \
+  --network=default --subnet=default --vpc-egress=private-ranges-only \
+  --set-secrets="...,REDIS_URL=REDIS_URL:latest" \
+  --set-env-vars="...,DB_POOL_SIZE=15"        # keep max-instances x DB_POOL_SIZE under the DB limit
+```
+
+Always on, no cold starts (e.g. while the service fronts your main app around the clock):
+`gcloud run services update $SERVICE --region=$REGION --min-instances=1`.
+
+Drop the Stripe/SMTP secrets you did not create (the app treats them as optional).
 
 > The container listens on `$PORT` (Cloud Run injects 8080). `TRUSTED_PROXY_HOPS=1` makes client-IP
 > detection read the last `x-forwarded-for` entry appended by Google's front end; use `2` if you put a
@@ -225,7 +257,12 @@ gcloud builds submit --config deploy/cloudbuild.yaml \
 Create a Cloud Build trigger on your main branch with the same substitutions for push-to-deploy.
 Steps: build image -> push -> update + run the migration job -> deploy the service revision.
 
-## 11. Cron (Cloud Scheduler) and Stripe webhook
+## 11. Cron (Cloud Scheduler, optional) and Stripe webhook
+
+The scheduler jobs are **optional**. Without them the background jobs run while the service handles calls and admin
+pages (throttled), so an idle deployment stays at zero instances. Create them only if you want upkeep, billing and
+uptime pings (when Settings > Monitoring > Uptime monitoring is on) to keep running while nobody uses the service.
+Each run wakes an instance.
 
 ```bash
 export CRON_SECRET_VALUE=$(gcloud secrets versions access latest --secret=CRON_SECRET)
