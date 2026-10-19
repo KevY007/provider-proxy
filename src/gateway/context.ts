@@ -9,6 +9,7 @@ import { recordOutcome, type Charge, type Outcome } from "./metering";
 import { settleFunds, type FundsState } from "./reserve";
 import type { ParsedForm } from "./multipart";
 import type { TopLevelScan } from "./jsonscan";
+import type { BatchCtx } from "./batches";
 import type { FilesState } from "./files";
 import type { BodySpool } from "./spool";
 import type { Candidate } from "./select";
@@ -40,6 +41,8 @@ export interface Ctx {
   rawBody: ReadableStream<Uint8Array> | null;
   /** Files APIs: the object the call targets, its owner row, and how the body is carried. */
   files: FilesState | null;
+  /** Batch APIs: the batch the call targets / the state of a batch being created. */
+  batch: BatchCtx | null;
   /** Cleanups run when the request is over (temp files, ...). */
   disposers: Array<() => void | Promise<void>>;
   attempts: AttemptRecord[];
@@ -82,6 +85,7 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     form: null,
     rawBody: null,
     files: null,
+    batch: null,
     disposers: [],
     attempts: [],
     queueMs: 0,

@@ -48,6 +48,11 @@ export interface ReserveInput {
   monthlyRemaining: Decimal | null;
   /** key.spendLimit - key.spent (null = no limit) */
   keyRemaining: Decimal | null;
+  /**
+   * Long-lived hold (Batch API): kept for `ttlMs` without a heartbeat (the batch outlives the request that created it);
+   * released by `releaseHold` once its results are metered, re-placed by the batch sweep (`restoreHold`).
+   */
+  ttlMs?: number;
 }
 
 export interface ReserveOutcome {
@@ -119,10 +124,19 @@ local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 `;
 
+/** Lengthen (never shorten) the expiry of a hash: long-lived batch holds share it with short request holds. */
+const LUA_EXTEND = `
+local function extend(key, ms)
+  local cur = redis.call('PTTL', key)
+  if cur == -1 or (cur >= 0 and cur < ms) then redis.call('PEXPIRE', key, ms) end
+end
+`;
+
 // KEYS: 1 hold hash, 2 bal, [3 key hold hash]
 // ARGV: 1 id, 2 amount, 3 seed balance, 4 extra headroom, 5 monthly remaining|'x', 6 key remaining|'x', 7 hold ttl ms, 8 bal ttl ms
 const LUA_RESERVE =
   LUA_SCAN +
+  LUA_EXTEND +
   `
 local uH, uP = scan(KEYS[1], now)
 local bal = redis.call('GET', KEYS[2])
@@ -148,22 +162,24 @@ elseif hasKey and keyAvail < amount then reason = 3 end
 if reason == 0 and amount > 0 then
   local v = 'H|' .. string.format('%d', amount) .. '|' .. string.format('%d', now + tonumber(ARGV[7]))
   redis.call('HSET', KEYS[1], ARGV[1], v)
-  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[7]) * 3)
+  extend(KEYS[1], tonumber(ARGV[7]) * 3)
   if hasKey then
     redis.call('HSET', KEYS[3], ARGV[1], v)
-    redis.call('PEXPIRE', KEYS[3], tonumber(ARGV[7]) * 3)
+    extend(KEYS[3], tonumber(ARGV[7]) * 3)
   end
 end
 return {reason, available, monthlyAvail, keyAvail, tonumber(bal)}
 `;
 
 // KEYS: 1 hold hash, [2 key hold hash]; ARGV: 1 id, 2 price (micro), 3 pending ttl ms
-const LUA_SETTLE = `
+const LUA_SETTLE =
+  LUA_EXTEND +
+  `
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 if tonumber(ARGV[2]) > 0 then
   redis.call('HSET', KEYS[1], ARGV[1], 'P|' .. string.format('%d', ARGV[2]) .. '|' .. string.format('%d', now + tonumber(ARGV[3])))
-  redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]) * 2)
+  extend(KEYS[1], tonumber(ARGV[3]) * 2)
 else
   redis.call('HDEL', KEYS[1], ARGV[1])
 end
@@ -182,7 +198,9 @@ return 1
 `;
 
 // KEYS: 1 hold hash; ARGV: 1 ttl ms, 2.. ids   (extends only open holds "H")
-const LUA_RENEW = `
+const LUA_RENEW =
+  LUA_EXTEND +
+  `
 local t = redis.call('TIME')
 local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 for i = 2, #ARGV do
@@ -192,7 +210,20 @@ for i = 2, #ARGV do
     if kind == 'H' then redis.call('HSET', KEYS[1], ARGV[i], 'H|' .. amt .. '|' .. string.format('%d', now + tonumber(ARGV[1]))) end
   end
 end
-redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[1]) * 3)
+extend(KEYS[1], tonumber(ARGV[1]) * 3)
+return 1
+`;
+
+// KEYS: 1 hold hash; ARGV: 1 id, 2 amount (micro), 3 ttl ms   (re-place a long-lived hold unless it was settled meanwhile)
+const LUA_RESTORE =
+  LUA_EXTEND +
+  `
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local cur = redis.call('HGET', KEYS[1], ARGV[1])
+if cur and string.sub(cur, 1, 1) == 'P' then return 0 end
+redis.call('HSET', KEYS[1], ARGV[1], 'H|' .. string.format('%d', ARGV[2]) .. '|' .. string.format('%d', now + tonumber(ARGV[3])))
+extend(KEYS[1], tonumber(ARGV[3]) * 3)
 return 1
 `;
 
@@ -201,13 +232,14 @@ type RedisScripts = {
   ppHoldSettle(...a: Array<string | number>): Promise<number>;
   ppHoldFlushed(...a: Array<string | number>): Promise<number>;
   ppHoldRenew(...a: Array<string | number>): Promise<number>;
+  ppHoldRestore(...a: Array<string | number>): Promise<number>;
   set(key: string, value: string, mode: "PX", ms: number): Promise<unknown>;
   del(...keys: string[]): Promise<number>;
   hdel(key: string, ...fields: string[]): Promise<number>;
 };
 
 /** Identity of the script set: after a code reload (dev HMR) the long-lived Redis client must get the NEW scripts. */
-const SCRIPT_TAG = createHash("sha1").update([LUA_RESERVE, LUA_SETTLE, LUA_FLUSHED, LUA_RENEW].join("\u0000")).digest("hex");
+const SCRIPT_TAG = createHash("sha1").update([LUA_RESERVE, LUA_SETTLE, LUA_FLUSHED, LUA_RENEW, LUA_RESTORE].join("\u0000")).digest("hex");
 
 function scripted(): RedisScripts | null {
   const r = getRedis();
@@ -217,6 +249,7 @@ function scripted(): RedisScripts | null {
     r.defineCommand("ppHoldSettle", { lua: LUA_SETTLE });
     r.defineCommand("ppHoldFlushed", { lua: LUA_FLUSHED });
     r.defineCommand("ppHoldRenew", { lua: LUA_RENEW });
+    r.defineCommand("ppHoldRestore", { lua: LUA_RESTORE });
     state.scriptsTag = SCRIPT_TAG;
   }
   return r as unknown as RedisScripts;
@@ -263,7 +296,7 @@ function memReserve(i: ReserveInput): ReserveOutcome {
   if (available.lte(0) || available.lt(i.amount)) reason = "balance";
   else if (monthlyAvailable && monthlyAvailable.lt(i.amount)) reason = "monthly";
   else if (keyAvailable && keyAvailable.lt(i.amount)) reason = "key";
-  if (!reason && i.amount.gt(0)) m.set(i.id, { kind: "H", amount: i.amount, keyId: i.keyId, exp: now + HOLD_TTL_MS });
+  if (!reason && i.amount.gt(0)) m.set(i.id, { kind: "H", amount: i.amount, keyId: i.keyId, exp: now + (i.ttlMs ?? HOLD_TTL_MS) });
   return { ok: !reason, backend: "memory", available, monthlyAvailable, keyAvailable, reason, sharedBalance: i.base };
 }
 
@@ -283,12 +316,12 @@ export async function reserveHold(i: ReserveInput): Promise<ReserveOutcome> {
         microDown(i.headroomExtra),
         i.monthlyRemaining ? microDown(i.monthlyRemaining) : "x",
         i.keyId && i.keyRemaining ? microDown(i.keyRemaining) : "x",
-        HOLD_TTL_MS,
+        i.ttlMs ?? HOLD_TTL_MS,
         BAL_TTL_MS,
       );
       const [reason, available, monthly, key, bal] = res.map(Number);
       const ok = reason === 0;
-      if (ok && i.amount.gt(0)) trackOpen({ id: i.id, userId: i.userId, keyId: i.keyId, backend: "redis", createdAt: Date.now() });
+      if (ok && i.amount.gt(0) && !i.ttlMs) trackOpen({ id: i.id, userId: i.userId, keyId: i.keyId, backend: "redis", createdAt: Date.now() });
       return {
         ok,
         backend: "redis",
@@ -303,7 +336,7 @@ export async function reserveHold(i: ReserveInput): Promise<ReserveOutcome> {
     }
   }
   const out = memReserve(i);
-  if (out.ok && i.amount.gt(0)) trackOpen({ id: i.id, userId: i.userId, keyId: i.keyId, backend: "memory", createdAt: Date.now() });
+  if (out.ok && i.amount.gt(0) && !i.ttlMs) trackOpen({ id: i.id, userId: i.userId, keyId: i.keyId, backend: "memory", createdAt: Date.now() });
   return out;
 }
 
@@ -342,6 +375,29 @@ export function settleHold(ref: HoldRef, price: Decimal): void {
 /** Drop a hold without any debit (failed before charge / abandoned). Idempotent. */
 export function releaseHold(ref: HoldRef): void {
   settleHold(ref, ZERO);
+}
+
+/**
+ * Re-place a long-lived hold (Batch API) with a fresh expiry: after an instance restart (memory backend) or a Redis
+ * flush the hold of a still-running batch would otherwise be gone. A hold that was settled meanwhile stays settled.
+ */
+export async function restoreHold(ref: HoldRef, amount: Decimal, ttlMs: number): Promise<void> {
+  if (amount.lte(0)) return;
+  if (ref.backend === "redis") {
+    const r = scripted();
+    if (r) {
+      try {
+        await r.ppHoldRestore(1, holdKey(ref.userId), ref.id, microUp(amount), ttlMs);
+        return;
+      } catch (err) {
+        warnOnce("redis hold restore failed, using in-memory holds", err);
+      }
+    }
+  }
+  const m = memEntries(ref.userId);
+  const cur = m.get(ref.id);
+  if (cur?.kind === "P") return;
+  m.set(ref.id, { kind: "H", amount, keyId: ref.keyId, exp: Date.now() + ttlMs });
 }
 
 /** True while the hold of this request is still open (not yet settled / released). */

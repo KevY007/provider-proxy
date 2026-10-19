@@ -172,6 +172,27 @@ interface MockState {
   containerFiles: Map<string, MockContainerFile>;
   /** fal / Replicate / video job state (created lazily) */
   extras?: MockExtras;
+  /** Anthropic Message Batches + OpenAI Batch jobs, by id */
+  batches: Map<string, MockBatch>;
+}
+interface MockBatch {
+  id: string;
+  api: "anthropic" | "openai";
+  owner: string;
+  createdAt: number;
+  /** Anthropic: {custom_id, params}; OpenAI: input file lines {custom_id, method, url, body} */
+  requests: Obj[];
+  endpoint: string;
+  inputFileId: string | null;
+  polls: number;
+  slow: boolean;
+  canceled: boolean;
+  /** result lines once the batch ended (Anthropic results / OpenAI output + error lines) */
+  results: string[] | null;
+  errors: string[] | null;
+  outputFileId: string | null;
+  errorFileId: string | null;
+  metadata: Obj | null;
 }
 
 function createState(): MockState {
@@ -188,6 +209,7 @@ function createState(): MockState {
     uploads: new Map(),
     gsessions: new Map(),
     containerFiles: new Map(),
+    batches: new Map(),
   };
 }
 
@@ -225,6 +247,7 @@ function resetState(state: MockState): void {
   state.uploads = new Map();
   state.gsessions = new Map();
   state.containerFiles = new Map();
+  state.batches = new Map();
   state.extras = undefined;
 }
 
@@ -2217,6 +2240,208 @@ function referencedFiles(v: unknown, out: Array<{ api: MockFile["api"]; id: stri
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Batch APIs: Anthropic /v1/messages/batches, OpenAI /v1/batches
+//   A batch ends on the first GET after creation (`[[batchslow]]` in any request keeps it running); `[[batcherr]]` makes
+//   that request fail. Results stream line by line (x-mock-delay-ms per line). Batches belong to the creating credential.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const isBatchesPath = (path: string) => path === "/v1/messages/batches" || path.startsWith("/v1/messages/batches/") || path === "/v1/batches" || path.startsWith("/v1/batches/");
+
+function anthropicBatchObject(b: MockBatch, origin: string): Obj {
+  const ended = b.results !== null;
+  const counts = { processing: ended ? 0 : b.requests.length, succeeded: 0, errored: 0, canceled: 0, expired: 0 };
+  for (const l of b.results ?? []) {
+    const t = (JSON.parse(l) as Obj).result as Obj;
+    if (t.type === "succeeded") counts.succeeded++;
+    else if (t.type === "errored") counts.errored++;
+    else if (t.type === "canceled") counts.canceled++;
+    else counts.expired++;
+  }
+  return {
+    id: b.id,
+    type: "message_batch",
+    processing_status: ended ? "ended" : b.canceled ? "canceling" : "in_progress",
+    request_counts: counts,
+    ended_at: ended ? new Date().toISOString() : null,
+    created_at: new Date(b.createdAt).toISOString(),
+    expires_at: new Date(b.createdAt + 86_400_000).toISOString(),
+    archived_at: null,
+    cancel_initiated_at: b.canceled ? new Date().toISOString() : null,
+    results_url: ended ? `${origin}/v1/messages/batches/${b.id}/results` : null,
+  };
+}
+
+function openaiBatchObject(b: MockBatch): Obj {
+  const ended = b.results !== null;
+  const failed = b.errors?.length ?? 0;
+  return {
+    id: b.id,
+    object: "batch",
+    endpoint: b.endpoint,
+    errors: null,
+    input_file_id: b.inputFileId,
+    completion_window: "24h",
+    status: ended ? (b.canceled ? "cancelled" : "completed") : b.canceled ? "cancelling" : "in_progress",
+    output_file_id: b.outputFileId,
+    error_file_id: b.errorFileId,
+    created_at: Math.floor(b.createdAt / 1000),
+    in_progress_at: Math.floor(b.createdAt / 1000),
+    expires_at: Math.floor(b.createdAt / 1000) + 86_400,
+    completed_at: ended ? nowSec() : null,
+    request_counts: { total: b.requests.length, completed: ended ? (b.results?.length ?? 0) : 0, failed },
+    metadata: b.metadata,
+    ...(b.requests[0] && isObj(b.requests[0].body) && typeof b.requests[0].body.model === "string" ? { model: b.requests[0].body.model } : {}),
+  };
+}
+
+/** Run every request of a batch (once): result lines + (OpenAI) output / error files. */
+function finishBatch(ctx: Ctx, b: MockBatch): void {
+  if (b.results) return;
+  const lines: string[] = [];
+  const errs: string[] = [];
+  for (const r of b.requests) {
+    const cid = asStr(r.custom_id) ?? "";
+    if (b.api === "anthropic") {
+      const params = isObj(r.params) ? r.params : {};
+      if (b.canceled) {
+        lines.push(JSON.stringify({ custom_id: cid, result: { type: "canceled" } }));
+        continue;
+      }
+      const built = JSON.stringify(params).includes("[[batcherr]]") ? { error: "mock: request failed ([[batcherr]])" } : buildAnthropicMessage(ctx, params);
+      if ("error" in built) lines.push(JSON.stringify({ custom_id: cid, result: { type: "errored", error: { type: "error", error: { type: "invalid_request_error", message: built.error } } } }));
+      else lines.push(JSON.stringify({ custom_id: cid, result: { type: "succeeded", message: built.message } }));
+      continue;
+    }
+    const body = isObj(r.body) ? r.body : {};
+    if (b.canceled) {
+      errs.push(JSON.stringify({ id: `batch_req_${rid()}`, custom_id: cid, response: null, error: { code: "batch_cancelled", message: "This request was not executed because the batch was cancelled." } }));
+      continue;
+    }
+    if (JSON.stringify(body).includes("[[batcherr]]")) {
+      errs.push(JSON.stringify({ id: `batch_req_${rid()}`, custom_id: cid, response: { status_code: 400, request_id: `req_${rid()}`, body: { error: { message: "mock: request failed ([[batcherr]])", type: "invalid_request_error", param: null, code: null } } }, error: null }));
+      continue;
+    }
+    const p = b.endpoint === "/v1/responses" ? plan(extractResponses(body), "openai", undefined, outputCap(body)) : plan(extractOpenAIChat(body), "openai", undefined, outputCap(body));
+    const out: Obj =
+      b.endpoint === "/v1/responses"
+        ? { id: `resp_mock_${rid()}`, object: "response", status: "completed", model: body.model, output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: p.text }] }], usage: responsesUsage(p.usage) }
+        : { id: `chatcmpl-mock-${rid()}`, object: "chat.completion", created: nowSec(), model: body.model, choices: [{ index: 0, message: { role: "assistant", content: p.text }, finish_reason: "stop" }], usage: openaiUsage(p.usage) };
+    lines.push(JSON.stringify({ id: `batch_req_${rid()}`, custom_id: cid, response: { status_code: 200, request_id: `req_${rid()}`, body: out }, error: null }));
+  }
+  b.results = lines;
+  b.errors = errs;
+  if (b.api === "openai") {
+    const mk = (rows: string[], kind: string): string | null => {
+      if (!rows.length) return null;
+      const data = Buffer.from(rows.join("\n") + "\n");
+      const f = putFile(ctx, { id: mockFileId("openai"), owner: b.owner, api: "openai", filename: `${b.id}_${kind}.jsonl`, purpose: `batch_${kind}`, mime: "application/jsonl", bytes: data.length, sha256: createHash("sha256").update(data).digest("hex"), data });
+      return f.id;
+    };
+    b.outputFileId = mk(lines, "output");
+    b.errorFileId = mk(errs, "error");
+  }
+}
+
+async function handleBatches(ctx: Ctx, raw: Buffer): Promise<void> {
+  const { req, path, state } = ctx;
+  const method = (req.method ?? "GET").toUpperCase();
+  const api: MockBatch["api"] = path.startsWith("/v1/messages/") ? "anthropic" : "openai";
+  const root = api === "anthropic" ? "/v1/messages/batches" : "/v1/batches";
+  const body = (): Obj => {
+    try {
+      const v: unknown = raw.length ? JSON.parse(raw.toString("utf8")) : {};
+      return isObj(v) ? v : {};
+    } catch {
+      return {};
+    }
+  };
+  const view = (b: MockBatch) => (api === "anthropic" ? anthropicBatchObject(b, originOf(ctx)) : openaiBatchObject(b));
+  const notFound = (id: string) =>
+    api === "anthropic"
+      ? sendJson(ctx, 404, { type: "error", error: { type: "not_found_error", message: `Message batch not found: ${id}` }, request_id: `req_mock_${rid()}` })
+      : sendJson(ctx, 404, { error: { message: `No batch found with id '${id}'.`, type: "invalid_request_error", param: null, code: null } });
+
+  if (path === root) {
+    if (method === "GET") {
+      const mine = [...state.batches.values()].filter((b) => b.api === api && b.owner === ctx.cred).sort((a, b) => b.createdAt - a.createdAt);
+      const data = mine.map(view);
+      return sendJson(ctx, 200, api === "anthropic" ? { data, has_more: false, first_id: mine[0]?.id ?? null, last_id: mine[mine.length - 1]?.id ?? null } : { object: "list", data, has_more: false });
+    }
+    const b = body();
+    let requests: Obj[];
+    let endpoint = "/v1/messages";
+    let inputFileId: string | null = null;
+    if (api === "anthropic") {
+      requests = asArr(b.requests).filter(isObj);
+      if (!requests.length) return sendError(ctx, "invalid_request", "requests: Field required");
+    } else {
+      inputFileId = asStr(b.input_file_id) ?? null;
+      endpoint = asStr(b.endpoint) ?? "";
+      const f = inputFileId ? ownFile(ctx, "openai", inputFileId) : null;
+      if (!f || !f.data) return fileNotFound(ctx, inputFileId ?? "");
+      requests = f.data
+        .toString("utf8")
+        .split("\n")
+        .filter((l) => l.trim())
+        .map((l) => JSON.parse(l) as Obj);
+    }
+    const batch: MockBatch = {
+      id: api === "anthropic" ? `msgbatch_mock${rid()}` : `batch_mock${rid()}`,
+      api,
+      owner: ctx.cred,
+      createdAt: Date.now(),
+      requests,
+      endpoint,
+      inputFileId,
+      polls: 0,
+      slow: raw.includes("[[batchslow]]") || requests.some((r) => JSON.stringify(r).includes("[[batchslow]]")),
+      canceled: false,
+      results: null,
+      errors: null,
+      outputFileId: null,
+      errorFileId: null,
+      metadata: isObj(b.metadata) ? b.metadata : null,
+    };
+    state.batches.set(batch.id, batch);
+    return sendJson(ctx, 200, view(batch));
+  }
+
+  const m = new RegExp(`^${root.replace(/\//g, "\\/")}\\/([^/]+)(?:\\/(results|cancel))?$`).exec(path);
+  if (!m) return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
+  const id = decodeURIComponent(m[1]);
+  const b = state.batches.get(id);
+  if (!b || b.owner !== ctx.cred || b.api !== api) return notFound(id);
+  const sub = m[2];
+  if (sub === "cancel") {
+    b.canceled = true;
+    if (!b.slow) finishBatch(ctx, b);
+    return sendJson(ctx, 200, view(b));
+  }
+  if (sub === "results") {
+    if (!b.results) return sendError(ctx, "invalid_request", `Batch ${id} has not ended yet.`);
+    const delay = resolveDelay(req, null, noMarkers);
+    ctx.res.writeHead(200, { "content-type": "application/binary", ...idHeaders() });
+    ctx.phase = "streaming";
+    for (const line of b.results) {
+      if (!(await sleep(ctx, delay))) return;
+      if (ctx.res.destroyed) return;
+      await writeFlushed(ctx, ctx.res, line + "\n");
+      ctx.frames++;
+    }
+    ctx.res.end();
+    return;
+  }
+  if (method === "DELETE") {
+    if (!b.results) return sendError(ctx, "invalid_request", `Batch ${id} cannot be deleted while it is still processing.`);
+    state.batches.delete(id);
+    return sendJson(ctx, 200, { id, type: "message_batch_deleted" });
+  }
+  b.polls++;
+  if ((!b.slow || b.canceled) && b.polls >= 1) finishBatch(ctx, b);
+  return sendJson(ctx, 200, view(b));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // auth & dispatch
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -2279,7 +2504,8 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
     (method === "POST" && (postRoutes.has(path) || !!gem)) ||
     (method === "GET" && (path === "/v1/models" || !!modelOne || path === "/v1beta/models" || !!gemModelOne)) ||
     !!resp ||
-    isFilesPath(path);
+    isFilesPath(path) ||
+    isBatchesPath(path);
   if (!known) return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
 
   // --- auth (per-surface header style) ---
@@ -2306,7 +2532,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   ctx.cred = cred;
 
   // files referenced by the request must belong to this credential (the gateway has to pin the request to the right account)
-  if (method === "POST" && !isFilesPath(path) && /^application\/json/i.test(String(req.headers["content-type"] ?? "")) && raw.length > 0 && raw.length < 8 * 1024 * 1024) {
+  if (method === "POST" && !isFilesPath(path) && !isBatchesPath(path) && /^application\/json/i.test(String(req.headers["content-type"] ?? "")) && raw.length > 0 && raw.length < 8 * 1024 * 1024) {
     try {
       const v: unknown = JSON.parse(raw.toString("utf8"));
       for (const ref of referencedFiles(v)) {
@@ -2317,6 +2543,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
     }
   }
   if (isFilesPath(path)) return handleFilesApi(ctx, raw);
+  if (isBatchesPath(path)) return handleBatches(ctx, raw);
 
   // --- GETs / bodiless ---
   if (method === "GET") {

@@ -1,6 +1,7 @@
 import { safeEqual } from "@/lib/crypto";
 import { env, isProd } from "@/lib/env";
 import { runAllHealthChecks } from "@/gateway/health";
+import { sweepBatches } from "@/gateway/batches";
 import { sweepVideoJobs } from "@/gateway/video";
 import { replayDeadLetters } from "@/gateway/meter-writer";
 import { logger } from "@/lib/logger";
@@ -8,7 +9,8 @@ import { logger } from "@/lib/logger";
 /**
  * Cloud Scheduler -> POST/GET /api/cron/health every 5 minutes with `Authorization: Bearer $CRON_SECRET`.
  * Probes every upstream key of every active provider and updates Provider.healthStatus, and polls open video jobs
- * so jobs that failed upstream are refunded even if the customer never asks for their status again. It also replays
+ * so jobs that failed upstream are refunded even if the customer never asks for their status again, and polls open
+ * batches (Batch APIs: ended batches are metered, the holds of running ones kept in place). It also replays
  * the metering dead-letter file (rows that could not be written to the database earlier).
  */
 export const runtime = "nodejs";
@@ -32,11 +34,15 @@ async function run(req: Request): Promise<Response> {
       logger.warn("video sweep failed", { err });
       return { polled: 0, refunded: 0 };
     });
+    const batches = await sweepBatches().catch((err) => {
+      logger.warn("batch sweep failed", { err });
+      return { polled: 0, metered: 0, failed: 0 };
+    });
     const metering = await replayDeadLetters().catch((err) => {
       logger.warn("meter dead letter replay failed", { err });
       return { found: 0, replayed: 0, failed: 0 };
     });
-    return Response.json({ ok: true, ...res, videos, metering, ms: Date.now() - started }, { headers: { "cache-control": "no-store" } });
+    return Response.json({ ok: true, ...res, videos, batches, metering, ms: Date.now() - started }, { headers: { "cache-control": "no-store" } });
   } catch (err) {
     logger.error("health cron failed", { err });
     return Response.json({ ok: false, error: { code: "internal_error", message: "Health run failed" } }, { status: 500 });

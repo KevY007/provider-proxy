@@ -193,6 +193,49 @@ curl ${ctx.base}/videos/video_.../content -H "Authorization: Bearer ${KEY}" -o o
   );
 }
 
+export function batchesGuide(ctx: DocCtx) {
+  return (
+    <>
+      <P>
+        Both batch APIs are supported with the official SDKs: Anthropic Message Batches and the OpenAI Batch API. A batch runs asynchronously (usually within minutes,
+        at most 24 hours) and is billed at the <strong>batch price: 50% off input and output tokens</strong> (server tools such as web search are billed at their normal price).
+      </P>
+      <H2>Anthropic Message Batches</H2>
+      <Table
+        head={["Endpoint", "Purpose"]}
+        rows={[
+          [<C key="a">POST /v1/messages/batches</C>, <>Create a batch: <C key="a1">{"{\"requests\": [{\"custom_id\", \"params\"}]}"}</C>, where <C key="a2">params</C> is a normal Messages request.</>],
+          [<C key="b">GET /v1/messages/batches/{"{id}"}</C>, <>Status (<C key="b1">in_progress</C>, <C key="b2">canceling</C>, <C key="b3">ended</C>) and request counts.</>],
+          [<C key="c">GET /v1/messages/batches/{"{id}"}/results</C>, "Results as JSONL, one line per request, once the batch has ended."],
+          [<C key="d">POST /v1/messages/batches/{"{id}"}/cancel</C>, "Cancel; requests that have not run yet end as canceled (not billed)."],
+          [<C key="e">GET /v1/messages/batches</C>, "List your own batches (limit, before_id, after_id)."],
+          [<C key="f">DELETE /v1/messages/batches/{"{id}"}</C>, "Delete an ended batch."],
+        ]}
+      />
+      <CodeBlock
+        lang="bash"
+        code={`curl ${ctx.base}/messages/batches -H "x-api-key: ${KEY}" -H "anthropic-version: 2023-06-01" -H "Content-Type: application/json" \\
+  -d '{"requests": [{"custom_id": "q1", "params": {"model": "${ctx.m.claude}", "max_tokens": 1024, "messages": [{"role": "user", "content": "Hello"}]}}]}'`}
+      />
+      <H2>OpenAI Batch API</H2>
+      <P>
+        Upload a JSONL input file with <C>purpose=batch</C> through <C>POST /v1/files</C>, then create the batch with <C>POST /v1/batches</C> (<C>input_file_id</C>, <C>endpoint</C>,{" "}
+        <C>completion_window: &quot;24h&quot;</C>). Supported endpoints: <C>/v1/chat/completions</C>, <C>/v1/responses</C>, <C>/v1/embeddings</C>, <C>/v1/completions</C>,{" "}
+        <C>/v1/moderations</C>. Poll <C>GET /v1/batches/{"{id}"}</C>; when it is <C>completed</C>, download <C>output_file_id</C> (and <C>error_file_id</C>) with{" "}
+        <C>GET /v1/files/{"{id}"}/content</C>. <C>POST /v1/batches/{"{id}"}/cancel</C> and <C>GET /v1/batches</C> work as usual.
+      </P>
+      <H2>Rules</H2>
+      <UL>
+        <li>Every request in a batch is checked when you create it: an unknown model, a model your key may not use, or a model without batch support rejects the <strong>whole</strong> batch, and the error names the <C>custom_id</C>.</li>
+        <li>All models of one batch must be available through the same upstream; if they are not, split the batch by model.</li>
+        <li>When you create a batch, your balance must cover its worst case (every request at its <C>max_tokens</C>, batch price). That amount is held until the results are billed, then released. If the balance is too low you get <C>402 insufficient_balance</C>.</li>
+        <li>Each succeeded result is billed exactly once. Errored, canceled and expired requests are free. Results show up in your request logs with the batch id.</li>
+        <li>Batches and their result files are only visible to the account that created them. Any other key gets <C>404</C>.</li>
+      </UL>
+    </>
+  );
+}
+
 export function rateLimits() {
   return (
     <>

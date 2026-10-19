@@ -120,6 +120,18 @@ function filesUrl(i: UrlInput): string {
   }
 }
 
+/** URL of a Batch-API operation: Anthropic `/v1/messages/batches[/{id}[/results|/cancel]]`, OpenAI `/batches[/{id}[/cancel]]`. */
+function batchesUrl(i: UrlInput): string {
+  const { provider: p, format, op } = i;
+  const id = i.objectId ? `/${encodeURIComponent(i.objectId)}` : "";
+  const tail = op === "batches_results" ? "/results" : op === "batches_cancel" ? "/cancel" : "";
+  if (format === "anthropic_batches") {
+    const root = trimSlash(str(p.settings.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "");
+    return `${root}/v1/messages/batches${id}${tail}`;
+  }
+  return `${trimSlash(str(p.settings.openaiBaseUrl) ?? p.baseUrl)}/batches${id}${tail}`;
+}
+
 /** Operation as seen on the upstream wire (translated chat <-> messages share the "chat"/"messages" ops). */
 export function upstreamOp(inboundOp: Operation, upstream: InboundFormat): Operation {
   if (inboundOp === "chat" && upstream === "anthropic_messages") return "messages";
@@ -135,6 +147,9 @@ export function buildUpstreamUrl(i: UrlInput): string {
 
   if (op.startsWith("files_") || op.startsWith("uploads_") || op.startsWith("gfiles_") || op.startsWith("containers_")) {
     url = filesUrl(i);
+    if (i.query) url += (url.includes("?") ? "&" : "?") + i.query;
+  } else if (op.startsWith("batches_")) {
+    url = batchesUrl(i);
     if (i.query) url += (url.includes("?") ? "&" : "?") + i.query;
   } else if (format === "anthropic_messages") {
     const root = trimSlash(str(s.anthropicBaseUrl) ?? p.baseUrl).replace(/\/v1$/, "");
@@ -233,7 +248,7 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
     "user-agent": "ProviderProxy/1.0",
   };
   if (i.hasBody !== false) h["content-type"] = i.contentType || "application/json";
-  if (i.op === "videos_content" || i.op === "files_content" || i.op === "containers_file_content") {
+  if (i.op === "videos_content" || i.op === "files_content" || i.op === "containers_file_content" || i.op === "batches_results") {
     h.accept = "*/*";
     const range = i.inbound?.get("range");
     if (range) h.range = range;
