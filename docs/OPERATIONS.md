@@ -134,17 +134,16 @@ Logs are JSON lines on stdout, one object per line, with `severity` (`DEBUG` / `
 | `shutdown: draining` / `shutdown: exiting` (`activeRequests`, `forced`) | Deploys and scale-in. `forced: true` means streams were cut at the drain limit. |
 
 Suggested alerts: any `severity=ERROR` with `message=~"^METER_"`; a high rate of `gateway request failed`; uptime
-checks on `/api/healthz`; Cloud Scheduler job failures; Cloud SQL CPU and connections.
+checks on `/api/healthz`; Cloud Scheduler job failures (if used); Supabase database CPU, connections and pooler clients (dashboard > Observability).
 
 Business metrics live in the app (`/admin` overview, `/admin/analytics`): revenue, cost, profit, margin, error
 rate, p50/p95 latency.
 
 ## Data retention and backups
 
-- **Cloud SQL**: enable automated backups and point-in-time recovery
-  (`gcloud sql instances patch $SQL_INSTANCE --backup-start-time=03:00 --enable-point-in-time-recovery`). Test a
-  restore into a scratch instance now and then. On-demand: `gcloud sql backups create --instance=$SQL_INSTANCE`.
-- **Export**: `gcloud sql export sql $SQL_INSTANCE gs://BUCKET/proxy-$(date +%F).sql.gz --database=proxy`.
+- **Supabase**: the Pro plan takes daily backups (kept 7 days; Database > Backups in the dashboard, restore with one
+  click). Point-in-time recovery is a paid add-on. On-demand export: `pg_dump "$DIRECT_URL" -Fc -f proxy-$(date +%F).dump`
+  (from a machine that can reach the pooler). Test a restore into a scratch project now and then.
 - **`ENCRYPTION_KEY`**: back it up separately from the DB backups. A DB restore is useless for upstream keys and
   TOTP without it.
 - **Redis** holds only ephemeral state (slots, holds, caches, sticky Responses ids). It needs no backup. Losing it

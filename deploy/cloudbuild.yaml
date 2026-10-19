@@ -1,16 +1,15 @@
 # Cloud Build: build image -> push to Artifact Registry -> run migrations -> deploy Cloud Run.
 #
 #   gcloud builds submit --config deploy/cloudbuild.yaml \
-#     --substitutions=_REGION=us-central1,_REPO=providerproxy,_SERVICE=providerproxy,\
-# _SQL_INSTANCE=PROJECT:us-central1:providerproxy-db,_SA=providerproxy-run@PROJECT.iam.gserviceaccount.com
+#     --substitutions=_REGION=us-west1,_REPO=providerproxy,_SERVICE=providerproxy,\
+# _SA=providerproxy-run@PROJECT.iam.gserviceaccount.com
 #
-# Prerequisites (one-time) are in deploy/README.md: secrets, Cloud SQL, migration job, service account.
+# Prerequisites (one-time) are in deploy/README.md: Supabase database, secrets, migration job, service account.
 substitutions:
-  _REGION: us-central1
+  _REGION: us-west1
   _REPO: providerproxy
   _SERVICE: providerproxy
   _MIGRATE_JOB: providerproxy-migrate
-  _SQL_INSTANCE: ""
   _SA: ""
 
 options:

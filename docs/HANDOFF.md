@@ -13,7 +13,7 @@ OpenAI / Anthropic / Gemini-compatible endpoints (`/v1/*`, `/v1beta/*`); we forw
 (OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, OpenRouter, fal.ai, Replicate, Codex-Everywhere, any OpenAI-compatible URL), each with
 any number of upstream keys/accounts and concurrency slots. Every request is metered: customer price, our cost, profit, and the
 official list price (for customer-facing savings). Pay-as-you-go billing (Stripe), admin console, customer portal, public site + docs.
-Target hosting: Google Cloud Run + Cloud SQL Postgres (+ optional Memorystore Redis).
+Target hosting: Google Cloud Run + Supabase Postgres (+ optional Memorystore Redis). DNS on Cloudflare, mail via Resend SMTP.
 
 Stack: Next.js 16 App Router (TS strict, `src/`), Prisma 7.10 + Postgres 16, Redis 7 (optional, in-memory fallbacks), Tailwind v4 +
 shadcn (radix-nova), Recharts, Stripe, vitest. Custom h1+h2c server `server.mjs` in the container.

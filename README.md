@@ -11,7 +11,7 @@ the margin and the official list price, so customers can see their savings.
 
 Stack: Next.js 16 (App Router, TypeScript strict) - Prisma 7 + PostgreSQL 16 - Redis 7 (optional, every use has an
 in-memory fallback) - Tailwind v4 + shadcn/ui - Stripe - Vitest. It ships as one container (UI + gateway) on Google
-Cloud Run + Cloud SQL.
+Cloud Run, with the database on Supabase (any Postgres 16+ works).
 
 The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 
@@ -140,7 +140,9 @@ Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://proxy:proxy@localhost:5433/proxy` | Postgres connection |
+| `DATABASE_URL` | `postgresql://proxy:proxy@localhost:5433/proxy` | Postgres connection (Supabase: the IPv4 pooler URL; `?schema=name` for a dedicated schema) |
+| `DATABASE_CA_CERT` | unset | CA the database server must chain to (Supabase's certificate, PEM or base64): verify-full TLS |
+| `DIRECT_URL` | unset | Migrations only, when `DATABASE_URL` is a transaction pooler (Supabase: session pooler, port 5432) |
 | `DB_POOL_SIZE` | `20` | Postgres pool size per instance |
 | `REDIS_URL` | unset | Optional. Shared slots, holds, rate limits, balance cache and config invalidation. Without it these are in-memory and per instance. |
 | `APP_URL` | `http://localhost:3000` | Public base URL (links in emails, Stripe redirects) |
@@ -195,7 +197,7 @@ the `LIVE_*` keys and spend real money.
 
 ## Deploying
 
-Google Cloud Run (scales to zero by default) + Cloud SQL + Secret Manager (Memorystore Redis and Cloud Scheduler optional):
+Google Cloud Run (scales to zero by default) + Supabase Postgres + Secret Manager (Memorystore Redis and Cloud Scheduler optional):
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), with the full copy/paste walkthrough in
 [deploy/README.md](deploy/README.md). Any Docker host also works: set `POSTGRES_PASSWORD` (required) and the
 secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --build`.
