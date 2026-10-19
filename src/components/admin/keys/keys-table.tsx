@@ -10,7 +10,7 @@ import { FilterInput, FilterSelect, ResetFilters, useUrlFilters } from "@/compon
 import { fmtDate, timeAgo } from "@/components/admin/format";
 import { Badge } from "@/components/ui/badge";
 import type { ApiKeyRow } from "@/server/admin/keys-queries";
-import { ApiKeyActions } from "./key-actions";
+import { ApiKeyActions, RevealKey } from "./key-actions";
 
 export function KeysTable({
   rows,
@@ -38,7 +38,16 @@ export function KeysTable({
           </div>
         ),
       },
-      { accessorKey: "prefix", header: "Prefix", cell: ({ row }) => <code className="text-xs">{row.original.prefix}…</code> },
+      {
+        accessorKey: "prefix",
+        header: "Prefix",
+        cell: ({ row }) => (
+          <span className="inline-flex items-center gap-1 whitespace-nowrap">
+            <code className="text-xs">{row.original.prefix}…</code>
+            {row.original.status !== "REVOKED" && <RevealKey id={row.original.id} name={row.original.name} compact />}
+          </span>
+        ),
+      },
       {
         accessorKey: "email",
         header: "Owner",

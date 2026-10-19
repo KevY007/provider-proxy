@@ -128,10 +128,15 @@ It is also checked against the key's remaining spend limit and the customer's re
 - If it does not fit, the answer is **402 `insufficient_balance`** (or `spend_limit_reached`) in the native error
   shape, and **the upstream is never contacted**.
 - If the client set an output limit (any spelling), the hold covers exactly that, capped by the model or route
-  maximum.
-- If the client set no limit, the output is clamped to what is affordable, written into the upstream request: never
-  above the model/route maximum (16384 assumed when unknown) and never below 256 tokens. Below 256 the answer is 402.
-- **Stream cutoff**: when the accrued cost of a stream reaches the hold, the upstream is aborted and the stream ends
+  maximum. The client's limit itself is passed to the provider unchanged, even when it is above the catalog maximum
+  (the provider accepts it or answers with its own error, exactly as when called directly).
+- If the client set no limit, nothing is added to the request as long as the balance covers the model maximum (16384
+  assumed when unknown). Only when it does not is the output clamped to what is affordable, written into the upstream
+  request, never below 256 tokens (below 256 the answer is 402). This funds clamp is the only limit the gateway ever
+  writes into a request; keep in-house accounts postpaid or well funded so long generations are never clamped.
+- **Stream cutoff**: when the accrued cost of a stream clearly exceeds the hold (estimated at 4-5 characters per token,
+  with 25% headroom when a limit is enforced and 50% when none is, so a full-length answer is never cut), the upstream is
+  aborted and the stream ends
   with a native `insufficient_balance` error event. What was produced is metered. This is the gateway's one
   deliberate non-passthrough behaviour.
 - When the request is logged, the hold is **settled** (it becomes a pending debit until the meter writer commits it)

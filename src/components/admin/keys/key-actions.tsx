@@ -9,15 +9,25 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { useAction } from "@/components/admin/use-action";
 import { revealApiKey, setApiKeyStatus } from "@/server/admin/keys-actions";
 
-/** Admin-only: fetch the full key on demand (audited) and show it with a copy button. */
-function RevealKey({ id, name }: { id: string; name: string }) {
+/**
+ * Admin-only: fetch the full key on demand (audited) and show it with a copy button. `compact` is the icon-only
+ * variant shown next to a key's prefix, so it is visible without scrolling wide tables.
+ */
+export function RevealKey({ id, name, compact }: { id: string; name: string; compact?: boolean }) {
   const { run, pending } = useAction();
   const [key, setKey] = useState<string | null>(null);
+  const reveal = () => run(() => revealApiKey(id), { refresh: false, onOk: (d) => setKey(d?.key ?? null) });
   return (
     <>
-      <Button variant="ghost" size="sm" disabled={pending} onClick={() => run(() => revealApiKey(id), { refresh: false, onOk: (d) => setKey(d?.key ?? null) })}>
-        <Eye className="size-3.5" /> Reveal
-      </Button>
+      {compact ? (
+        <Button variant="ghost" size="icon-xs" className="size-6" disabled={pending} onClick={reveal} title="Reveal and copy key" aria-label="Reveal and copy key">
+          <Eye className="size-3.5" />
+        </Button>
+      ) : (
+        <Button variant="ghost" size="sm" disabled={pending} onClick={reveal}>
+          <Eye className="size-3.5" /> Reveal
+        </Button>
+      )}
       <Dialog open={key !== null} onOpenChange={(o) => !o && setKey(null)}>
         <DialogContent>
           <DialogHeader>
