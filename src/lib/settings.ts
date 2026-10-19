@@ -18,7 +18,7 @@ export interface SettingDef<T = unknown> {
   schema: z.ZodType<T>;
   label: string;
   description: string;
-  group: "access" | "billing" | "gateway" | "general";
+  group: "access" | "billing" | "gateway" | "monitoring" | "general";
   type: "boolean" | "number" | "string";
 }
 
@@ -61,7 +61,11 @@ export const SETTING_DEFS = {
   upstreamIdleTimeoutSec: def("number", "gateway", "Upstream stream idle timeout (s)", "Abort a stream when the upstream sends nothing for this long; the client connection is then dropped like on any upstream failure. 0 = never. A provider can override it with settings.idleTimeoutSec.", z.number().int().min(0).max(86400), 0),
   autoPriceSyncHours: def("number", "gateway", "Auto-updated prices: refresh after (hours)", "Routes with an auto-updated cost re-read the provider's published price at most this often - lazily, during a call on that route (nothing runs on a timer).", z.number().min(0.1).max(8760), 6),
   autoPriceSyncCalls: def("number", "gateway", "Auto-updated prices: refresh every N calls", "...or after this many calls on the route since the last refresh, whichever comes first.", z.number().int().min(1).max(10_000_000), 100),
-  activeHealthChecks: def("boolean", "gateway", "Active health probes", "Let the health cron send a tiny probe request to every upstream key. Off = key health and latency come only from real customer traffic (no request is ever made on a timer).", z.boolean(), false),
+  // --- monitoring (everything off by default: an idle server makes no request and runs no timer) ---
+  activeHealthChecks: def("boolean", "monitoring", "Uptime monitoring (timed pings)", "Every interval, check every upstream key with a free request (its model list) and record uptime + ping history, even when nobody calls. Off = health, uptime and latency come only from real customer calls and no provider is ever contacted on a timer. Needs a running instance (Cloud Run min-instances 1) or the Cloud Scheduler health job to fire while idle.", z.boolean(), false),
+  healthCheckIntervalMin: def("number", "monitoring", "Uptime ping interval (minutes)", "How often the timed pings run when uptime monitoring is on.", z.number().int().min(1).max(1440), 5),
+  backgroundJobs: def("boolean", "monitoring", "Background jobs on a timer", "Run upkeep (provider health from traffic, batch and video sweeps, metering dead-letter replay) and billing (auto-recharge, postpaid, stale payments) on a timer. Off = they run only while the server is handling calls or admin pages, at most every 5 minutes (billing: hourly), so an idle server stays idle.", z.boolean(), false),
+  maintenanceIntervalMin: def("number", "monitoring", "Background job interval (minutes)", "How often upkeep runs when background jobs are on (billing stays hourly).", z.number().int().min(1).max(1440), 5),
   // --- general ---
   siteName: def("string", "general", "Site name", "Shown in the UI, emails and page titles.", z.string().min(1).max(80), "ProviderProxy"),
   supportEmail: def("string", "general", "Support email", "Shown to customers for help; used as reply-to.", z.string().max(200), ""),

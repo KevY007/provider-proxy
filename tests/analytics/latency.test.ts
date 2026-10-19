@@ -8,6 +8,7 @@ import { db } from "@/lib/db";
 import { getLatencyBreakdown, getLatencyHistory, getLatencySummary } from "@/server/analytics/latency";
 import { refreshPassiveHealth } from "@/gateway/health";
 import { setSetting } from "@/lib/settings";
+import { getUptime, levelOf } from "@/server/admin/uptime-queries";
 
 vi.mock("server-only", () => ({}));
 
@@ -90,5 +91,28 @@ describe.skipIf(!dbOk)("latency from real traffic", () => {
     expect(body.checked).toBe(0);
     expect(body.skipped).toMatch(/off/);
     expect(await db.healthCheck.count({ where: { providerId } })).toBe(checks);
+  });
+
+  it("uptime history: calls and pings fill buckets; idle periods are 'no data', never 'up'", async () => {
+    await refreshPassiveHealth();
+    await db.healthCheck.create({ data: { providerId, providerKeyId: keyId, ok: false, latencyMs: 40, error: "timeout", source: "probe" } });
+    await db.healthCheck.create({ data: { providerId, providerKeyId: keyId, ok: true, latencyMs: 120, source: "probe" } });
+    const u = await getUptime("24h");
+    const p = u.providers.find((x) => x.id === providerId)!;
+    expect(p.buckets).toHaveLength(48);
+    const filled = p.buckets.filter((b) => b.level !== "nodata");
+    expect(filled.length).toBeGreaterThanOrEqual(1);
+    const last = filled[filled.length - 1];
+    expect(last.calls).toBe(4);
+    expect(last.pings).toBe(2);
+    expect(last.failedPings).toBe(1);
+    expect(last.pingMs).toBe(120); // average of successful pings
+    expect(last.pct).toBeCloseTo((5 / 6) * 100, 6);
+    expect(last.level).toBe("down"); // < 90%
+    expect(p.buckets[0].level).toBe("nodata");
+    expect(p.lastPingMs).toBe(120);
+    // traffic samples are recorded for history but not double counted as pings
+    expect(await db.healthCheck.count({ where: { providerId, source: "traffic" } })).toBeGreaterThanOrEqual(1);
+    expect([levelOf(null), levelOf(99.5), levelOf(95), levelOf(50)]).toEqual(["nodata", "up", "degraded", "down"]);
   });
 });

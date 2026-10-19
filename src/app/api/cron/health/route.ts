@@ -1,20 +1,15 @@
 import { safeEqual } from "@/lib/crypto";
 import { env, isDev } from "@/lib/env";
-import { refreshPassiveHealth, runAllHealthChecks } from "@/gateway/health";
-import { getSetting } from "@/lib/settings";
-import { sweepBatches } from "@/gateway/batches";
-import { sweepVideoJobs } from "@/gateway/video";
-import { replayDeadLetters } from "@/gateway/meter-writer";
 import { logger } from "@/lib/logger";
+import { runDueJobs } from "@/server/maintenance";
 
 /**
- * Cloud Scheduler -> POST/GET /api/cron/health every 5 minutes with `Authorization: Bearer $CRON_SECRET`.
- * Provider health: by default from REAL traffic only (refreshPassiveHealth - no upstream request is made). Only when an
- * admin enables "Active health probes" (setting activeHealthChecks) does it also probe every upstream key of every
- * active provider. It also polls open video jobs
- * so jobs that failed upstream are refunded even if the customer never asks for their status again, and polls open
- * batches (Batch APIs: ended batches are metered, the holds of running ones kept in place). It also replays
- * the metering dead-letter file (rows that could not be written to the database earlier).
+ * OPTIONAL Cloud Scheduler hook (`Authorization: Bearer $CRON_SECRET`), e.g. every 5 minutes. Nothing needs it: by
+ * default the same work runs while the server handles calls (server/maintenance.ts). Use it to keep upkeep and uptime
+ * pings going while nobody calls, without keeping an instance running.
+ *
+ * Runs "upkeep" (provider health from traffic, video + batch sweeps, metering dead-letter replay, history pruning) and,
+ * only when Settings > Monitoring > Uptime monitoring is on, "probes" (a free ping of every upstream key).
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,25 +27,13 @@ async function run(req: Request): Promise<Response> {
   if (!authorized(req)) return Response.json({ error: { code: "unauthorized", message: "Unauthorized" } }, { status: 401 });
   const started = Date.now();
   try {
-    const active = await getSetting("activeHealthChecks").catch(() => false);
-    const res = active ? await runAllHealthChecks() : { checked: 0, failed: 0, skipped: "active health probes are off" };
-    const passive = await refreshPassiveHealth().catch((err) => {
-      logger.warn("passive health refresh failed", { err });
-      return { updated: 0 };
-    });
-    const videos = await sweepVideoJobs().catch((err) => {
-      logger.warn("video sweep failed", { err });
-      return { polled: 0, refunded: 0 };
-    });
-    const batches = await sweepBatches().catch((err) => {
-      logger.warn("batch sweep failed", { err });
-      return { polled: 0, metered: 0, failed: 0 };
-    });
-    const metering = await replayDeadLetters().catch((err) => {
-      logger.warn("meter dead letter replay failed", { err });
-      return { found: 0, replayed: 0, failed: 0 };
-    });
-    return Response.json({ ok: true, ...res, passive, videos, batches, metering, ms: Date.now() - started }, { headers: { "cache-control": "no-store" } });
+    const jobs = await runDueJobs("cron", { only: ["upkeep", "probes"] });
+    const probes = jobs.find((j) => j.job === "probes");
+    const res = (probes?.result as { checked: number; failed: number } | undefined) ?? { checked: 0, failed: 0 };
+    return Response.json(
+      { ok: true, ...res, ...(probes?.ran ? {} : { skipped: "uptime monitoring is off" }), jobs, ms: Date.now() - started },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch (err) {
     logger.error("health cron failed", { err });
     return Response.json({ ok: false, error: { code: "internal_error", message: "Health run failed" } }, { status: 500 });

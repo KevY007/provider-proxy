@@ -25,6 +25,7 @@ const GROUPS: Array<{ id: string; title: string; description: string }> = [
   { id: "access", title: "Access", description: "Who can sign up and how they verify." },
   { id: "billing", title: "Billing", description: "Trial credit, top-up limits and balance rules." },
   { id: "gateway", title: "Gateway", description: "Routing, retries, concurrency and logging." },
+  { id: "monitoring", title: "Monitoring and background work", description: "Off by default: the server only does work while it handles calls, so an idle deployment costs (almost) nothing. Turn these on for 24/7 uptime checks and timed jobs." },
 ];
 
 export function SettingsForm({ fields, canEdit }: { fields: SettingField[]; canEdit: boolean }) {

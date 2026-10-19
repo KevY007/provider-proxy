@@ -19,7 +19,7 @@ describes the code as it stands.
 | UI | `src/app/admin`, `src/app/dashboard`, `src/app/(marketing)`, `src/app/(auth)` | Route guard in `src/proxy.ts` (Next 16 name for middleware) |
 | Data | PostgreSQL 16 via Prisma 7 (`@prisma/adapter-pg`) | Money is `Decimal(24,12)` in USD; prices are USD per 1M units |
 | Shared state | Redis 7 (optional) | Slots, holds, balance cache, rate limits, sticky responses, config invalidation. Each has an in-memory fallback. |
-| Crons | `src/app/api/cron/health`, `src/app/api/cron/billing` | Triggered by Cloud Scheduler with `Authorization: Bearer $CRON_SECRET` |
+| Background jobs | `src/server/maintenance.ts`, optional `src/app/api/cron/{health,billing}` | Activity-driven by default (no timers, no pings); optional timers and Cloud Scheduler routes |
 
 ```mermaid
 flowchart TB
@@ -191,7 +191,7 @@ health cron's `sweepVideoJobs()`) that sees `failed` refunds the charge exactly 
   `$METER_DEADLETTER_DIR/providerproxy-meter-deadletter.jsonl` (default: the OS temp dir) and logged as
   `METER_DEAD_LETTER` with severity ERROR and the full row. Its balance debit is applied through a minimal fallback
   update when possible (`debited: true`).
-- The file is replayed 3 s after start-up and by every `/api/cron/health` run (`replayDeadLetters()`). Rows are
+- The file is replayed 3 s after start-up and by every upkeep run (`replayDeadLetters()`). Rows are
   inserted with skipDuplicates, and already debited rows do not touch balances again. A row that fails 10 replays
   moves to `providerproxy-meter-poison.jsonl` (`METER_DEAD_LETTER_POISONED`).
 - On SIGTERM or exit the buffer is flushed (up to 8 s) and the rest is spilled to the dead-letter file.
@@ -214,15 +214,15 @@ This is a distributed counting semaphore. The pools are `key`, `user` and `group
 all-or-nothing by one Lua call. Leases live 60 s and are renewed every 20 s, so leaks self-heal. In memory the
 semantics are identical. Admins see live usage at `GET /api/admin/slots` (provider page, auto-refresh).
 
-## Crons
+## Background jobs
 
-| Route | Schedule | Does |
-|---|---|---|
-| `POST /api/cron/health` | every 5 min | Probes every non-disabled key of every ACTIVE provider (`HealthCheck` rows, provider health, revives INVALID/expired-COOLDOWN keys on success, marks INVALID/COOLDOWN on failure), prunes `HealthCheck` older than 14 days, `sweepVideoJobs()` (refunds failed jobs), `sweepBatches()`, `replayDeadLetters()` |
-| `POST /api/cron/billing` | hourly | `runBillingCron()` (only when Stripe is configured): auto-recharge sweep, postpaid settlement (each customer at most once per 20 h, min $1), reconciliation of `PENDING` payments older than 24 h. Then `sweepBatches()`. |
-
-Both accept GET or POST and require `Authorization: Bearer $CRON_SECRET`. The billing cron answers 503 when
-`CRON_SECRET` is unset. The health cron runs without a secret only when `NODE_ENV=development`.
+Cold by default: `upkeep` (health from traffic, video/batch sweeps, dead-letter replay, history pruning) and `billing`
+(auto-recharge, postpaid, stale payments) run as a side effect of activity (`noteActivity()` from the gateway after
+authentication and from the admin layout), throttled to every 5 minutes / hourly. `probes` (uptime pings) run only
+on a timer and only with `activeHealthChecks`. With `backgroundJobs` / `activeHealthChecks` on, an in-process timer
+(armed at start-up by `src/instrumentation.ts` and whenever settings change) runs them on the admin's intervals. The
+`/api/cron/health` and `/api/cron/billing` routes (`Authorization: Bearer $CRON_SECRET`) run the same jobs for Cloud
+Scheduler. Runs are claimed atomically in `JobRun`. Details: [OPERATIONS.md](OPERATIONS.md#background-jobs-cold-by-default).
 
 ## Other HTTP endpoints
 
