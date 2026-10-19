@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTransition } from "react";
-import { ChevronRight, Eye, Wallet, Zap } from "lucide-react";
+import { ChevronRight, Eye, Wallet } from "lucide-react";
+import { BrandMark } from "@/components/common/brand-mark";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -74,7 +75,7 @@ export function AppShell({
               <SidebarMenuButton size="lg" asChild tooltip={siteName}>
                 <Link href={variant === "admin" ? "/admin" : "/dashboard"}>
                   <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-                    <Zap className="size-4" />
+                    <BrandMark />
                   </div>
                   <div className="grid flex-1 text-left text-sm leading-tight">
                     <span className="truncate font-semibold">{siteName}</span>

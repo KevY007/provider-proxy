@@ -25,7 +25,7 @@ export function CodeBlock({ code, lang, title, className }: CodeBlockProps) {
     }
   }
   return (
-    <div className={cn("group relative my-4 overflow-hidden rounded-lg border bg-[oklch(0.14_0.02_258)] text-[oklch(0.92_0.01_250)]", className)}>
+    <div className={cn("group relative my-4 overflow-hidden rounded-lg border bg-[oklch(0.14_0.006_55)] text-[oklch(0.92_0.01_250)]", className)}>
       {(title || lang) && (
         <div className="flex items-center justify-between border-b border-white/10 px-4 py-2 text-xs text-white/60">
           <span className="truncate font-mono">{title ?? lang}</span>

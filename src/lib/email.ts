@@ -108,14 +108,14 @@ interface Layout {
 
 function layout({ siteName, preheader, title, body, cta, footer }: Layout): string {
   const button = cta
-    ? `<p style="margin:28px 0"><a href="${escapeHtml(cta.url)}" style="background:#10b981;color:#04130d;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;display:inline-block">${escapeHtml(cta.label)}</a></p>
-       <p style="font-size:12px;color:#6b7280;word-break:break-all">Or copy this link: <a href="${escapeHtml(cta.url)}" style="color:#059669">${escapeHtml(cta.url)}</a></p>`
+    ? `<p style="margin:28px 0"><a href="${escapeHtml(cta.url)}" style="background:#f86111;color:#150e0a;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px;display:inline-block">${escapeHtml(cta.label)}</a></p>
+       <p style="font-size:12px;color:#6b7280;word-break:break-all">Or copy this link: <a href="${escapeHtml(cta.url)}" style="color:#be4400">${escapeHtml(cta.url)}</a></p>`
     : "";
   return `<!doctype html><html><body style="margin:0;background:#f4f5f7;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111827">
 ${preheader ? `<div style="display:none;max-height:0;overflow:hidden">${escapeHtml(preheader)}</div>` : ""}
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:32px 12px">
 <table role="presentation" width="560" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border-radius:12px;border:1px solid #e5e7eb">
-<tr><td style="padding:24px 32px;border-bottom:1px solid #e5e7eb;font-weight:700;font-size:18px;color:#059669">${escapeHtml(siteName)}</td></tr>
+<tr><td style="padding:24px 32px;border-bottom:1px solid #e5e7eb;font-weight:700;font-size:18px;color:#be4400">${escapeHtml(siteName)}</td></tr>
 <tr><td style="padding:32px;font-size:15px;line-height:1.6">
 <h1 style="margin:0 0 16px;font-size:20px">${escapeHtml(title)}</h1>
 ${body}

@@ -38,6 +38,9 @@ export const SETTING_DEFS = {
   signupEnabled: def("boolean", "access", "Signups enabled", "Allow new customers to register.", z.boolean(), true),
   requireEmailVerification: def("boolean", "access", "Require email verification", "Customers must verify their email before they can log in and use API keys.", z.boolean(), true),
   requireStaffTwoFactor: def("boolean", "access", "Require 2FA for staff", "Admins and support staff must enable two-factor authentication before they can use the admin console.", z.boolean(), process.env.NODE_ENV === "production"),
+  publicPricing: def("boolean", "access", "Public pricing", "Show prices to visitors who are not signed in: the price table and savings on the home page, /pricing and the /api/pricing feed. Off: prices are only shown after signing in (customers still see their own prices in the dashboard).", z.boolean(), true),
+  publicModels: def("boolean", "access", "Public model list", "Show which models you offer (model names, counts and vendors on the home page, docs examples) to visitors who are not signed in. Off also hides public pricing, which lists every model. Signed-in customers always see the models they can use.", z.boolean(), true),
+  publicStatus: def("boolean", "access", "Public status page", "Show /status to visitors who are not signed in. Off: only signed-in users can open it.", z.boolean(), true),
   defaultGroupSlug: def("string", "access", "Default group slug", "Group (pool) assigned to new customers.", z.string().min(1).max(64), "standard"),
   // --- billing ---
   trialCredit: def("number", "billing", "Trial credit (USD)", "Credit granted when a customer verifies their email (or adds a card when required).", z.number().min(0).max(100000), 0),

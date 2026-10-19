@@ -1,10 +1,12 @@
 import type { Metadata } from "next";
+import { redirect } from "next/navigation";
 import { AlertTriangle, CheckCircle2, CircleHelp, XCircle } from "lucide-react";
 import { AutoRefresh } from "@/components/marketing/auto-refresh";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { vendorLabel } from "@/server/customer/labels";
 import { getStatusSnapshot } from "@/server/customer/status";
+import { publicVisibility } from "@/server/customer/visibility";
 import { LEVEL_LABEL, type DayBar, type StatusLevel } from "@/server/customer/status-calc";
 
 export const metadata: Metadata = { title: "Status", description: "Live availability of every model family." };
@@ -41,6 +43,8 @@ function Bars({ bars }: { bars: DayBar[] }) {
 }
 
 export default async function StatusPage() {
+  const vis = await publicVisibility();
+  if (!vis.status) redirect("/login?next=/status");
   const snap = await getStatusSnapshot();
   const Icon = ICON[snap.overall];
   const banner =
@@ -87,9 +91,11 @@ export default async function StatusPage() {
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-3">
                     <h2 className="text-lg font-medium">{vendorLabel(v.vendor)}</h2>
-                    <Badge variant="secondary" className="font-normal">
-                      {v.modelCount} {v.modelCount === 1 ? "model" : "models"}
-                    </Badge>
+                    {vis.models && (
+                      <Badge variant="secondary" className="font-normal">
+                        {v.modelCount} {v.modelCount === 1 ? "model" : "models"}
+                      </Badge>
+                    )}
                   </div>
                   <span className={cn("inline-flex items-center gap-1.5 text-sm font-medium", TEXT_COLOR[v.level])}>
                     <VIcon className="size-4" />
