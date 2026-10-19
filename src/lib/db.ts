@@ -16,6 +16,8 @@ function createClient() {
     max: env.DB_POOL_SIZE,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    // TCP keep-alive: idle pooled connections survive NAT / pooler idle cuts instead of failing on next use
+    keepAlive: true,
   });
   const pool = new pg.Pool(conn.pool);
   const schema = conn.schema;

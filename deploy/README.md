@@ -81,7 +81,8 @@ settings.
 
 Pool size per instance is `DB_POOL_SIZE`: keep `max-instances x DB_POOL_SIZE` under the project's pooler limits
 (pool size in Database settings > Connection pooling; max pooler clients per compute size). The lean profile uses
-1 instance x 10, which fits the smallest compute. Backups: the Pro plan takes daily backups (kept 7 days); point-in-time recovery is a paid add-on.
+1 instance x 8; leave headroom for the second instance that runs briefly during a rolling deploy and for the
+migration job (with the isolated role from `deploy/supabase-setup.sql`, connection limit 20: 2 x 8 + migrations fit). Backups: the Pro plan takes daily backups (kept 7 days); point-in-time recovery is a paid add-on.
 
 ## 4. Memorystore Redis (scale-out profile only)
 
@@ -206,7 +207,7 @@ gcloud run deploy $SERVICE \
   --timeout=3600 --concurrency=250 \
   --min-instances=0 --max-instances=1 \
   --no-cpu-throttling --cpu=1 --memory=1Gi --cpu-boost \
-  --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=10,TRUSTED_PROXY_HOPS=1" \
+  --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=8,TRUSTED_PROXY_HOPS=1" \
   --set-secrets="DATABASE_URL=DATABASE_URL:latest,DATABASE_CA_CERT=DATABASE_CA_CERT:latest,SESSION_SECRET=SESSION_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,CRON_SECRET=CRON_SECRET:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_PUBLISHABLE_KEY=STRIPE_PUBLISHABLE_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,SMTP_URL=SMTP_URL:latest" \
   --startup-probe=httpGet.path=/api/healthz,initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60 \
   --liveness-probe=httpGet.path=/api/healthz,periodSeconds=30
@@ -218,7 +219,7 @@ Scale-out profile (after step 4): change these flags and add the Redis secret:
   --max-instances=20 --cpu=2 --memory=2Gi \
   --network=default --subnet=default --vpc-egress=private-ranges-only \
   --set-secrets="...,REDIS_URL=REDIS_URL:latest" \
-  --set-env-vars="...,DB_POOL_SIZE=10"        # keep max-instances x DB_POOL_SIZE under the pooler limits (step 3)
+  --set-env-vars="...,DB_POOL_SIZE=8"        # keep max-instances x DB_POOL_SIZE under the pooler limits (step 3)
 ```
 
 Always on, no cold starts (e.g. while the service fronts your main app around the clock):

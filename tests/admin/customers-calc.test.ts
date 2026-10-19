@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  adjustBalanceSchema,
-  canManageTarget,
-  customerSettingsSchema,
-  parseAdjustmentAmount,
-  parseCustomerListParams,
-} from "@/server/admin/customers-calc";
+import { adjustBalanceSchema, canManageTarget, createCustomerSchema, customerSettingsSchema, deletedEmail, deletionMode, parseAdjustmentAmount, parseCustomerListParams, updateProfileSchema } from "@/server/admin/customers-calc";
 
 describe("parseCustomerListParams", () => {
   it("applies defaults and rejects junk", () => {
@@ -53,5 +47,31 @@ describe("canManageTarget", () => {
     expect(canManageTarget("SUPPORT", "ADMIN", "a", "b").ok).toBe(false);
     expect(canManageTarget("SUPPORT", "CUSTOMER", "a", "b").ok).toBe(true);
     expect(canManageTarget("ADMIN", "SUPPORT", "a", "b").ok).toBe(true);
+  });
+});
+
+describe("user management schemas", () => {
+  it("createCustomerSchema normalises and defaults", () => {
+    const d = createCustomerSchema.parse({ email: "  New@Example.COM ", name: "  ", initialCredit: "" });
+    expect(d).toMatchObject({ email: "new@example.com", name: null, role: "CUSTOMER", groupId: null, initialCredit: null, sendInvite: true });
+    expect(createCustomerSchema.parse({ email: "a@b.co", initialCredit: "12.5", role: "SUPPORT" })).toMatchObject({ initialCredit: "12.5", role: "SUPPORT" });
+  });
+
+  it("createCustomerSchema rejects bad input", () => {
+    expect(createCustomerSchema.safeParse({ email: "nope" }).success).toBe(false);
+    expect(createCustomerSchema.safeParse({ email: "a@b.co", initialCredit: "-5" }).success).toBe(false);
+    expect(createCustomerSchema.safeParse({ email: "a@b.co", role: "OWNER" }).success).toBe(false);
+  });
+
+  it("updateProfileSchema requires a user and a valid email", () => {
+    expect(updateProfileSchema.parse({ userId: "u1", email: "X@Y.io", name: " Ann " })).toEqual({ userId: "u1", email: "x@y.io", name: "Ann" });
+    expect(updateProfileSchema.safeParse({ userId: "", email: "x@y.io" }).success).toBe(false);
+  });
+
+  it("keeps billing history: anonymise instead of delete", () => {
+    expect(deletionMode({ ledger: 0, payments: 0 })).toBe("delete");
+    expect(deletionMode({ ledger: 1, payments: 0 })).toBe("anonymize");
+    expect(deletionMode({ ledger: 0, payments: 2 })).toBe("anonymize");
+    expect(deletedEmail("abc")).toBe("deleted-abc@deleted.invalid");
   });
 });

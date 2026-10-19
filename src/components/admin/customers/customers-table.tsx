@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { formatNumber } from "@/lib/utils";
 import type { CustomerRow } from "@/server/admin/customers-queries";
 import { GrantCreditDialog } from "./credit-dialogs";
+import { CreateUserDialog } from "./user-dialogs";
 
 export function CustomersTable({
   isAdmin = true,
@@ -118,6 +119,7 @@ export function CustomersTable({
             <FilterSelect param="dir" label="Order" allLabel="Highest first" options={[{ value: "asc", label: "Lowest first" }]} />
           )}
           <ResetFilters keys={["q", "status", "role", "group", "sort", "dir"]} />
+          {isAdmin && <CreateUserDialog groups={groups} />}
           <Button variant="outline" size="sm" asChild>
             <a href={`/admin/customers/export${exportQuery ? `?${exportQuery}` : ""}`}>
               <Download className="size-4" /> Export CSV
