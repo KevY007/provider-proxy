@@ -204,6 +204,8 @@ model ApiKey {
   name           String
   prefix         String // first 12 chars shown in UI, e.g. "sk-pp-AbCd12"
   keyHash        String    @unique // sha256(fullKey)
+  secretEncrypted String? // the full key, AES-GCM (ENCRYPTION_KEY), so admins can reveal it; null for keys created before
+
   status         KeyStatus @default(ACTIVE)
   groupId        String? // key-level group (pool) override; falls back to user.group then default group
   group          Group?    @relation(fields: [groupId], references: [id])

@@ -258,13 +258,14 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
       keyRemaining,
     });
     if (r.ok) {
-      // the hold only covers up to the declared maximum: a larger explicit limit is cut down to it so the upstream cannot exceed the hold
+      // 1:1 with the upstream: a client limit above the catalog maximum is passed through unchanged (the provider accepts it
+      // or answers with its own error); only a funds clamp is ever written into the request
       const overCap = plan.textOut && explicit !== null && plan.cap !== null && explicit > plan.cap;
-      const injectOutput = plan.textOut && (clamped || overCap) ? outTokens : null;
+      const injectOutput = plan.textOut && clamped ? outTokens : null;
       const enforced = plan.textOut && (explicit !== null || clamped || plan.enforcedByRoute);
       const notes: string[] = [];
       if (clamped) notes.push(`funds: output clamped from ${natural} to ${outTokens} tokens (hold ${amount.toFixed(6)} of ${formatUSD(r.available)} available)`);
-      if (overCap) notes.push(`funds: requested output limit ${explicit} cut to the model maximum ${outTokens}`);
+      if (overCap) notes.push(`funds: requested output limit ${explicit} is above the catalog maximum ${outTokens}; passed through unchanged`);
       ctx.funds = {
         hold: amount.gt(0) ? { id: ctx.requestId, userId: user.id, keyId: key.id, backend: r.backend, createdAt: Date.now() } : null,
         amount,
@@ -276,8 +277,9 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
         enforced,
         clamped,
         note: notes.length ? notes.join("; ") : null,
-        // an upstream that enforces the cap may legitimately end exactly at it: only cut well beyond (a runaway upstream)
-        cutAtTokens: plan.textOut ? Math.ceil(outTokens * n * (enforced ? 1.25 : 1)) : 0,
+        // only a runaway upstream is cut: an enforced cap may legitimately be reached exactly, and without one the
+        // chars/4 estimate can run ~30% above the real token count on prose, so leave room for a full-length answer
+        cutAtTokens: plan.textOut ? Math.ceil(outTokens * n * (enforced ? 1.25 : 1.5)) : 0,
         cut: false,
       };
       return;

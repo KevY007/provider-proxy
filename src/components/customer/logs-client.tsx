@@ -112,14 +112,16 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
         cell: ({ row }) => {
           const st = logStatusInfo(row.original.status, row.original.httpStatus);
           return (
-            <div className="flex items-center gap-2 whitespace-nowrap" title={st.hint}>
+            <div className="flex flex-col items-start gap-0.5 whitespace-nowrap" title={st.hint}>
               <StatusBadge status={row.original.status} label={st.label} tone={st.tone} dot={false} />
-              <span className="font-mono text-xs text-muted-foreground">{row.original.httpStatus}</span>
+              <span className="flex gap-1.5">
+                <span className="font-mono text-xs text-muted-foreground">{row.original.httpStatus}</span>
               {row.original.errorCode && (
                 <Link href={`/docs/errors#${row.original.errorCode}`} target="_blank" onClick={(e) => e.stopPropagation()} className="font-mono text-xs text-muted-foreground hover:text-foreground hover:underline">
                   {row.original.errorCode}
                 </Link>
               )}
+              </span>
             </div>
           );
         },
@@ -188,6 +190,7 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
           </a>
         </Button>
       </div>
+      <div className="[&_td]:px-2 [&_th]:px-2">
       <DataTable
         columns={columns}
         data={rows}
@@ -199,6 +202,7 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
         emptyDescription="Requests made with your API keys appear here. Try widening the date range or clearing filters."
         hideColumnToggle
       />
+      </div>
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>Showing {rows.length} request{rows.length === 1 ? "" : "s"}{nextCursor ? " (more available)" : ""}</span>
         <div className="flex items-center gap-2">

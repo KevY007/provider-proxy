@@ -5,7 +5,7 @@ import { headers } from "next/headers";
 import { z } from "zod";
 import { invalidateGatewayConfig } from "@/gateway/cache";
 import { audit } from "@/lib/audit";
-import { generateApiKey } from "@/lib/crypto";
+import { encrypt, generateApiKey } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { getClientIp } from "@/lib/http";
 import { toDbString } from "@/lib/money";
@@ -63,7 +63,7 @@ export async function createKeyAction(input: unknown): Promise<ActionResult<Crea
     const r = await resolveKeyFields(parsed.data, s.user.groupId);
     if (!r.ok) return fail(r.error, r.field ? { [r.field]: r.error } : undefined);
     const gen = generateApiKey();
-    const row = await db.apiKey.create({ data: { userId: s.user.id, keyHash: gen.hash, prefix: gen.prefix, ...dataFor(parsed.data, r.groupId) } });
+    const row = await db.apiKey.create({ data: { userId: s.user.id, keyHash: gen.hash, prefix: gen.prefix, secretEncrypted: encrypt(gen.key), ...dataFor(parsed.data, r.groupId) } });
     await invalidateGatewayConfig("apiKeys", row.id);
     await audit(s.user.id, "apikey.create", { type: "ApiKey", id: row.id }, { name: row.name }, getClientIp(await headers()));
     revalidatePath("/dashboard/keys");

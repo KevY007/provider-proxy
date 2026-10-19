@@ -70,10 +70,10 @@ export const KNOWN_PRICES: KnownPrice[] = [
   chat("openai", "gpt-6-astra", 10, 50, 1, { displayName: "GPT-6 Astra", description: "OpenAI flagship reasoning model.", contextWindow: 1_000_000, maxOutput: 128_000, source: SEED, needsReview: true }),
   chat("openai", "gpt-6.1-sol", 2, 10, 0.1, { displayName: "GPT-6.1 Sol", description: "Balanced GPT-6.1 model for everyday workloads.", contextWindow: 1_000_000, maxOutput: 128_000, source: SEED, needsReview: true }),
   chat("openai", "gpt-6-sol", 2, 10, 0.2, { displayName: "GPT-6 Sol", description: "Balanced GPT-6 model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-6-luna", 0.1, 0.5, 0.01, { displayName: "GPT-6 Luna", description: "Fast, low-cost GPT-6 model.", contextWindow: 400_000, maxOutput: 64_000, source: SEED, needsReview: true }),
+  chat("openai", "gpt-6-luna", 0.1, 0.5, 0.01, { displayName: "GPT-6 Luna", description: "Fast, low-cost GPT-6 model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
   chat("openai", "gpt-5.6-sol", 5, 30, 0.5, { displayName: "GPT-5.6 Sol", description: "GPT-5.6 high-capability model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
   chat("openai", "gpt-5.6-terra", 2, 12, 0.2, { displayName: "GPT-5.6 Terra", description: "GPT-5.6 mid-tier model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-5.6-luna", 0.2, 1.2, 0.02, { displayName: "GPT-5.6 Luna", description: "GPT-5.6 small, fast model.", contextWindow: 400_000, maxOutput: 64_000, source: SEED, needsReview: true }),
+  chat("openai", "gpt-5.6-luna", 0.2, 1.2, 0.02, { displayName: "GPT-5.6 Luna", description: "GPT-5.6 small, fast model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
   k("openai", "gpt-image-2", { image: 0.04 }, { displayName: "GPT Image 2", description: "Image generation and editing (flat per image).", capabilities: ["images"], contextWindow: 32_000, source: SEED, needsReview: true }),
   k("openai", "sora-2", { perSecond: 0.1 }, { displayName: "Sora 2", description: "Text/image-to-video generation with synced audio (720p, 4-12 s).", capabilities: ["video"], retiresAt: "2026-09-24", source: LIST }),
   // ---- GPT-5 family

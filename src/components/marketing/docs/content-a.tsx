@@ -280,6 +280,10 @@ export function openaiModels(ctx: DocCtx) {
         <C>anthropic-version</C> header. <C>GET /v1beta/models</C> returns the Gemini shape.
       </P>
       <CodeBlock lang="bash" code={`curl ${ctx.base}/models -H "Authorization: Bearer ${KEY}"`} />
+      <P>
+        Each model includes its context length, maximum output and your live prices (<C>pricing</C> and <C>x_pricing</C>); see{" "}
+        <Link className="text-primary underline-offset-4 hover:underline" href="/docs/pricing-api">Pricing API</Link>.
+      </P>
     </>
   );
 }

@@ -28,6 +28,7 @@ const RENDER: Record<string, (ctx: DocCtx) => ReactNode> = {
   batches: B.batchesGuide,
   "rate-limits": () => B.rateLimits(),
   billing: () => B.billing(),
+  "pricing-api": B.pricingApi,
   errors: () => B.errors(),
   "clients/codex-cli": B.codexCli,
   "clients/claude-code": B.claudeCode,
