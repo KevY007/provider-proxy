@@ -213,7 +213,10 @@ export async function resetPasswordAction(input: unknown): Promise<ActionResult>
 
 async function withUser<T>(fn: (s: Awaited<ReturnType<typeof requireUserForAction>>) => Promise<ActionResult<T>>): Promise<ActionResult<T>> {
   try {
-    return await fn(await requireUserForAction());
+    const s = await requireUserForAction();
+    // account security belongs to the account owner, not to staff viewing the account
+    if (s.impersonatorId) return failure("Account security settings cannot be changed while impersonating.");
+    return await fn(s);
   } catch (err) {
     if (err instanceof AuthError) return failure(err.message);
     logAuthError("account action", err);
@@ -295,9 +298,11 @@ export async function stopImpersonationAction(): Promise<ActionResult<{ redirect
   const adminId = s.impersonatorId;
   const { ip, userAgent } = await meta();
   await destroyCurrentSession();
-  const admin = await db.user.findUnique({ where: { id: adminId }, select: { id: true, status: true, role: true } });
+  const admin = await db.user.findUnique({ where: { id: adminId }, select: { id: true, status: true, role: true, totpEnabled: true } });
   if (!admin || admin.status !== "ACTIVE" || admin.role === "CUSTOMER") return { ok: true, data: { redirectTo: "/login" } };
-  await createSession(admin.id, { ip, userAgent });
+  // the admin session is re-created from an impersonation cookie: with 2FA on, the code is asked again
+  await createSession(admin.id, { ip, userAgent, twoFactorPassed: !admin.totpEnabled });
   await audit(admin.id, "admin.impersonation_stop", { type: "User", id: s.user.id }, {}, ip);
-  return { ok: true, data: { redirectTo: `/admin/customers/${s.user.id}` } };
+  const back = `/admin/customers/${s.user.id}`;
+  return { ok: true, data: { redirectTo: admin.totpEnabled ? `/login/2fa?next=${encodeURIComponent(back)}` : back } };
 }

@@ -5,8 +5,9 @@ type HeaderReader = { get(name: string): string | null };
 /**
  * Best-effort client IP from `x-forwarded-for`.
  * Behind N trusted proxies (TRUSTED_PROXY_HOPS, Cloud Run = 1) the real client is the Nth entry from
- * the RIGHT - anything further left is client-controlled and spoofable.
- * Falls back to x-real-ip, then "unknown".
+ * the RIGHT - anything further left is client-controlled and spoofable. With TRUSTED_PROXY_HOPS=0 (nothing in front
+ * of the app) server.mjs replaces the header with the socket address, so it is never client-controlled.
+ * `x-real-ip` is NOT used: no proxy we deploy behind sets it, so it would be whatever the client sent.
  */
 export function getClientIp(headers: HeaderReader): string {
   const xff = headers.get("x-forwarded-for");
@@ -20,7 +21,7 @@ export function getClientIp(headers: HeaderReader): string {
       return parts[Math.max(0, parts.length - hops)];
     }
   }
-  return headers.get("x-real-ip")?.trim() || "unknown";
+  return "unknown";
 }
 
 /**
@@ -59,6 +60,14 @@ export function assertSameOrigin(req: Request, opts: { allowMissing?: boolean } 
 /** Only allow same-site relative redirect targets (prevents open redirects via ?next=). */
 export function safeNextPath(next: string | null | undefined, fallback = "/dashboard"): string {
   if (!next) return fallback;
-  if (!next.startsWith("/") || next.startsWith("//") || next.includes("\\")) return fallback;
-  return next;
+  // control characters are dropped by URL parsers: "/\t/evil.com" would become "//evil.com"
+  if (!next.startsWith("/") || next.startsWith("//") || next.includes("\\") || /[\u0000-\u001f\u007f]/.test(next)) return fallback;
+  try {
+    const base = new URL("http://app.invalid");
+    const u = new URL(next, base);
+    if (u.origin !== base.origin) return fallback;
+    return `${u.pathname}${u.search}${u.hash}`;
+  } catch {
+    return fallback;
+  }
 }

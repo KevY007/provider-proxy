@@ -261,7 +261,16 @@ async function writeRow(e: MeterEntry): Promise<void> {
     }
   }
   if (isForeignKeyError(err) && (e.userId || e.apiKeyId || e.providerKeyId)) {
-    // the user / key / provider was deleted meanwhile: keep the log but drop the dangling references
+    // a provider / provider key was deleted meanwhile: drop those references but keep the user's debit
+    try {
+      const noProvider: MeterEntry = { ...e, log: { ...e.log, providerId: null, providerKeyId: null }, providerKeyId: null };
+      await writeBatch([noProvider]);
+      logger.warn("meter entry written without provider references (FK target deleted)", { requestId: e.log.id, err });
+      return;
+    } catch {
+      /* the user / key itself is gone: fall through */
+    }
+    // the user / key was deleted meanwhile: keep the log but drop the dangling references
     // (nothing can be debited from a user that no longer exists)
     try {
       const stripped: MeterEntry = {
@@ -374,6 +383,9 @@ async function applyFinancialsOnly(e: MeterEntry): Promise<{ debited: boolean; b
 
 async function writeBatch(batch: MeterEntry[], opts: { financials?: boolean } = {}): Promise<void> {
   if (!batch.length) return;
+  // the same log id twice in one flush (two metering runs of one batch result) must be charged once: the insert skips the duplicate
+  const seen = new Set<string>();
+  batch = batch.filter((b) => !seen.has(b.log.id as string) && !!seen.add(b.log.id as string));
   const financials = opts.financials !== false;
   const result = await db.$transaction(async (tx) => {
     const created = await tx.requestLog.createManyAndReturn({ data: batch.map((b) => b.log), skipDuplicates: true, select: { id: true } });
@@ -504,7 +516,7 @@ function appendRecords(records: DeadLetterRecord[], fileName = DEADLETTER_FILE):
   try {
     const file = path.join(path.dirname(deadLetterPath()), fileName);
     mkdirSync(path.dirname(file), { recursive: true });
-    appendFileSync(file, records.map((r) => JSON.stringify(r)).join("\n") + "\n", "utf8");
+    appendFileSync(file, records.map((r) => JSON.stringify(r)).join("\n") + "\n", { encoding: "utf8", mode: 0o600 });
     return true;
   } catch (err) {
     logger.error("METER_DEAD_LETTER_FILE_WRITE_FAILED", { err, rows: records.length });
@@ -523,7 +535,8 @@ function deadLetter(e: MeterEntry, reason: string, debited: boolean): void {
     providerKeyId: e.providerKeyId,
     price: e.price.toString(),
     cost: e.cost.toString(),
-    entry: JSON.stringify(e.log),
+    // (no request / response bodies: customer content must not end up in Cloud Logging)
+    entry: JSON.stringify({ ...e.log, requestBody: undefined, responseBody: undefined }),
   });
   appendRecords([toRecord(e, reason, debited)]);
 }

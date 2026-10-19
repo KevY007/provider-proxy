@@ -42,7 +42,9 @@ function load(): Env {
   if (!parsed.success) {
     const msg = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
     console.error(JSON.stringify({ severity: "ERROR", message: `Invalid environment: ${msg}` }));
-    if (process.env.NODE_ENV === "production" && process.env.NEXT_PHASE !== "phase-production-build") {
+    // only local dev / tests may boot on defaults; anything else (production, or a typo like NODE_ENV=staging) fails
+    const local = process.env.NODE_ENV === undefined || process.env.NODE_ENV === "development" || process.env.NODE_ENV === "test";
+    if (!local && process.env.NEXT_PHASE !== "phase-production-build") {
       throw new Error(`Invalid environment: ${msg}`);
     }
     return schema.parse({});

@@ -1,7 +1,8 @@
 # ProviderProxy — Handoff & Continuation Guide
 
-**Read this first.** It is written for a new agent or cloud session picking the project up cold. Last updated 2026-10-19 at commit
-`780d14a` on branch `feat/initial-build` (plus this doc).
+**Read this first.** It is written for a new agent or cloud session picking the project up cold. Originally written at `780d14a`;
+**§5-§6 updated 2026-10-19** after Steps A, B, D and E were completed in a cloud session on branch `claude/task-49gbi5`
+(same history as `feat/initial-build` plus the new commits - fast-forward `feat/initial-build` to it, or open the PR from it).
 
 ---------------------------------------------------------------------------------------------------------------------------------
 
@@ -86,13 +87,18 @@ Running several dev servers from one checkout: `NEXT_DIST_DIR=.next-<name> pnpm 
 | 3 Live providers (OpenAI/Anthropic/fal/Replicate), video API, UI QA | ✅ |
 | 4 Pricing transparency, funds reservations, durable metering, guided admin setup, savings totals, OpenRouter/LiteLLM pricing endpoints | ✅ |
 | 4b Faithful connection fidelity, keep-alive, h2c, unlimited bodies, Files APIs, chaos suite | ✅ (`docs/CONNECTION-FIDELITY.md`) |
-| 4c Live real-world workload (techpack SVG/PDF, agents, Claude Code CLI) | ✅ run; bug fixes **in progress** (below) |
-| Batch API | 🟡 foundation only |
-| 6 Security audit | ⬜ not started |
-| 5 Full docs + `.github` + final push | ⬜ not started |
+| 4c Live real-world workload (techpack SVG/PDF, agents, Claude Code CLI) | ✅ run; all bug fixes done (mock-verified) |
+| Step A: server-tool editors, tool usage in logs, pricing / default-policy tests | ✅ |
+| Batch API (Anthropic + OpenAI, exactly-once metering) | ✅ `src/gateway/batches.ts`, `tests/gateway/batches.test.ts`, `/docs/batches` |
+| Step C: live re-verification | ⬜ **pending** - needs the owner's `LIVE_*` keys (not available in cloud sessions) |
+| 6 Security audit | ✅ `docs/SECURITY-AUDIT.md` (fixes + `tests/security/audit-regressions.test.ts`; open items listed there) |
+| 5 Full docs + `.github` | ✅ README, `docs/*` guides, CI, templates, CODEOWNERS, dependabot, LICENSE, SECURITY/CONTRIBUTING |
 
-Last verified gates at `780d14a`: `tsc` clean, `pnpm lint` 0 errors, `pnpm test` 682 passed / 1 skipped. **`pnpm build` not re-run since
-the last fix batch** — run it first.
+Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 750 passed / 1 skipped,
+`pnpm build` OK, `pnpm loadtest` (small N) OK.
+
+**What is left:** Step C live run (below), owner follow-ups in `docs/SECURITY-AUDIT.md`, update PR #1's description and mark it
+ready (the PR's head is `feat/initial-build`), remove the old worktree on the owner's PC, rotate the live keys after testing.
 
 ## 6. Exactly where to resume (do these in order)
 

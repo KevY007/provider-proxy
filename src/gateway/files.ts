@@ -7,7 +7,7 @@ import type { ConfigSnapshot, GroupRec, ModelRec, ProviderRec, RouteRec } from "
 import { inboundBody, requestEncodings } from "./bodyin";
 import { logOutcome, withCommon, type Ctx } from "./context";
 import { GatewayError } from "./errors";
-import { handleBatchOk, maskedJsonl, type BatchMeta } from "./batches";
+import { ensureMetered, handleBatchOk, maskedJsonl, type BatchMeta } from "./batches";
 import { execute, handleBinary, type AttemptResult, type Fail, type Rec } from "./execute";
 import type { GeneratedFile } from "./generated-files";
 import { forwardUpstreamHeaders } from "./headers";
@@ -131,6 +131,11 @@ export async function handleRaw(ctx: Ctx): Promise<Response> {
       if (!url) throw notFound(ctx, "file", uploadId);
       st.sessionUrl = url;
     }
+  }
+  if (row && path.op === "files_delete" && typeof metaOf(row).batchOutputOf === "string") {
+    // the results of a batch are billed from this file: it can only go once the batch is metered
+    const batch = await db.upstreamObject.findFirst({ where: { kind: "batch", upstreamId: metaOf(row).batchOutputOf as string, providerId: row.providerId } });
+    if (batch) await ensureMetered(batch);
   }
   if (row) {
     st.row = row;

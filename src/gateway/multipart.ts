@@ -153,9 +153,11 @@ export class MultipartScanner {
             return;
           }
           const head = this.buf.toString("utf8", 0, i);
-          const name = /name="((?:[^"\\]|\\.)*)"/i.exec(head)?.[1];
+          // name / filename come from the Content-Disposition header only (a `name=` parameter in another header must not count)
+          const cd = /^content-disposition:([^\r\n]*)$/im.exec(head)?.[1] ?? "";
+          const name = /(?:^|;)\s*name="((?:[^"\\]|\\.)*)"/i.exec(cd)?.[1];
           if (name === undefined) throw new MultipartError();
-          const filename = /filename="((?:[^"\\]|\\.)*)"/i.exec(head)?.[1] ?? (/filename=([^;\r\n]+)/i.exec(head)?.[1] ?? null);
+          const filename = /(?:^|;)\s*filename="((?:[^"\\]|\\.)*)"/i.exec(cd)?.[1] ?? (/(?:^|;)\s*filename=([^;\r\n]+)/i.exec(cd)?.[1] ?? null);
           const type = /^content-type:\s*([^\r\n]+)/im.exec(head)?.[1]?.trim() ?? "";
           this.part = { name, filename, type, contentStart: this.base + i + 4, size: 0, chunks: [], truncated: false };
           this.consume(i + 4);
@@ -191,6 +193,8 @@ export class MultipartScanner {
   }
 }
 
+const SINGLE_FIELDS = ["model", "n", "seconds", "size", "quality", "response_format"];
+
 /** Spool + scan a multipart upload in one streaming pass. Throws MultipartError for a malformed body. */
 export async function readMultipart(stream: ReadableStream<Uint8Array> | null, contentType: string, o: Omit<SpoolOptions, "onChunk"> = {}): Promise<ParsedForm> {
   const boundary = boundaryOf(contentType);
@@ -200,6 +204,13 @@ export async function readMultipart(stream: ReadableStream<Uint8Array> | null, c
   if (!scanner.complete) {
     await spool.dispose();
     throw new MultipartError();
+  }
+  // fields that decide routing / billing must be unambiguous (parsers disagree on first-vs-last occurrence)
+  for (const n of SINGLE_FIELDS) {
+    if (scanner.fields.filter((f) => f.name === n).length > 1) {
+      await spool.dispose();
+      throw new MultipartError(`The form field '${n}' must be sent only once.`);
+    }
   }
   return { fields: scanner.fields, files: scanner.files, order: scanner.order, spool, contentType, boundary, closeStart: scanner.closeStart };
 }

@@ -1,117 +1,235 @@
 # ProviderProxy
 
-A metered, multi-provider AI gateway. Customers get **our** API keys and call **our** endpoints in
-OpenAI / Anthropic / Gemini format; requests are forwarded to upstream providers (OpenAI, Anthropic,
-Google, xAI, Groq, DeepSeek, OpenRouter, any OpenAI-compatible URL...) that an admin configures at
-runtime, each with any number of upstream keys. Every request is metered: customers are charged the
-**sell price**, we record the **cost price** and the profit.
+A metered, multi-provider AI gateway: "be the AI provider for your customers".
 
-Stack: Next.js 16 (App Router) - TypeScript - Tailwind v4 + shadcn/ui - PostgreSQL 16 + Prisma 7 -
-Redis (optional) - Stripe. Deployed as one container on Google Cloud Run.
+Customers sign up, add credit and create `sk-pp-...` API keys. They call **one base URL** with the API format they
+already use (OpenAI `/v1/*`, Anthropic `/v1/messages`, Gemini `/v1beta/*`). The gateway forwards each request to an
+upstream provider that an admin configured at runtime (OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, Mistral,
+Together, Fireworks, OpenRouter, Azure OpenAI, fal.ai, Replicate, Codex-Everywhere or any OpenAI-compatible URL). Each
+provider can have any number of upstream keys/accounts. Every request is metered with the customer price, our cost,
+the margin and the official list price, so customers can see their savings.
 
-The authoritative design/contract is **[docs/PLAN.md](docs/PLAN.md)**.
+Stack: Next.js 16 (App Router, TypeScript strict) - Prisma 7 + PostgreSQL 16 - Redis 7 (optional, every use has an
+in-memory fallback) - Tailwind v4 + shadcn/ui - Stripe - Vitest. It ships as one container (UI + gateway) on Google
+Cloud Run + Cloud SQL.
 
-> **Continuing development?** Start with **[docs/HANDOFF.md](docs/HANDOFF.md)** — current status, owner decisions, bring-up steps and
-> exactly where to resume.
+The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 
-## Local setup
+## Features
 
-Requires Node 24, pnpm 11, Docker.
+**Gateway**
+- OpenAI-compatible: chat completions, completions, Responses (plus get/delete/cancel/input_items), embeddings, images
+  (generations / edits / variations), audio (speech / transcriptions / translations), moderations, videos (Sora-style
+  job API), Files + Uploads, Batch, models list.
+- Anthropic-compatible: Messages, count_tokens, Files, Message Batches.
+- Gemini-compatible: `generateContent`, `streamGenerateContent`, `countTokens`, `embedContent`, `batchEmbedContents`,
+  `models`, Files + resumable upload.
+- Translation between OpenAI chat and Anthropic Messages, both directions, streaming included. A Claude model can be
+  called with the OpenAI SDK, and a GPT model can be called with the Anthropic SDK.
+- Model control: the public model slug can map to any provider and upstream model through weighted, prioritised
+  routes. Routes can be limited to pools, carry param overrides and output clamps, and the upstream model name is
+  masked in responses.
+- Failover across upstream keys and routes before the response is committed. Key health tracking (cooldown on 429,
+  INVALID on repeated 401/403, cooldown after repeated 5xx).
+- Concurrency slots per upstream key, provider, customer key, customer and pool. Requests queue for a free upstream
+  slot. Requests-per-minute and tokens-per-minute limits.
+- Faithful 1:1 proxying: client aborts abort the upstream request, upstream failures are mirrored to the client in
+  native shape, nothing is compressed, request bodies have no size limit and are streamed, and idle SSE streams get
+  keep-alive comments. Evidence is in [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md).
+- Funds protection: credit holds are placed before any upstream call. When funds are short the gateway answers 402
+  without contacting the upstream, and a stream stops when it reaches its hold.
+- Durable batched metering writer with a dead-letter file and replay.
 
-```bash
-docker compose up -d                 # postgres :5433, redis :6380
-pnpm install                         # also runs `prisma generate`
-node scripts/init-env.mjs            # or: cp .env.example .env  (then fill SESSION_SECRET / ENCRYPTION_KEY)
-pnpm db:migrate                      # apply migrations
-pnpm db:seed                         # settings, groups, providers, model catalog, admin, demo data
-pnpm dev                             # http://localhost:3000
-pnpm mock:upstream                   # (second terminal) fake OpenAI/Anthropic/Gemini upstream on :4010
+**Billing**
+- Prepaid pay-as-you-go with Stripe top-ups (saved card or Checkout), auto-recharge, low-balance emails, postpaid
+  customers with a credit limit, redeem codes, trial credit, refunds and chargebacks, and a full ledger.
+- Pricing rules per model: fixed, percent of official, or markup over cost. Pools (groups) and per-customer
+  multipliers, long-context multipliers, cache read/write prices, server-tool prices and Batch API discounts.
+
+**Apps**
+- Admin console (`/admin`): overview, analytics, providers and keys with live slot usage, models and routes with a
+  guided "Add model" wizard, groups, customers (credits, limits, impersonation), API keys, request logs, billing,
+  status, settings and the audit log.
+- Customer portal (`/dashboard`): overview with savings, API keys, usage, logs, playground (chat and images), models
+  and pricing, billing and account settings with 2FA.
+- Public site: landing page, `/pricing`, `/status` and the customer API docs at **`/docs`**.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  C[Customer SDK / CLI] -->|/v1, /v1beta, /upload| G
+  B[Browser] -->|/admin, /dashboard, /docs| UI
+  subgraph Container["One container (server.mjs: HTTP/1.1 + h2c)"]
+    UI[Next.js App Router UI + server actions]
+    G[Gateway handle&#40;Request&#41;]
+    MW[Meter writer]
+  end
+  G -->|undici keep-alive pool| U[(Upstream providers)]
+  G --> MW --> PG[(PostgreSQL)]
+  UI --> PG
+  G <-.->|slots, holds, rate limits, cache invalidation| R[(Redis, optional)]
+  S[Cloud Scheduler] -->|/api/cron/health every 5 min, /api/cron/billing hourly| UI
+  ST[Stripe] -->|/api/stripe/webhook| UI
 ```
 
-Seeded logins (dev): `admin@example.com / admin-password-123` (from `.env`) and
-`demo@example.com / demo-password-123` ($25 balance). A fixed dev API key for the demo customer is
-printed by the seed. Verification/reset emails are logged to the console and stored in the
-`EmailOutbox` table when `SMTP_URL` is unset.
+Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-### Scripts
+## Quickstart (local)
+
+You need Node 24, pnpm 11 and Docker.
+
+```bash
+docker compose up -d          # postgres on :5433, redis on :6380
+pnpm install                  # postinstall runs `prisma generate` (client in src/generated/prisma, gitignored)
+node scripts/init-env.mjs     # writes .env with fresh secrets; or cp .env.example .env and fill it in
+pnpm db:migrate               # apply migrations (pnpm db:deploy for a non-interactive apply)
+pnpm db:seed                  # settings, groups, provider presets, model catalog, admin, demo customer, Mock Upstream
+pnpm mock:upstream            # terminal 2: fake OpenAI / Anthropic / Gemini / fal / Replicate on :4010
+pnpm dev                      # http://localhost:3000
+```
+
+Seeded logins (dev):
+
+| Who | Login |
+|---|---|
+| Admin | `admin@example.com` / `admin-password-123`. This is the `ADMIN_PASSWORD` that `init-env` writes. If you copied `.env.example` unchanged it is `change-me-now-please`. |
+| Demo customer | `demo@example.com` / `demo-password-123` ($25 balance) |
+| Demo API key (dev only) | `sk-pp-devdemo000000000000000000000000000000000` (mock models `mock-gpt`, `mock-claude`, `mock-embed`, `mock-image`) |
+
+```bash
+curl http://localhost:3000/v1/chat/completions \
+  -H "Authorization: Bearer sk-pp-devdemo000000000000000000000000000000000" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"mock-gpt","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+Emails (verification, reset) are printed to the console and stored in the `EmailOutbox` table while `SMTP_URL` is
+unset. More detail: [docs/LOCAL-DEVELOPMENT.md](docs/LOCAL-DEVELOPMENT.md).
+
+## Scripts
 
 | Script | What it does |
 |---|---|
-| `pnpm dev` / `build` / `start` | Next.js |
-| `pnpm lint` / `typecheck` / `test` | ESLint, `tsc --noEmit`, Vitest |
-| `pnpm db:migrate` / `db:deploy` / `db:seed` / `db:studio` | Prisma dev migrate, deploy migrations, seed, Studio |
-| `pnpm mock:upstream` | Local fake upstream provider (OpenAI / Anthropic / Gemini, plus fal.ai, Replicate and `/v1/videos`) |
-| `pnpm setup:live [--markup 1.30 \| --percent-of-official 100]` | Idempotent live setup: enable OpenAI / Anthropic / fal.ai / Replicate from the `LIVE_*` keys in `.env`, models + aliases + routes + prices (default: sell = official price, i.e. "match official"), refreshes the providers' formats to the preset list |
-| `pnpm e2e:live [--skip-video]` | Real-traffic end-to-end check against a running dev server (see below) |
-| `pnpm e2e` / `pnpm loadtest` | End-to-end and load-test scripts (QA) |
-| `pnpm chaos --docker <image> [--scenarios] [--h2]` | Connection-fidelity run against the built container: `--scenarios` = reset / early close / error event / gzip / client abort matrix over HTTP/1.1 and h2c; default = 1000 concurrent 2-minute streams with a SIGTERM drain in the middle (see below) |
-| `node scripts/h2c-check.mjs <base-url> [path]` | HTTP/2 cleartext (prior knowledge) client for checking a running container |
+| `pnpm dev` | Next.js dev server (`NEXT_DIST_DIR=.next-x pnpm next dev -p 3001` for extra servers) |
+| `pnpm build` / `pnpm start` | Production build (standalone output) / `next start` (the container uses `node server.mjs`) |
+| `pnpm lint` | ESLint |
+| `pnpm typecheck` | `next typegen && tsc --noEmit` |
+| `pnpm test` | Whole Vitest suite (unit + DB-backed. DB tests skip when Postgres is unreachable) |
+| `pnpm db:generate` | `prisma generate` (also runs on `postinstall`) |
+| `pnpm db:migrate` | `prisma migrate dev` (development) |
+| `pnpm db:deploy` | `prisma migrate deploy` (apply pending migrations, no prompts) |
+| `pnpm db:seed` | Seed (re-runnable; skips the mock provider and demo data when `NODE_ENV=production`) |
+| `pnpm db:studio` | Prisma Studio |
+| `pnpm mock:upstream` | Mock upstream server on :4010 (`MOCK_UPSTREAM_PORT` overrides) |
+| `pnpm e2e` | Mock-based gateway suite: `vitest run tests/gateway` (needs Postgres; starts the mock in-process) |
+| `pnpm loadtest` | 1000 concurrent streams through the gateway against the mock (`tests/gateway/load.test.ts`; `GW_LOAD_N` changes N) |
+| `pnpm chaos --docker <image> [--scenarios] [--h2]` | Connection-fidelity run against a real server/container: fault scenarios, SIGTERM drain with 1000 streams, big bodies |
+| `pnpm setup:live [--markup 1.30 \| --percent-of-official 100]` | Idempotent: creates/updates live OpenAI / Anthropic / fal.ai / Replicate providers, keys, models and prices from the `LIVE_*` variables |
+| `pnpm e2e:live [--skip-video]` | Real-traffic end-to-end check against a running dev server (`E2E_BASE_URL`, default `http://localhost:3005`). Costs money. |
+| `node scripts/h2c-check.mjs <base-url> [path]` | HTTP/2 cleartext (prior knowledge) probe of a running server |
 
-## Connection fidelity, keep-alive and big uploads
+## Environment variables
 
-The gateway is a **faithful 1:1 proxy** ([docs/PLAN.md](docs/PLAN.md) section 9d): a client that disconnects aborts the upstream
-request at once (usage so far is metered, slots and credit holds are released); an upstream failure is mirrored to the client
-(real status + `retry-after` + rate-limit headers + native error body before the response started, the upstream's own error
-event inside a stream, a dropped connection when the upstream resets or closes early - never a synthetic `[DONE]`); idle SSE
-streams get `: keep-alive` heartbeats; nothing is compressed (`Accept-Encoding: identity` upstream, gzip/br/zstd request bodies
-decoded); request bodies have **no size limit** (`maxRequestBodyMb`, 0 = unlimited) and are streamed (multipart spooled to disk,
-JSON forwarded byte-identical except `model`); the Files APIs (OpenAI `/v1/files` + `/v1/uploads`, Anthropic `/v1/files`, Gemini
-resumable upload) are passed through with sticky routing and per-customer ownership. The container (`server.mjs`) serves HTTP/1.1
-and h2c on one port and drains gracefully on SIGTERM. Final reference with the scenario table, drain / big-body numbers, live check and
-deliberate deviations: [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md). Upstream HTTP/2 is opt-in per provider (`settings.http2`, default off).
+Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count as unset.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `postgresql://proxy:proxy@localhost:5433/proxy` | Postgres connection |
+| `DB_POOL_SIZE` | `20` | Postgres pool size per instance |
+| `REDIS_URL` | unset | Optional. Shared slots, holds, rate limits, balance cache and config invalidation. Without it these are in-memory and per instance. |
+| `APP_URL` | `http://localhost:3000` | Public base URL (links in emails, Stripe redirects) |
+| `SESSION_SECRET` | dev fallback | 32+ chars. Required in production. |
+| `ENCRYPTION_KEY` | dev fallback | 32 bytes, base64. AES-256-GCM key for upstream provider secrets and TOTP secrets. Required in production. **Back it up.** |
+| `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@example.com` / `change-me-now-please` (dev) | First admin, created by the seed if missing |
+| `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | unset | Optional. Without them billing shows "Stripe not configured" and only redeem codes and admin credits work. |
+| `SMTP_URL` | unset | `smtp://user:pass@host:587`. Unset: emails go to the console and the `EmailOutbox` table. |
+| `EMAIL_FROM` | `ProviderProxy <no-reply@example.com>` | Sender |
+| `CRON_SECRET` | unset | Bearer token for `/api/cron/*`. `/api/cron/billing` refuses to run without it. `/api/cron/health` runs without it only when `NODE_ENV=development`. |
+| `MOCK_UPSTREAM_URL` | `http://localhost:4010` | Where the dev seed points the "Mock Upstream" provider |
+| `TRUSTED_PROXY_HOPS` | `1` | Trusted reverse proxies in front of the app, used for client-IP detection (Cloud Run = 1, behind a Global LB = 2). `0` = nothing in front: the socket address is used and any client-sent `X-Forwarded-For` is ignored (`docker-compose.prod.yml` sets this). |
+| `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+
+Container and runtime knobs (not in `.env.example`):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` / `HOSTNAME` | `8080` / `0.0.0.0` (image) | Listener |
+| `KEEP_ALIVE_TIMEOUT` | `620000` | HTTP/1 keep-alive in ms. It must be above Google's 600 s LB idle timeout. |
+| `SHUTDOWN_DRAIN_SECONDS` | `600` | Upper bound for the SIGTERM drain |
+| `H2_INITIAL_WINDOW_BYTES` | `1048576` | HTTP/2 flow-control window |
+| `METER_DEADLETTER_DIR` | OS temp dir | Where the metering dead-letter JSONL file is written |
+| `METER_BATCH_FAIL_LIMIT` | `3` | Failed batch flushes before per-row isolation |
+| `NEXT_DIST_DIR` | `.next` | Build/dev output dir (lets several dev servers run from one checkout) |
+
+Optional, **dev only** (gitignored `.env`, never commit them, never needed in production):
+
+| Variable | Used by |
+|---|---|
+| `LIVE_OPENAI_API_KEY` | `pnpm setup:live`, `pnpm e2e:live`, live-workload runner |
+| `LIVE_ANTHROPIC_API_KEY` | same |
+| `LIVE_FAL_KEY` | same (fal.ai images) |
+| `LIVE_REPLICATE_API_TOKEN` | same (Replicate images) |
+
+Test flags: `GW_TEST_REDIS_URL` (Redis tests, default `redis://localhost:6380`), `GW_LOAD` / `GW_LOAD_N`,
+`GW_CHAOS_HEAVY`, `E2E_BASE_URL`, `E2E_COST_CAP`. See [docs/LOCAL-DEVELOPMENT.md](docs/LOCAL-DEVELOPMENT.md).
+
+## Testing
 
 ```bash
-pnpm vitest run tests/gateway/chaos.test.ts tests/gateway/files.test.ts tests/gateway/bigbody.test.ts
-GW_CHAOS_HEAVY=1 pnpm vitest run tests/gateway/bigbody.test.ts      # 1 GB multipart + 200 MB JSON round trips
+pnpm typecheck && pnpm lint && pnpm test       # the standard gates
+pnpm e2e                                       # just the gateway suite (mock upstream, needs Postgres)
+pnpm loadtest                                  # 1000 concurrent streams
+GW_CHAOS_HEAVY=1 pnpm vitest run tests/gateway/bigbody.test.ts   # 1 GB multipart + 200 MB JSON
 docker build -t providerproxy:fidelity . && pnpm chaos --docker providerproxy:fidelity --scenarios
-pnpm chaos --docker providerproxy:fidelity --streams 1000 --seconds 120 --sigterm-after 40
 ```
 
-## Live providers (real upstream traffic)
+Unit tests need nothing. Gateway, billing and metering tests need the docker-compose Postgres (they skip when it is
+unreachable). The Redis tests need a Redis at `GW_TEST_REDIS_URL`. The live checks (`setup:live`, `e2e:live`) need
+the `LIVE_*` keys and spend real money.
 
-Put the upstream credentials in `.env` (gitignored; never commit them): `LIVE_OPENAI_API_KEY`, `LIVE_ANTHROPIC_API_KEY`,
-`LIVE_FAL_KEY`, `LIVE_REPLICATE_API_TOKEN`.
+## Deploying
 
-```bash
-pnpm setup:live                                   # providers + one encrypted key each + models + prices (re-runnable)
-NEXT_DIST_DIR=.next-live pnpm next dev -p 3005    # dev server (second terminal)
-pnpm e2e:live                                     # drives the gateway with real OpenAI / Anthropic / fal.ai / Replicate calls
-```
+Google Cloud Run + Cloud SQL + Secret Manager + Cloud Scheduler (Memorystore Redis optional):
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), with the full copy/paste walkthrough in
+[deploy/README.md](deploy/README.md). Any Docker host also works: set `POSTGRES_PASSWORD` (required) and the
+secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --build`.
 
-- **Pricing policy** (owner decision): route cost = upstream list price, and the DEFAULT customer price of a model served through the
-  maker's own API is **match official** (rule `PERCENT_OF_OFFICIAL` 100: sell = official price, server-tool prices included). A model with
-  no official price keeps `MARKUP_OVER_COST` +30%. `pnpm setup:live --markup 1.30` forces cost x 1.30 for every model,
-  `--percent-of-official 70` forces 70% of official. The seed and `setup:live` also move models that still carry the old seeded default
-  (+30% over cost, never edited by an admin) to "match official" (`migrateSeededMarkupRules`). The admin Add-model wizard preselects
-  "match official" (all three rules stay available). Prices of post-2025 models are marked `*` in the setup summary: confirm them in
-  /admin/models.
-- `setup:live` asks OpenAI / Anthropic which models the key can use and **disables models whose upstream `shutdown_date`
-  has passed** (sora-2 was shut down on 2026-09-24) and lists upcoming sunsets.
-- `smart-fast` is a demo public model that routes to Claude Haiku (priority 10) and falls back to GPT-5 nano (priority 5).
-- `e2e:live` creates the throwaway customer `live-e2e@example.com` ($5, random password that is not stored anywhere readable;
-  use the admin impersonation to look at it) and keeps it, so the admin dashboard has real data. Estimated spend of a full run is
-  about a cent; the paid video job only runs when every other check passed and a video model is enabled.
-- fal.ai and Replicate image models use `POST /v1/images/generations` (`n`, `size`, `seed`, `response_format`, `extra_input`);
-  videos use the OpenAI-style `/v1/videos` API. Details in [docs/PLAN.md](docs/PLAN.md) section 5c.
+## Documentation
+
+| Doc | For |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request pipeline, translation, stateful objects, caching, metering, crons |
+| [docs/LOCAL-DEVELOPMENT.md](docs/LOCAL-DEVELOPMENT.md) | Bring-up, multiple dev servers, mock upstream markers, tests, Windows notes |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production on Google Cloud |
+| [docs/ADMIN-GUIDE.md](docs/ADMIN-GUIDE.md) | Running the admin console |
+| [docs/API-GUIDE.md](docs/API-GUIDE.md) | Endpoint inventory and behaviour for integrators. Examples are in the in-app `/docs`. |
+| [docs/PRICING-AND-BILLING.md](docs/PRICING-AND-BILLING.md) | Pricing vocabulary, rules, holds, Stripe, ledger |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Runbook: crons, dead letters, key rotation, incidents, monitoring, backups |
+| [docs/PLAN.md](docs/PLAN.md) | Architecture contract (authoritative) |
+| [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md) | Fidelity evidence (chaos, drain, big bodies) |
+| [docs/LIVE-WORKLOAD-REPORT.md](docs/LIVE-WORKLOAD-REPORT.md) | Live workload test results |
+| [docs/HANDOFF.md](docs/HANDOFF.md), [docs/FOUNDATION.md](docs/FOUNDATION.md), [docs/FIXES-PROGRESS.md](docs/FIXES-PROGRESS.md) | Development history and conventions |
+| [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) | Contributing, reporting vulnerabilities |
 
 ## Project map
 
 ```
-prisma/                  schema, migrations, seed (+ seed-data.ts: provider presets & model catalog)
-src/lib/                 db, env, crypto, money, redis, ratelimit, settings, audit, email, logger, http, utils
-src/lib/auth/            sessions, signup/login/2FA/reset flows, server actions, guards (requireUser/requireAdmin)
-src/proxy.ts             route guard for /dashboard/* and /admin/*
-src/components/ui/       shadcn components
-src/components/shell/    AppShell, sidebar nav configs, topbar
-src/components/common/   StatCard, PageHeader, DataTable, DateRangePicker, ChartCard, MoneyText, ...
-src/app/(auth)/          login, signup, verify-email, forgot/reset password, 2FA
-src/app/dashboard/       customer portal            src/app/admin/   admin console
-src/app/(marketing)/     public site                src/app/api/     healthz, cron, stripe webhook
-src/gateway/ src/server/ gateway engine, billing, admin & customer server code (see PLAN section 2)
-deploy/                  Cloud Build, migrate script, Google Cloud walkthrough (deploy/README.md)
+prisma/                  schema, migrations, seed (+ seed-data.ts: provider presets and model catalog)
+server.mjs               production entry: HTTP/1.1 + h2c on one port, graceful SIGTERM drain
+src/gateway/             the proxy engine: handle(Request) => Response (framework agnostic)
+src/app/v1, v1beta, upload/   gateway route handlers (thin wrappers around handle)
+src/app/api/             healthz, cron/{health,billing}, stripe/webhook, pricing (public), admin/slots
+src/app/admin/           admin console          src/app/dashboard/   customer portal
+src/app/(marketing)/     landing, pricing, status, docs     src/app/(auth)/   login, signup, 2FA, reset
+src/server/              billing, admin, customer, analytics, pricing server code
+src/lib/                 db, env, crypto, money, redis, ratelimit, settings, audit, email, logger, auth
+src/components/          ui (shadcn), shell, common, admin, customer, billing, marketing (docs content)
+scripts/                 mock upstream, chaos, live setup / e2e, init-env, h2c check
+tests/                   vitest suites (gateway, billing, admin, customer, pricing, lib)
+deploy/                  Cloud Build config, migrate script, Google Cloud walkthrough
 ```
 
-## Deploying
+## License
 
-See [deploy/README.md](deploy/README.md) (Google Cloud Run + Cloud SQL + Secret Manager) or run
-`docker compose -f docker-compose.prod.yml up -d --build` on any Docker host.
+Proprietary. Copyright (c) 2026 ProviderProxy. All rights reserved. See [LICENSE](LICENSE).

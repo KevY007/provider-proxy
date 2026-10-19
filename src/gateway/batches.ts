@@ -14,7 +14,8 @@ import { releaseHold, restoreHold, type HoldRef } from "./holds";
 import { recordKeySuccess } from "./keyhealth";
 import { flushMeter } from "./meter-writer";
 import { recordOutcome } from "./metering";
-import { buildUpstreamHeaders, buildUpstreamUrl } from "./providers/adapters";
+import { buildUpstreamHeaders, buildUpstreamUrl, providerSettings } from "./providers/adapters";
+import { applyOutputClamp, maxTokensParamFor } from "./shape";
 import { computeAmount, DEFAULT_BATCH_DISCOUNT_PCT, effectiveMultiplier } from "./pricing";
 import { BATCH_HOLD_TTL_MS, explicitMaxOutput, reserveBatchHold, UNKNOWN_MAX_OUTPUT } from "./reserve";
 import { eligibleRoutes, orderRoutes, type Candidate, type RoutePlan } from "./select";
@@ -24,7 +25,7 @@ import { collectText, roughTokens } from "./tokenizer";
 import { emptyUsage, type InboundFormat, type Json, type JsonObject, type Operation, type Usage } from "./types";
 import { readBytesLimited, readErrorBody, readTextLimited, sendUpstream, wantsHttp2, type UpstreamHandle } from "./upstream";
 import { usageFromAnthropic, usageFromOpenAI, usageFromResponsesObject } from "./usage";
-import { describeNetworkError, isObject, safeJsonParse } from "./util";
+import { deepMerge, describeNetworkError, isObject, safeJsonParse } from "./util";
 
 /**
  * Batch APIs (PLAN 5c): Anthropic Message Batches (`/v1/messages/batches`) and OpenAI Batch (`/v1/batches`).
@@ -128,6 +129,25 @@ async function ownedBatch(ctx: Ctx, id: string): Promise<UpstreamObject> {
   return row;
 }
 
+/**
+ * Deleting results that were not billed yet would make them unbillable: meter first (or wait for a metering run that
+ * holds the claim), and refuse with 409 while that is not done.
+ */
+export async function ensureMetered(row: UpstreamObject): Promise<void> {
+  if (row.meteredAt) return;
+  const ended = isEnded(metaOf(row).fmt, row.status);
+  if (ended) await meterBatch(row.id).catch((err) => logger.error("batch metering before delete failed", { batchId: row.upstreamId, err }));
+  for (let i = 0; ended && i < 50; i++) {
+    const cur = await db.upstreamObject.findUnique({ where: { id: row.id }, select: { meteredAt: true } });
+    if (!cur || cur.meteredAt) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new GatewayError("invalid_request", "The results of this batch are still being processed (or the batch has not ended yet). Retry in a minute.", {
+    status: 409,
+    internal: `batch ${row.upstreamId} is not metered yet; delete refused`,
+  });
+}
+
 /** The route a batch's management calls are logged under (its first model's route, else a zero-priced stand-in). */
 function routeFor(snap: ConfigSnapshot, row: UpstreamObject, meta: BatchMeta): RouteRec | null {
   const first = meta.models[0];
@@ -145,7 +165,7 @@ async function onExisting(ctx: Ctx): Promise<Response> {
   const meta = metaOf(row);
   ctx.batch = { row, meta };
   ctx.files = { streamed: false, upstreamId: row.upstreamId, row };
-  if (path.op === "batches_delete") await meterBatch(row.id).catch((err) => logger.error("batch metering before delete failed", { batchId: row.upstreamId, err }));
+  if (path.op === "batches_delete") await ensureMetered(row);
   const route = routeFor(snap, row, meta);
   if (!route || route.provider.status !== "ACTIVE") throw new GatewayError("no_available_provider", undefined, { retryAfterSec: 30, internal: "the provider holding this batch is not active" });
   const first = meta.models[0];
@@ -204,11 +224,24 @@ function worstOutput(model: ModelRec, op: Operation, body: JsonObject): number {
 
 /** Hold contribution of one request: char-based input estimate (fast for 100k-request batches) + worst-case output, at the batch price. */
 function worstPrice(ctx: Ctx, model: ModelRec, op: Operation, body: JsonObject): Decimal {
-  const { text, images, messages } = collectText(body);
+  const { text, images, messages, extraTokens } = collectText(body);
   const u = emptyUsage();
-  u.inputTokens = Math.ceil(roughTokens(text) * 1.15) + images * 1000 + messages * 4;
-  u.outputTokens = worstOutput(model, op, body);
+  u.inputTokens = Math.ceil(roughTokens(text) * 1.15) + images * 1000 + messages * 4 + extraTokens;
+  const n = (op === "chat" || op === "completions") && typeof body.n === "number" && Number.isFinite(body.n) && body.n > 1 ? Math.min(Math.floor(body.n), 128) : 1;
+  u.outputTokens = worstOutput(model, op, body) * n;
   return computeAmount(u, model.sell, { multiplier: ctx.multiplier, longContext: model.longContext, tokenDiscountPct: model.batchDiscountPct ?? DEFAULT_BATCH_DISCOUNT_PCT });
+}
+
+/**
+ * The per-route controls a normal request gets, applied to one batch request: provider `stripFields`, the route's
+ * `paramOverrides`, and the output cap (route maximum / model maximum), so the upstream can never produce more than the hold covers.
+ */
+function applyRouteControls(body: JsonObject, route: RouteRec, model: ModelRec, format: InboundFormat, op: Operation): void {
+  body.model = route.upstreamModel;
+  for (const f of providerSettings(route.provider).stripFields) delete body[f];
+  if (Object.keys(route.paramOverrides).length) deepMerge(body, route.paramOverrides);
+  const caps = [route.maxOutputTokens, model.maxOutput].filter((x): x is number => typeof x === "number" && x > 0);
+  if (caps.length && op !== "embeddings" && op !== "moderations") applyOutputClamp(body, format, op, Math.min(...caps), maxTokensParamFor(route.provider));
 }
 
 interface Line {
@@ -321,8 +354,8 @@ async function createAnthropic(ctx: Ctx): Promise<Response> {
   for (let i = 0; i < requests.length; i++) {
     const params = requests[i].params as JsonObject;
     const m = lines[i].model;
+    applyRouteControls(params, routes.get(m.id)!, m, "anthropic_messages", "messages");
     amount = amount.plus(worstPrice(ctx, m, "messages", params));
-    params.model = routes.get(m.id)!.upstreamModel;
   }
   const hold = await reserveBatchHold(ctx, amount);
   const bm = batchModels(list, routes);
@@ -418,12 +451,10 @@ async function createOpenAI(ctx: Ctx): Promise<Response> {
   for (let i = 0; i < parsed.length; i++) {
     const b = parsed[i].obj.body as JsonObject;
     const m = lines[i].model;
+    const before = JSON.stringify(b);
+    applyRouteControls(b, routes.get(m.id)!, m, ep.format, ep.op);
+    if (JSON.stringify(b) !== before) changed = true;
     amount = amount.plus(worstPrice(ctx, m, ep.op, b));
-    const up = routes.get(m.id)!.upstreamModel;
-    if (b.model !== up) {
-      b.model = up;
-      changed = true;
-    }
   }
 
   const hold = await reserveBatchHold(ctx, amount);
@@ -681,7 +712,9 @@ async function refreshOpen(snap: ConfigSnapshot, rows: UpstreamObject[]): Promis
     rows.map(async (r) => {
       if (isEnded(metaOf(r).fmt, r.status)) return r;
       const obj = await fetchObject(snap, r, 5_000).catch(() => null);
-      return obj ? refreshRecord(r, obj) : r;
+      const next = obj ? await refreshRecord(r, obj) : r;
+      if (isEnded(metaOf(next).fmt, next.status) && !next.meteredAt) void meterBatch(next.id).catch((err) => logger.error("batch metering failed", { batchId: next.upstreamId, err }));
+      return next;
     }),
   );
 }
@@ -836,6 +869,8 @@ async function meterResults(snap: ConfigSnapshot, acc: Account, row: UpstreamObj
         if (!r) continue;
         const bm = modelOfResult(meta, r);
         const model = bm ? (snap.modelsById.get(bm.modelId) ?? snap.modelsBySlug.get(bm.slug) ?? null) : null;
+        // fail closed: a result is never recorded unpriced because its model was disabled meanwhile (the sweep retries, the hold stays)
+        if (bm && !model) throw new Error(`model '${bm.slug}' of batch ${row.upstreamId} is not in the gateway config (disabled?); metering postponed`);
         const route = bm && model ? ((snap.routesByModel.get(model.id) ?? []).find((x) => x.id === bm.routeId) ?? null) : null;
         recordOutcome({
           requestId: batchLogId(row.upstreamId, r.customId),
@@ -857,7 +892,7 @@ async function meterResults(snap: ConfigSnapshot, acc: Account, row: UpstreamObj
           httpStatus: r.httpStatus,
           errorCode: r.errorCode,
           errorMessage: r.errorMessage,
-          internalError: `batch ${row.upstreamId} custom_id ${r.customId}${model ? "" : " | model no longer exists: not priced"}`,
+          internalError: `batch ${row.upstreamId} custom_id ${r.customId}`,
           usage: r.status === "SUCCESS" ? r.usage : null,
           ttftMs: null,
           queueMs: 0,
@@ -873,6 +908,12 @@ async function meterResults(snap: ConfigSnapshot, acc: Account, row: UpstreamObj
     }
   }
   return n;
+}
+
+async function keepHold(row: UpstreamObject): Promise<void> {
+  const meta = metaOf(row);
+  if (!meta.holdId) return;
+  await restoreHold({ id: meta.holdId, userId: row.userId, keyId: row.apiKeyId, backend: meta.holdBackend === "memory" ? "memory" : "redis", createdAt: row.createdAt.getTime() }, new Decimal(meta.holdAmount || "0"), BATCH_HOLD_TTL_MS);
 }
 
 /**
@@ -898,12 +939,11 @@ export async function sweepBatches(limit = 200): Promise<{ polled: number; meter
       if (isEnded(meta.fmt, row.status)) {
         await meterBatch(row.id);
         metered++;
-      } else if (meta.holdId) {
-        await restoreHold({ id: meta.holdId, userId: row.userId, keyId: row.apiKeyId, backend: meta.holdBackend === "memory" ? "memory" : "redis", createdAt: row.createdAt.getTime() }, new Decimal(meta.holdAmount || "0"), BATCH_HOLD_TTL_MS);
-      }
+      } else await keepHold(row);
     } catch (err) {
       failed++;
-      logger.warn("batch sweep failed for one batch", { batchId: r.upstreamId, err });
+      await keepHold(r).catch(() => undefined);
+      logger.error("batch sweep failed for one batch (its hold is kept until it is metered)", { batchId: r.upstreamId, err });
     }
   }
   return { polled, metered, failed };

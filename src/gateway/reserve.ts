@@ -108,9 +108,9 @@ function choiceCount(op: Operation, body: JsonObject | null): number {
 /** Estimated prompt tokens: tiktoken on normal bodies, the char heuristic on huge ones, +10% for other tokenizers. */
 export async function estimateInput(body: JsonObject | null): Promise<number> {
   if (!body) return 0;
-  const { text, images, messages } = collectText(body);
+  const { text, images, messages, extraTokens } = collectText(body);
   const t = text.length > BIG_TEXT_CHARS ? Math.ceil(roughTokens(text) * 1.15) : Math.ceil((await countTokens(text)) * INPUT_SAFETY);
-  return t + images * 1000 + messages * 4;
+  return t + images * 1000 + messages * 4 + extraTokens;
 }
 
 function routeCap(ctx: Ctx): number | null {

@@ -271,7 +271,11 @@ async function dispatch(ctx: Ctx): Promise<Response> {
 
   if (path.op === "responses" && ctx.body && typeof ctx.body.previous_response_id === "string") {
     const sticky = await lookupResponse(ctx.body.previous_response_id);
-    if (sticky && sticky.userId === ctx.auth!.user.id) {
+    // another customer's response id is unknown to this customer (it would continue their conversation upstream)
+    if (sticky && sticky.userId !== ctx.auth!.user.id) {
+      throw new GatewayError("not_found", `Previous response with id '${ctx.body.previous_response_id}' not found.`, { param: "previous_response_id", internal: "previous_response_id belongs to another customer" });
+    }
+    if (sticky) {
       pinKeyId = sticky.providerKeyId;
       routes = routes.filter((r) => r.route.providerId === sticky.providerId);
     }

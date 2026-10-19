@@ -46,6 +46,9 @@ export async function setCustomerStatus(userId: string, status: "ACTIVE" | "SUSP
 export async function verifyCustomerEmail(userId: string) {
   return adminAction({}, async ({ admin, ip }) => {
     const target = await loadTarget(userId);
+    // verifying a staff account (e.g. a sign-up with ADMIN_EMAIL) is a privilege decision, as is the trial grant
+    const can = canManageTarget(admin.role, target.role, admin.id, target.id);
+    if (!can.ok) throw new ActionFail(can.reason!);
     if (target.emailVerifiedAt && target.status !== "PENDING_VERIFICATION") throw new ActionFail("Email is already verified");
     await db.user.update({
       where: { id: userId },
@@ -196,6 +199,8 @@ export async function revokeCustomerSessions(userId: string) {
 export async function sendCustomerPasswordReset(userId: string) {
   return adminAction({}, async ({ admin, ip }) => {
     const target = await loadTarget(userId);
+    const can = canManageTarget(admin.role, target.role, admin.id, target.id);
+    if (!can.ok) throw new ActionFail(can.reason!);
     if (target.status === "SUSPENDED") throw new ActionFail("Customer is suspended");
     const token = await createVerificationToken(userId, "PASSWORD_RESET", RESET_TOKEN_TTL_MS);
     const res = await sendTemplate(target.email, emailTemplates.resetPassword({ name: target.name, url: `${appUrl}/reset-password?token=${token}` }));

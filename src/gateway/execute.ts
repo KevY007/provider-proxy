@@ -41,6 +41,7 @@ import { countRequestTokens, countTokens } from "./tokenizer";
 import { AnthropicToChatStream, ChatToAnthropicStream, THINKING_BURN_NOTE, chatResponseToMessages, chatUsageFromNormalized, messagesResponseToChat } from "./translate";
 import { emptyUsage, type Json, type JsonObject, type Operation, type Usage } from "./types";
 import { ClientAbortError, UpstreamTimeoutError, readErrorBody, readTextLimited, sendUpstream, wantsHttp2, type UpstreamHandle } from "./upstream";
+import { assertPublicUrl, BlockedUrlError, hostOf } from "./ssrf";
 import { finishVideoCreate, handleVideoCreateOk } from "./video";
 import { describeNetworkError, isObject, safeJsonParse, sleep } from "./util";
 
@@ -234,6 +235,11 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
     }
     for (const n of prepared.notes ?? []) if (!ctx.notes.includes(n)) ctx.notes.push(n);
     if (opts.externalUrl) {
+      try {
+        await assertPublicUrl(opts.externalUrl, [hostOf(provider.baseUrl), hostOf(typeof provider.settings.queueBaseUrl === "string" ? provider.settings.queueBaseUrl : null)]);
+      } catch {
+        return fail("server", 0, "the video URL the upstream returned points to a private address (refused)");
+      }
       const range = ctx.req.headers.get("range");
       prepared = { ...prepared, url: opts.externalUrl, headers: { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) } };
     }
@@ -273,12 +279,14 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
       try {
         const target = new URL(location, prepared.url);
         const sameOrigin = target.origin === new URL(prepared.url).origin;
+        if (!sameOrigin) await assertPublicUrl(target.toString(), [hostOf(provider.baseUrl)]);
         const range = ctx.req.headers.get("range");
         const headers: Record<string, string> = sameOrigin ? prepared.headers : { accept: "*/*", "user-agent": "ProviderProxy/1.0", ...(range ? { range } : {}) };
         h = await sendUpstream({ url: target.toString(), method: "GET", headers, timeoutMs: provider.timeoutMs, clientSignal: ctx.req.signal, http2 });
       } catch (err) {
         if (err instanceof ClientAbortError) throw new GatewayError("client_closed");
         if (err instanceof UpstreamTimeoutError) return fail("timeout", 0, `no response within ${provider.timeoutMs}ms`);
+        if (err instanceof BlockedUrlError) return fail("server", 0, "the upstream redirected to a private address (refused)");
         return fail("network", 0, describeNetworkError(err));
       }
     }
@@ -771,7 +779,13 @@ function budgetCutEvent(ctx: Ctx): string {
 async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProcessor, info: FinishInfo, settings: SettingValues): Promise<void> {
   const path = ctx.path!;
   const reported = processor.usage();
-  const usage = await completeUsage(ctx, reported, processor.outputText(), path.op, processor.reasoningText?.() ?? "");
+  let usage = await completeUsage(ctx, reported, processor.outputText(), path.op, processor.reasoningText?.() ?? "");
+  // a stream that did not reach its end has no final usage (Anthropic reports output_tokens: 1 in message_start and
+  // the real count only in message_delta): bill at least what the client received
+  if (info.reason !== "completed" && TOKEN_OPS.has(path.op)) {
+    const seen = await countTokens(processor.outputText());
+    if (seen > usage.outputTokens) usage = { ...usage, outputTokens: seen, estimated: true };
+  }
 
   const streamNote = processor.note?.();
   if (streamNote) ctx.notes.push(streamNote);

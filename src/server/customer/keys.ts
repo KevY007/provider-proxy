@@ -56,6 +56,7 @@ export async function createKeyAction(input: unknown): Promise<ActionResult<Crea
   const parsed = keyFormSchema.safeParse(input);
   if (!parsed.success) return invalidInput(parsed.error);
   return withUser<CreatedKey>("createKey", async (s) => {
+    if (s.impersonatorId) return fail("API keys cannot be created while impersonating.");
     if (!s.user.emailVerifiedAt) return fail("Verify your email address before creating API keys. Check your inbox for the verification link.");
     const count = await db.apiKey.count({ where: { userId: s.user.id, isPlayground: false, status: { not: "REVOKED" } } });
     if (count >= MAX_KEYS_PER_USER) return fail(`You have reached the limit of ${MAX_KEYS_PER_USER} active keys. Revoke unused keys first.`);

@@ -71,6 +71,8 @@ export const falVideoCreateDriver: Driver = {
       deepMerge(input, extra);
     }
     if (Object.keys(route.paramOverrides).length) deepMerge(input, route.paramOverrides);
+    // the length is billed from `seconds`: nothing may generate more than that
+    input.duration = String(seconds);
 
     const queueBase = trimSlash(str(provider.settings.queueBaseUrl) ?? "https://queue.fal.run");
     const sub = await falCall(env, { url: `${queueBase}/${model}`, method: "POST", headers: env.headers(true), body: JSON.stringify(input) });

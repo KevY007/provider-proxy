@@ -1,3 +1,6 @@
+> **Status: historical (2026-10-19).** Every item below is done: items 4 and 7 (server-tool editors/logs, Batch API) were
+> finished after this file was last updated; see `docs/HANDOFF.md` §5 for the current state. Only the LIVE re-checks remain.
+
 # Gateway fixes + Batch API - progress / resume notes
 
 Paused on the owner's request (2026-10-17). Committed + pushed as checkpoint `780d14a` (see `docs/HANDOFF.md` for the overall

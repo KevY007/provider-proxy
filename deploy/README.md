@@ -115,12 +115,15 @@ gcloud iam service-accounts create $SA --display-name="ProviderProxy runtime"
 export SA_EMAIL=$SA@$PROJECT_ID.iam.gserviceaccount.com
 
 gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$SA_EMAIL --role=roles/cloudsql.client
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$SA_EMAIL --role=roles/secretmanager.secretAccessor
+# secrets: grant access per secret (least privilege; the runtime never needs e.g. ADMIN_PASSWORD)
+for s in DATABASE_URL SESSION_SECRET ENCRYPTION_KEY CRON_SECRET REDIS_URL STRIPE_SECRET_KEY STRIPE_PUBLISHABLE_KEY STRIPE_WEBHOOK_SECRET SMTP_URL; do
+  gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA_EMAIL --role=roles/secretmanager.secretAccessor
+done
 
 # Cloud Build needs to deploy Cloud Run + act as the runtime SA
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
 export CB_SA=$PROJECT_NUMBER@cloudbuild.gserviceaccount.com
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$CB_SA --role=roles/run.admin
+gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$CB_SA --role=roles/run.developer
 gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL --member=serviceAccount:$CB_SA --role=roles/iam.serviceAccountUser
 ```
 
@@ -192,7 +195,11 @@ the Stripe/SMTP secrets you did not create (the app treats them as optional).
 
 > The container listens on `$PORT` (Cloud Run injects 8080). `TRUSTED_PROXY_HOPS=1` makes client-IP
 > detection read the last `x-forwarded-for` entry appended by Google's front end; use `2` if you put a
-> Global HTTPS Load Balancer in front.
+> Global HTTPS Load Balancer in front - and then ALSO restrict ingress
+> (`gcloud run services update $SERVICE --ingress=internal-and-cloud-load-balancing`), otherwise a client can call the
+> `*.run.app` URL directly with a forged `X-Forwarded-For` entry and pass the per-key IP allowlist / login throttles.
+> Self-hosted without any proxy in front: `TRUSTED_PROXY_HOPS=0` (the socket address is used; `docker-compose.prod.yml`
+> sets it).
 
 ### Seed the first admin + defaults (once)
 
@@ -236,8 +243,10 @@ gcloud scheduler jobs create http pp-health-cron --location=$REGION \
 
 **Stripe webhook:** in the Stripe dashboard (Developers > Webhooks) add the endpoint
 `https://$DOMAIN/api/stripe/webhook` and subscribe to `payment_intent.succeeded`,
-`payment_intent.payment_failed`, `setup_intent.succeeded`, `checkout.session.completed`,
-`charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`. Copy the signing secret into the
+`payment_intent.payment_failed`, `payment_intent.canceled`, `checkout.session.completed`, `checkout.session.expired`,
+`charge.refunded`, `charge.dispute.created`, `setup_intent.succeeded`, `payment_method.detached` (the list in
+`HANDLED_EVENTS`, `src/server/billing/webhook.ts`; a dispute that closes in your favour is not handled automatically:
+re-credit / re-activate the customer from the admin console). Copy the signing secret into the
 `STRIPE_WEBHOOK_SECRET` secret, then roll a new revision
 (`gcloud run services update $SERVICE --region=$REGION --update-secrets=STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest`).
 
@@ -252,7 +261,7 @@ gcloud beta run domain-mappings describe --domain=$DOMAIN --region=$REGION   # s
 
 For production traffic prefer a **Global external HTTPS Load Balancer** with a serverless NEG
 pointing at the service (managed certificate, Cloud Armor, CDN off for `/v1/*`). Remember to set
-`TRUSTED_PROXY_HOPS=2` in that case and `APP_URL=https://$DOMAIN`.
+`TRUSTED_PROXY_HOPS=2` in that case, `--ingress=internal-and-cloud-load-balancing` and `APP_URL=https://$DOMAIN`.
 
 After DNS propagates, verify:
 

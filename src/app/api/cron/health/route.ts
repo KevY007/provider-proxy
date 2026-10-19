@@ -1,5 +1,5 @@
 import { safeEqual } from "@/lib/crypto";
-import { env, isProd } from "@/lib/env";
+import { env, isDev } from "@/lib/env";
 import { runAllHealthChecks } from "@/gateway/health";
 import { sweepBatches } from "@/gateway/batches";
 import { sweepVideoJobs } from "@/gateway/video";
@@ -19,7 +19,7 @@ export const maxDuration = 300;
 
 function authorized(req: Request): boolean {
   const secret = env.CRON_SECRET;
-  if (!secret) return !isProd; // dev convenience; production requires CRON_SECRET
+  if (!secret) return isDev && env.NODE_ENV === "development"; // local dev convenience only; everything else requires CRON_SECRET
   const header = req.headers.get("authorization") ?? "";
   const token = /^Bearer\s+(.+)$/i.exec(header)?.[1]?.trim() ?? "";
   return token.length > 0 && safeEqual(token, secret);

@@ -20,8 +20,20 @@ async function buildTotp(secretBase32: string, label: string) {
 
 /** Validate a 6-digit code against a plaintext base32 secret (+-1 step tolerance). */
 export async function validateTotpCode(secretBase32: string, code: string, label = "user"): Promise<boolean> {
+  return (await matchTotpStep(secretBase32, code, label)) !== null;
+}
+
+/** The time step a valid code belongs to (null = invalid). */
+async function matchTotpStep(secretBase32: string, code: string, label: string): Promise<number | null> {
   const totp = await buildTotp(secretBase32, label);
-  return totp.validate({ token: code.replace(/\s/g, ""), window: 1 }) !== null;
+  const delta = totp.validate({ token: code.replace(/\s/g, ""), window: 1 });
+  return delta === null ? null : Math.floor(Date.now() / 30_000) + delta;
+}
+
+/** A code is good for one sign-in only: the step it matched is marked used (a captured code cannot be replayed). */
+async function claimStep(userId: string, step: number): Promise<boolean> {
+  const r = await rateLimit(`totpstep:${userId}:${step}`, { limit: 1, windowSec: 180 });
+  return r.ok;
 }
 
 /** Verify a user's TOTP code (rate limited per user). Returns false when 2FA isn't set up. */
@@ -30,7 +42,8 @@ export async function verifyUserTotp(userId: string, code: string): Promise<{ ok
   if (!rl.ok) return { ok: false, rateLimited: true };
   const user = await db.user.findUnique({ where: { id: userId }, select: { totpSecret: true, email: true } });
   if (!user?.totpSecret) return { ok: false };
-  return { ok: await validateTotpCode(decrypt(user.totpSecret), code, user.email) };
+  const step = await matchTotpStep(decrypt(user.totpSecret), code, user.email);
+  return { ok: step !== null && (await claimStep(userId, step)) };
 }
 
 export interface TotpSetup {
@@ -64,6 +77,7 @@ export async function enableTotp(userId: string, code: string): Promise<boolean>
   if (!user?.totpSecret || user.totpEnabled) return false;
   if (!(await validateTotpCode(decrypt(user.totpSecret), code, user.email))) return false;
   await db.user.update({ where: { id: userId }, data: { totpEnabled: true } });
+  await db.session.deleteMany({ where: { userId, twoFactorPassed: false } });
   return true;
 }
 
@@ -75,5 +89,7 @@ export async function disableTotp(userId: string, password: string, code: string
   const v = await verifyUserTotp(userId, code);
   if (!v.ok) return false;
   await db.user.update({ where: { id: userId }, data: { totpEnabled: false, totpSecret: null } });
+  // half-open sessions (password step passed, waiting for a code) must not turn into full sessions now
+  await db.session.deleteMany({ where: { userId, twoFactorPassed: false } });
   return true;
 }

@@ -15,13 +15,18 @@ export function safeJsonParse<T = Json>(text: string): T | undefined {
   }
 }
 
-/** Short, log-safe description of a fetch/network error (includes the undici cause code). */
+/** Credentials that can appear inside URLs quoted by fetch errors (`?key=` query auth, `user:pass@` userinfo). */
+export function redactUrlSecrets(text: string): string {
+  return text.replace(/([?&](?:key|api_key|apikey|access_token|token)=)[^&\s"']+/gi, "$1[redacted]").replace(/(\/\/)[^/\s:@]+:[^/\s@]+@/g, "$1[redacted]@");
+}
+
+/** Short, log-safe description of a fetch/network error (includes the undici cause code; URL credentials redacted). */
 export function describeNetworkError(err: unknown): string {
   if (err instanceof Error) {
     const cause = (err as { cause?: { code?: string; message?: string } }).cause;
-    return `${err.message}${cause?.code ? ` (${cause.code})` : ""}`.slice(0, 300);
+    return redactUrlSecrets(`${err.message}${cause?.code ? ` (${cause.code})` : ""}`).slice(0, 300);
   }
-  return String(err).slice(0, 300);
+  return redactUrlSecrets(String(err)).slice(0, 300);
 }
 
 export function truncate(s: string, max: number): string {

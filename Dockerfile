@@ -20,7 +20,8 @@ RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN pnpm exec prisma generate && pnpm build
+# (defence in depth: no env file may end up in the standalone output, whatever the build context contained)
+RUN rm -f .env .env.* && pnpm exec prisma generate && pnpm build
 
 # ---- 3. migration toolkit: prisma CLI + schema + migrations in an isolated dir -----------
 FROM base AS migrator

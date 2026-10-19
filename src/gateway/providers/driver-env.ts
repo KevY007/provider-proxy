@@ -1,3 +1,4 @@
+import { assertPublicUrl, hostOf } from "../ssrf";
 import type { Ctx } from "../context";
 import type { Candidate } from "../select";
 import { ClientAbortError, UpstreamTimeoutError, readBytesLimited, readTextLimited, sendUpstream, type UpstreamHandle } from "../upstream";
@@ -64,6 +65,11 @@ export function makeDriverEnv(ctx: Ctx, cand: Candidate, secret: string, t0: num
       return { data, contentType: m[1] || "application/octet-stream" };
     }
     if (!/^https?:\/\//i.test(url)) throw new DriverFailure("server", 200, "upstream returned an unsupported result URL");
+    try {
+      await assertPublicUrl(url, [hostOf(provider.baseUrl), hostOf(typeof provider.settings.queueBaseUrl === "string" ? provider.settings.queueBaseUrl : null)]);
+    } catch {
+      throw new DriverFailure("server", 200, "upstream returned a result URL on a private address (refused)", url.slice(0, 300));
+    }
     let h: UpstreamHandle;
     try {
       h = await sendUpstream({ url, method: "GET", headers: { accept: "*/*", "user-agent": "ProviderProxy/1.0" }, timeoutMs: Math.min(remaining(), 60_000), clientSignal: signal });
