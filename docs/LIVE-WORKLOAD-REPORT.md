@@ -104,17 +104,29 @@ Route cost = official list price and sell price = cost x 1.30, so `officialPrice
 - Claude Code CLI works unmodified (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`), streaming, caching and tool loops included.
 - Prompt-quality hint for operators: Sonnet 5.5 and Haiku 5.5 can burn the whole `max_tokens` on thinking for big structured outputs (observed twice natively: 48,000 thinking tokens, empty text, $0.48); `thinking:{type:"between_tools"}` or `output_config.effort:"low"` fixes it natively.
 
-## Fix verification (status 2026-10-19)
+## Fix verification (status 2026-10-19, live)
 
-All fixes for the bugs above are implemented and verified against the mock upstream (`pnpm test`, 729 passed). The
-**live** re-run (scenarios C, G, I, K, D of `scripts/live-workload`, budget Anthropic <= $15 / OpenAI <= $3) is still
-pending: it needs the owner's `LIVE_*` keys, which are not available in cloud sessions.
+All fixes for the bugs above are implemented, verified against the mock upstream (`pnpm test`: 777 passed / 1 skipped)
+and **re-verified live** with the owner's temporary keys (`LIVE_*` in the gitignored `.env`; to be rotated by the owner).
+
+- `pnpm e2e:live`: **36 / 36 pass** (OpenAI, Anthropic, fal.ai, Replicate, Chat->Claude translation, failover, error
+  shapes; Sora is skipped because the vendor shut it down). Every metered row has price >= cost.
+- `scripts/live-workload` (full run, all scenarios): **A, B, C, D, E, F, G, I, J, K pass**.
+  - **K (Batch APIs)**: the Anthropic Message Batch was metered exactly once at the batch price (3 rows). The OpenAI
+    batch (`/v1/batches`, 2 requests) completed upstream after about an hour; polling it through the gateway metered it
+    exactly once (2 `SUCCESS` rows at the 50% batch price), and repeated polls / output downloads added nothing.
+  - **L** fails only on a content-quality check (the model left out some labels in its answer). The gateway behaved
+    correctly.
+  - **H** (Claude Code CLI through the proxy) could not run in the cloud sandbox: the CLI reports an authentication
+    error there before it sends any request through the gateway. Re-run H on a workstation with
+    `CLAUDE_BIN=claude pnpm tsx scripts/live-workload/run.ts --only H`.
+- Live spend for the whole verification: about $6.00 Anthropic, $1.52 OpenAI, $0.003 fal.ai (budget $15 / $3).
 
 | Bug | Fix | Mock evidence | Live re-check |
 |---|---|---|---|
-| 1 generated files not downloadable | `registerGeneratedFiles`, container file endpoints | `tests/gateway/server-tools.test.ts` | pending (C) |
-| 2 chat -> Claude reasoning | `translate/claude-reasoning.ts` | `tests/gateway/claude-reasoning.test.ts` | pending (G) |
-| 3 CANCELLED rows for completed streams | `StreamSession.deliveredEverything()` | `tests/gateway/stream*.test.ts` | pending (I) |
-| 5 server tools not metered | `Usage.toolUsage`, tool prices / costs | `tests/gateway/server-tools.test.ts`, `pricing.test.ts` | pending (D) |
-| 7a Sonnet 5.5 cache read | no change needed (catalog was right) | `tests/pricing/catalog.test.ts` | n/a |
-| Batch API missing | `src/gateway/batches.ts` | `tests/gateway/batches.test.ts` | pending (K) |
+| 1 generated files not downloadable | `registerGeneratedFiles`, container file endpoints | `tests/gateway/server-tools.test.ts` | pass (C: PDF downloaded via `/v1/files/{id}/content`) |
+| 2 chat -> Claude reasoning | `translate/claude-reasoning.ts` | `tests/gateway/claude-reasoning.test.ts` | pass (G) |
+| 3 CANCELLED rows for completed streams | `StreamSession.deliveredEverything()` | `tests/gateway/stream*.test.ts` | pass (I: no CANCELLED rows) |
+| 5 server tools not metered | `Usage.toolUsage`, tool prices / costs | `tests/gateway/server-tools.test.ts`, `pricing.test.ts` | pass (D: web_search metered) |
+| 7a Sonnet 5.5 cache read | no change needed (catalog was right: $0.10 / 1M) | `tests/pricing/catalog.test.ts` | n/a |
+| Batch API missing | `src/gateway/batches.ts` | `tests/gateway/batches.test.ts` | pass (K: Anthropic + OpenAI, metered once) |

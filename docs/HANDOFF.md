@@ -90,17 +90,21 @@ Running several dev servers from one checkout: `NEXT_DIST_DIR=.next-<name> pnpm 
 | 4c Live real-world workload (techpack SVG/PDF, agents, Claude Code CLI) | ✅ run; all bug fixes done (mock-verified) |
 | Step A: server-tool editors, tool usage in logs, pricing / default-policy tests | ✅ |
 | Batch API (Anthropic + OpenAI, exactly-once metering) | ✅ `src/gateway/batches.ts`, `tests/gateway/batches.test.ts`, `/docs/batches` |
-| Step C: live re-verification | ⬜ **pending** - needs the owner's `LIVE_*` keys (not available in cloud sessions) |
+| Step C: live re-verification | ✅ e2e:live 36/36; workload A-G, I-K pass (L content-quality only; H needs a workstation) - see `docs/LIVE-WORKLOAD-REPORT.md` |
+| Provider "Test connection" / "Fetch pricing", provider-published prices prefill Our cost | ✅ `src/gateway/remote-pricing.ts` |
+| Auto-updated costs (lazy, during calls only), "% of our cost" + +/- adjustment | ✅ `src/server/pricing/auto-sync.ts` |
+| Latency from real calls (admin `/admin/latency`, status page, customer Usage + Models); health cron probes opt-in | ✅ `src/server/analytics/latency.ts` |
 | 6 Security audit | ✅ `docs/SECURITY-AUDIT.md` (fixes + `tests/security/audit-regressions.test.ts`; open items listed there) |
 | 5 Full docs + `.github` | ✅ README, `docs/*` guides, CI, templates, CODEOWNERS, dependabot, LICENSE, SECURITY/CONTRIBUTING |
 
-Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 750 passed / 1 skipped,
-`pnpm build` OK, `pnpm loadtest` (small N) OK.
+Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 777 passed / 1 skipped,
+`pnpm build` OK.
 
-**What is left:** Step C live run (below), owner follow-ups in `docs/SECURITY-AUDIT.md`, update PR #1's description and mark it
-ready (the PR's head is `feat/initial-build`), remove the old worktree on the owner's PC, rotate the live keys after testing.
+**State:** everything is done and merged into `main` (PR #1). Owner follow-ups: rotate the temporary live keys; re-run live
+scenario H (Claude Code CLI) on a workstation; the only open audit item is D2 (`braces` transitive dev dependency, no fixed
+version published - see `docs/SECURITY-AUDIT.md`). Step list below is historical.
 
-## 6. Exactly where to resume (do these in order)
+## 6. Exactly where to resume (historical - all steps done)
 
 ### Step A — finish the live-workload fix batch (`docs/FIXES-PROGRESS.md` has file-level detail)
 1. Run the gates: `pnpm typecheck && pnpm lint && pnpm test && pnpm build`. Fix anything red.
