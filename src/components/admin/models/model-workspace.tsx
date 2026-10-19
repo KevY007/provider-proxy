@@ -67,7 +67,7 @@ export function ModelWorkspace({
     return u;
   }, [f.capabilities]);
   // What customers actually pay (derived when a rule is active) feeds the route margin previews.
-  const preview = usePricingPreview(gridValues, f.pricingMode, f.pricingValue);
+  const preview = usePricingPreview(gridValues, f.pricingMode, f.pricingValue, 1, f.pricingAdjust);
   const effectiveSell = useMemo<Record<string, string>>(() => {
     const rec = { ...(f as unknown as Record<string, string>) };
     if (f.pricingMode !== "FIXED") {
@@ -198,9 +198,12 @@ export function ModelWorkspace({
               <RuleSelector
                 mode={f.pricingMode}
                 value={f.pricingValue}
-                onMode={(m) => setF((s) => ({ ...s, pricingMode: m, pricingValue: m === "FIXED" ? s.pricingValue : s.pricingValue || (m === "PERCENT_OF_OFFICIAL" ? "100" : "30") }))}
+                onMode={(m) => setF((s) => ({ ...s, pricingMode: m, pricingValue: m === "FIXED" ? s.pricingValue : s.pricingValue || (m === "MARKUP_OVER_COST" ? "30" : "100") }))}
                 onValue={(v) => set("pricingValue", v)}
                 valueError={fieldErrors.pricingValue}
+                adjust={f.pricingAdjust}
+                onAdjust={(v) => set("pricingAdjust", v)}
+                adjustError={fieldErrors.pricingAdjust}
               />
               {costRoute ? (
                 <p className="text-xs text-muted-foreground">

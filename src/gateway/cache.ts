@@ -97,6 +97,9 @@ export interface RouteRec {
   cost: PriceTable;
   /** Batch API: percent the supplier takes off the token prices of batch results. */
   batchCostDiscountPct?: Decimal;
+  /** The route cost follows the provider's published price (re-read lazily during calls). */
+  autoCostSync?: boolean;
+  autoCostSyncedAt?: number | null;
 }
 
 export interface GroupRec {
@@ -269,6 +272,8 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       maxOutputTokens: r.maxOutputTokens,
       cost: costTable(r),
       batchCostDiscountPct: toDecimal(r.batchCostDiscountPct, 50),
+      autoCostSync: r.autoCostSync,
+      autoCostSyncedAt: r.autoCostSyncedAt ? r.autoCostSyncedAt.getTime() : null,
     };
     const arr = routesByModel.get(r.modelId);
     if (arr) arr.push(rec);

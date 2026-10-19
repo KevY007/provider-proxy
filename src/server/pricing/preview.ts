@@ -3,8 +3,15 @@
 // Vocabulary (PLAN 9c): Official price = the maker's public list price · Customer price ("Your price") = what we charge
 // (after multipliers) · Our cost = what we pay our supplier · Savings = official - customer · Margin = customer - cost.
 
-export type PricingModeValue = "FIXED" | "PERCENT_OF_OFFICIAL" | "MARKUP_OVER_COST";
-export type PricingRule = { mode: PricingModeValue; value: number | null };
+export type PricingModeValue = "FIXED" | "PERCENT_OF_OFFICIAL" | "MARKUP_OVER_COST" | "PERCENT_OF_COST";
+/**
+ * `adjust` (optional, signed) is added to every unit price the rule derives, in that unit's own terms (USD per 1M tokens
+ * for token units, per image / request / second / minute for flat units). The result never goes below 0.
+ */
+export type PricingRule = { mode: PricingModeValue; value: number | null; adjust?: number | null };
+
+/** Modes whose basis is the primary route's cost (auto-updated costs flow through these). */
+export const COST_BASED_MODES: ReadonlySet<PricingModeValue> = new Set(["MARKUP_OVER_COST", "PERCENT_OF_COST"]);
 
 /** Billable units. Token units are USD per 1M; image/request = USD each; perSecond/perMinute = USD per second/minute; perMillionChars = USD per 1M chars. */
 export type PriceUnitKey =
@@ -75,23 +82,30 @@ export function cleanNumber(n: number): number {
 
 /** Customer price of one unit under a rule, BEFORE the multiplier. null = the rule has no basis for this unit. */
 export function deriveUnitPrice(rule: PricingRule, official: number | null | undefined, cost: number | null | undefined): number | null {
+  let base: number | null = null;
   if (rule.mode === "PERCENT_OF_OFFICIAL") {
     if (!isNum(official) || !isNum(rule.value)) return null;
-    return cleanNumber((official * rule.value) / 100);
-  }
-  if (rule.mode === "MARKUP_OVER_COST") {
+    base = (official * rule.value) / 100;
+  } else if (rule.mode === "MARKUP_OVER_COST") {
     if (!isNum(cost) || !isNum(rule.value)) return null;
-    return cleanNumber(cost * (1 + rule.value / 100));
+    base = cost * (1 + rule.value / 100);
+  } else if (rule.mode === "PERCENT_OF_COST") {
+    if (!isNum(cost) || !isNum(rule.value)) return null;
+    base = (cost * rule.value) / 100;
   }
-  return null;
+  if (base === null) return null;
+  const adj = isNum(rule.adjust) ? rule.adjust : 0;
+  return cleanNumber(Math.max(0, base + adj));
 }
 
 /** Validation message for a rule, or null when it is usable. */
 export function validateRule(rule: PricingRule): string | null {
   if (rule.mode === "FIXED") return null;
-  if (!isNum(rule.value)) return rule.mode === "PERCENT_OF_OFFICIAL" ? "Enter the percentage of the official price to charge." : "Enter the markup percentage over our cost.";
+  if (!isNum(rule.value)) return rule.mode === "PERCENT_OF_OFFICIAL" ? "Enter the percentage of the official price to charge." : rule.mode === "PERCENT_OF_COST" ? "Enter the percentage of our cost to charge." : "Enter the markup percentage over our cost.";
   if (rule.mode === "PERCENT_OF_OFFICIAL" && (rule.value <= 0 || rule.value > 1000)) return "Percent of official must be between 0 and 1000.";
   if (rule.mode === "MARKUP_OVER_COST" && (rule.value <= -100 || rule.value > 10000)) return "Markup must be greater than -100% and at most 10000%.";
+  if (rule.mode === "PERCENT_OF_COST" && (rule.value <= 0 || rule.value > 10000)) return "Percent of our cost must be between 0 and 10000.";
+  if (rule.adjust !== undefined && rule.adjust !== null && (!isNum(rule.adjust) || Math.abs(rule.adjust) > 1_000_000)) return "The adjustment must be a number (it can be negative).";
   return null;
 }
 
@@ -139,7 +153,7 @@ export function previewPricing(input: PricingPreviewInput): PricingPreview {
       if (isNum(cost) && price < cost) warnings.push(`${label}: customer price is below our cost (loss)`);
       else if (isNum(cost) && price === cost && cost > 0) warnings.push(`${label}: customer price equals our cost (no margin)`);
       if (!isNum(off) && price > 0) warnings.push(`${label}: no official price set, savings cannot be shown`);
-      if (!isNum(cost) && price > 0 && input.rule.mode !== "MARKUP_OVER_COST") warnings.push(`${label}: no cost on the primary route, margin unknown`);
+      if (!isNum(cost) && price > 0 && !COST_BASED_MODES.has(input.rule.mode)) warnings.push(`${label}: no cost on the primary route, margin unknown`);
       if (price === 0 && ((isNum(cost) && cost > 0) || (isNum(off) && off > 0))) warnings.push(`${label}: customer price is zero - this unit would be free`);
       if (isNum(off) && off > 0 && price > off) warnings.push(`${label}: customer price is above the official price`);
     } else if (isNum(off) && off > 0 && input.rule.mode === "FIXED") {

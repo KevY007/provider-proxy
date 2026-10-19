@@ -20,7 +20,7 @@ import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
 import { TextField } from "@/components/common/form-fields";
 import { bulkApplyPricingRule, deleteModel, duplicateModel, exportModels } from "@/server/admin/models-actions";
-import { compactUnits, fmtPct, marginTone, MODEL_CAPABILITIES, MODEL_STATUSES, PRICING_MODE_LABELS, type PricingModeId } from "@/server/admin/models-calc";
+import { ruleSummary, compactUnits, fmtPct, marginTone, MODEL_CAPABILITIES, MODEL_STATUSES, PRICING_MODE_LABELS, type PricingModeId } from "@/server/admin/models-calc";
 import type { ModelRow } from "@/server/admin/models-queries";
 import { cn, formatCompact } from "@/lib/utils";
 import { ModelImportDialog } from "./import-dialog";
@@ -128,7 +128,7 @@ export function ModelsView({ rows, vendors }: { rows: ModelRow[]; vendors: strin
           )}
           {r.pricingMode !== "FIXED" && (
             <Badge variant="outline" className="gap-1 text-[10px]" title={PRICING_MODE_LABELS[r.pricingMode as PricingModeId]?.label}>
-              <Percent className="size-3" /> {r.pricingMode === "PERCENT_OF_OFFICIAL" ? `${r.pricingValue ?? "?"}% of official` : `+${r.pricingValue ?? "?"}% over cost`}
+              <Percent className="size-3" /> {ruleSummary(r.pricingMode, r.pricingValue, r.pricingAdjust)}
             </Badge>
           )}
         </div>
@@ -352,7 +352,7 @@ function ApplyRuleDialog({ target, onClose }: { target: { ids: string[]; clear: 
         return res.ok;
       }}
     >
-      <RuleSelector mode={mode} value={value} onMode={(m) => { setMode(m); if (m === "PERCENT_OF_OFFICIAL" && !value) setValue("100"); if (m === "MARKUP_OVER_COST" && !value) setValue("30"); }} onValue={setValue} valueError={fieldErrors.value} />
+      <RuleSelector mode={mode} value={value} onMode={(m) => { setMode(m); if (m === "PERCENT_OF_OFFICIAL" && !value) setValue("100"); if (m === "MARKUP_OVER_COST" && !value) setValue("30"); if (m === "PERCENT_OF_COST" && !value) setValue("100"); }} onValue={setValue} valueError={fieldErrors.value} />
       <p className={cn("text-xs text-muted-foreground", mode === "FIXED" && "text-amber-700 dark:text-amber-400")}>
         {mode === "FIXED" ? "Fixed keeps today's prices as they are and stops automatic updates." : "Models without an official price (or without a route cost for markup) keep their current prices."}
       </p>

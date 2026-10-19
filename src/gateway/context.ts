@@ -210,6 +210,12 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
     ...patch,
   });
   settleFunds(ctx, charge.price);
+  // routes with an auto-updated cost refresh it lazily during real calls (never on a timer)
+  const route = ctx.chosen?.route;
+  if (route?.autoCostSync && p.status === "SUCCESS" && ctx.snap) {
+    const settings = ctx.snap.settings;
+    void import("@/server/pricing/auto-sync").then((m) => m.noteRouteCall(route, settings)).catch(() => undefined);
+  }
   return charge;
 }
 

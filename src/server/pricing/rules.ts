@@ -5,6 +5,8 @@
 // A model whose `pricingMode` is PERCENT_OF_OFFICIAL or MARKUP_OVER_COST has its customer ("sell") prices DERIVED:
 //   PERCENT_OF_OFFICIAL : sell = official x pricingValue / 100
 //   MARKUP_OVER_COST    : sell = primary-route cost x (1 + pricingValue / 100)
+//   PERCENT_OF_COST     : sell = primary-route cost x pricingValue / 100
+//   ... then + pricingAdjust (signed, per unit, never below 0)
 // "Primary route" = the highest-priority ENABLED route (ties: higher weight, then oldest).
 // Whenever one of the INPUTS of that derivation changes you MUST call
 //
@@ -32,7 +34,7 @@ export { deriveSellUpdates };
 export async function recomputeModelPrices(modelId: string): Promise<{ changed: boolean }> {
   const model = await db.model.findUnique({ where: { id: modelId } });
   if (!model || model.pricingMode === "FIXED") return { changed: false };
-  const rule: PricingRule = { mode: model.pricingMode, value: model.pricingValue === null ? null : Number(model.pricingValue.toString()) };
+  const rule: PricingRule = { mode: model.pricingMode, value: model.pricingValue === null ? null : Number(model.pricingValue.toString()), adjust: model.pricingAdjust === null ? null : Number(model.pricingAdjust.toString()) };
   if (validateRule(rule)) return { changed: false };
   const route = await db.modelRoute.findFirst({ where: { modelId, enabled: true }, orderBy: [{ priority: "desc" }, { weight: "desc" }, { createdAt: "asc" }] });
   const updates = deriveSellUpdates(model as unknown as Row, route as unknown as Row | null, rule);
@@ -59,7 +61,8 @@ export async function applyPricingRule(modelIds: string[], rule: PricingRule): P
   const problem = validateRule(rule);
   if (problem) throw new Error(problem);
   const value = rule.mode === "FIXED" || rule.value === null ? null : toDbString(new Decimal(rule.value));
-  const res = await db.model.updateMany({ where: { id: { in: ids } }, data: { pricingMode: rule.mode, pricingValue: value } });
+  const adjust = rule.mode === "FIXED" || rule.adjust === null || rule.adjust === undefined || rule.adjust === 0 ? null : toDbString(new Decimal(rule.adjust));
+  const res = await db.model.updateMany({ where: { id: { in: ids } }, data: { pricingMode: rule.mode, pricingValue: value, ...(rule.adjust !== undefined ? { pricingAdjust: adjust } : {}) } });
   if (rule.mode !== "FIXED") {
     for (const id of ids) await recomputeModelPrices(id);
   }

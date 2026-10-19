@@ -70,24 +70,27 @@ export function deriveSellUpdates(model: Row, route: Row | null, rule: PricingRu
   const out: Record<string, FieldValue> = {};
   if (rule.mode === "FIXED" || rule.value === null || rule.value === undefined) return out;
   const value = new Decimal(rule.value);
-  const factor = rule.mode === "PERCENT_OF_OFFICIAL" ? value.div(100) : value.div(100).plus(1);
+  const factor = rule.mode === "MARKUP_OVER_COST" ? value.div(100).plus(1) : value.div(100); // PERCENT_OF_OFFICIAL / PERCENT_OF_COST
+  const adjust = rule.adjust !== null && rule.adjust !== undefined && Number.isFinite(rule.adjust) ? new Decimal(rule.adjust) : null;
+  const costBased = rule.mode !== "PERCENT_OF_OFFICIAL";
 
   const apply = (sellCol: string, basis: Decimal | null) => {
     if (!basis) return;
-    const next = basis.times(factor);
+    let next = basis.times(factor);
+    if (adjust) next = Decimal.max(0, next.plus(adjust)); // signed per-unit adjustment, never below 0
     const cur = toDec(model[sellCol]);
     if (!cur || !cur.equals(next)) out[sellCol] = toDbString(next);
   };
 
   for (const f of UNIT_FIELDS) {
-    if (rule.mode === "PERCENT_OF_OFFICIAL") apply(f.sell, f.official ? toDec(model[f.official]) : null);
+    if (!costBased) apply(f.sell, f.official ? toDec(model[f.official]) : null);
     else if (route) apply(f.sell, toDec(route[f.cost]));
   }
   // the 1h cache write has no official column of its own: its basis is the route cost (the list price when the supplier is the maker)
-  if (route && (rule.mode === "MARKUP_OVER_COST" || toDec(model.officialCacheWritePrice))) apply(CACHE_WRITE_1H.sell, toDec(route[CACHE_WRITE_1H.cost]));
+  if (route && (costBased || toDec(model.officialCacheWritePrice))) apply(CACHE_WRITE_1H.sell, toDec(route[CACHE_WRITE_1H.cost]));
 
   // ---- server tools
-  const basis = rule.mode === "PERCENT_OF_OFFICIAL" ? toolMap(model[TOOL_COLUMNS.official]) : route ? toolMap(route[TOOL_COLUMNS.cost]) : {};
+  const basis = !costBased ? toolMap(model[TOOL_COLUMNS.official]) : route ? toolMap(route[TOOL_COLUMNS.cost]) : {};
   if (Object.keys(basis).length) {
     const current = toolMap(model[TOOL_COLUMNS.sell]);
     const next: Record<string, string> = Object.fromEntries(Object.entries(current).map(([k, v]) => [k, toDbString(v)]));
