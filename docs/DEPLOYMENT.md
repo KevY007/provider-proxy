@@ -32,10 +32,10 @@ probes and `curl` still use HTTP/1.1.
 
 | # | Step | Notes |
 |---|---|---|
-| 1 | Enable APIs | run, cloudbuild, artifactregistry, sqladmin, secretmanager, cloudscheduler, redis, vpcaccess, compute |
+| 1 | Enable APIs | run, cloudbuild, artifactregistry, sqladmin, secretmanager (+ cloudscheduler, redis, compute only if you use them) |
 | 2 | Artifact Registry repo | Docker format |
-| 3 | Cloud SQL Postgres 16 | Database `proxy`, user `proxy`. `DATABASE_URL=postgresql://proxy:PASS@localhost/proxy?host=/cloudsql/PROJECT:REGION:INSTANCE` (URL-encode the password). Keep `max-instances x DB_POOL_SIZE` under the instance's connection limit. Use `--availability-type=regional` for HA. |
-| 4 | Memorystore Redis + VPC connector (optional) | Recommended with more than one instance. Without it, slots, holds, rate limits, sticky Responses and cache invalidation are per instance (invalidation then waits for the 30 s TTL). |
+| 3 | Cloud SQL Postgres 16 | Database `proxy`, user `proxy`. `DATABASE_URL=postgresql://proxy:PASS@localhost/proxy?host=/cloudsql/PROJECT:REGION:INSTANCE` (URL-encode the password). Keep `max-instances x DB_POOL_SIZE` under the instance's connection limit. Lean: `db-g1-small` (Enterprise edition) with daily backups + point-in-time recovery. Use a dedicated-core tier and `--availability-type=regional` for HA when traffic grows. |
+| 4 | Memorystore Redis (scale-out only) | Required with more than one instance (reached through Direct VPC egress, no connector). The lean profile runs one instance without it. Without it, slots, holds, rate limits, sticky Responses and cache invalidation are per instance (invalidation then waits for the 30 s TTL). |
 | 5 | Secret Manager | `DATABASE_URL`, `SESSION_SECRET`, `ENCRYPTION_KEY`, `CRON_SECRET`, `ADMIN_PASSWORD`, optionally `REDIS_URL`, `STRIPE_*` and `SMTP_URL` |
 | 6 | Service account | `roles/cloudsql.client`, `roles/secretmanager.secretAccessor`. Cloud Build needs `run.admin` and `iam.serviceAccountUser` on it. |
 | 7 | Build | `gcloud builds submit --tag $IMAGE .` |
@@ -64,7 +64,9 @@ openssl rand -hex 24      # CRON_SECRET
 | `--min-instances=0` (default) | Scale to zero when nobody calls: no instance cost while idle. The first call after an idle period waits for a cold start (a few seconds). Use `--min-instances=1` for no cold starts, or for 24/7 timers (see below). |
 | `--concurrency=250` | Streams are I/O bound. Lower it if CPU saturates. |
 | `--execution-environment=gen2`, `--cpu=2 --memory=2Gi --cpu-boost` | Multipart and JSON bodies are spooled to `/tmp`, which is **in memory** on Cloud Run. Size memory for the uploads in flight at once. JSON bodies take about 3x their size while parsed. |
-| `--add-cloudsql-instances`, `--vpc-connector --vpc-egress=private-ranges-only` | DB socket; Redis (drop if no Redis) |
+| `--add-cloudsql-instances` | DB socket |
+| `--max-instances=1 --cpu=1 --memory=1Gi` (lean) | Without Redis, limits and funds holds are per instance, so one instance only. Scale-out: Redis, `--network=default --subnet=default --vpc-egress=private-ranges-only`, more instances, `--cpu=2 --memory=2Gi`. |
+| `--cpu-boost`, startup probe `initialDelaySeconds=0,periodSeconds=1` | Shorter cold starts: the instance takes traffic as soon as it is ready |
 | `--startup-probe` / `--liveness-probe` `httpGet.path=/api/healthz` | Only the DB gates readiness |
 | env `APP_URL=https://$DOMAIN`, `TRUSTED_PROXY_HOPS=1` (2 behind a Global LB), `DB_POOL_SIZE`, `ADMIN_EMAIL`, `EMAIL_FROM` | |
 
@@ -77,6 +79,36 @@ and scale-in of idle instances. Keep deploys rolling (the default). On plain Doc
 Upstream HTTP/2 is separate from `--use-http2` and is off by default. Enable it per provider with
 `"http2": true` in the provider's Settings JSON, and only for providers known to handle h2 well, because one lost h2
 connection ends every stream on it.
+
+## Profiles and cost
+
+Approximate list prices (us-central1, October 2026). Check them in the Google Cloud pricing calculator for your
+region before you rely on them.
+
+| Piece | Lean profile (default) | Scale-out profile |
+|---|---|---|
+| Cloud Run | 0 while idle (scales to zero). While an instance is up: 1 vCPU + 1 GiB, about $0.07 per hour (instance-based billing because of `--no-cpu-throttling`). An instance stays up for up to about 15 minutes after the last request. | 2 vCPU + 2 GiB per instance, about $0.14 per hour each |
+| Cloud Run with `--min-instances=1` | about $53 per month for 1 vCPU + 1 GiB, always warm | per instance kept warm |
+| Cloud SQL | `db-g1-small` about $26/month + 10 GB SSD about $2 + backups | `db-custom-1-3840` about $50/month, or more; regional HA doubles it |
+| Memorystore Redis | none | basic 1 GB about $36/month |
+| VPC | none | Direct VPC egress: no idle cost (a Serverless VPC connector would add about $12/month) |
+| Cloud Scheduler | none (optional) | optional, 3 jobs free per billing account |
+| Secret Manager, Artifact Registry | cents | cents |
+
+So an idle lean deployment costs roughly what its database costs (about $30 per month). Everything else is
+paid only while calls are served.
+
+### Cold starts
+
+Measured with the production build (the same files as the container): the server answers its health check about
+1 s after the process starts, and the first API call after that takes about 1 s more (loading the gateway and its
+config). Later calls add about 10-30 ms of gateway overhead. On Cloud Run, add the container start (usually under
+1-2 s with `--cpu-boost` and a cached image). **Expect about 2-4 s for the first call after an idle period** and
+normal speed from then on. The instance stays warm while calls keep coming and for up to about 15 minutes after
+the last one.
+
+If the service fronts your main app around the clock and even an occasional 2-4 s first call matters, set
+`--min-instances=1` (about $53/month for 1 vCPU + 1 GiB). That also keeps the optional monitoring timers running.
 
 ## Running cold (cost) and 24/7 monitoring
 
