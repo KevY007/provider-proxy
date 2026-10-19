@@ -9,7 +9,7 @@ import { useAction } from "@/components/admin/use-action";
 import { createRoute } from "@/server/admin/models-actions";
 import { MODEL_PRICE_PAIRS } from "@/server/admin/models-calc";
 import type { WizardProvider } from "@/server/admin/models-queries";
-import { officialAsCost, stepForField, toolsToFields } from "@/server/admin/wizard-calc";
+import { officialAsCost, tableToFields, stepForField, toolsToFields } from "@/server/admin/wizard-calc";
 import type { PriceUnitKey } from "@/server/pricing/preview";
 import { PriceGrid, type PriceValues } from "./pricing-editor";
 import { ProviderPicker, Stepper, UpstreamModelPicker, type PickedModel } from "./wizard-parts";
@@ -53,7 +53,8 @@ export function AddRouteWizard({
     const direct = p.lookup?.direct ?? false;
     setUpstreamModel(p.id);
     // direct providers charge the official price; otherwise start from the model's official price as a reference only when we know it is direct
-    setCosts(direct ? officialAsCost(known?.official) : {});
+    const remote = p.row?.remote ?? null;
+    setCosts(direct ? officialAsCost(known?.official) : remote ? tableToFields(remote.prices, "cost") : {});
     setToolCosts(direct ? toolsToFields(known?.tools) : {});
     setHint(direct ? "This provider is the model's maker, so Our cost starts equal to the official price." : "Enter what this provider charges you for each unit.");
     setErrors({});

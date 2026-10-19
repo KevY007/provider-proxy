@@ -7,12 +7,15 @@ import { logger } from "@/lib/logger";
 import { buildUpstreamHeaders } from "./providers/adapters";
 import { toAdapter } from "./health";
 import { KNOWN_PRICES, lookupKnownPrice, type KnownPrice } from "./price-catalog";
+import { NO_PRICE_API_PRESETS, fetchRemotePricing, parseRemotePricing, type RemotePrice, type RemotePricingResult } from "./remote-pricing";
 import type { JsonObject } from "./types";
 import { ClientAbortError, UpstreamTimeoutError, readTextLimited, sendUpstream } from "./upstream";
 import { isObject, safeJsonParse } from "./util";
 
 export type UpstreamModel = {
   id: string;
+  /** What the provider itself says it charges for this model (its own price API), when it publishes prices. */
+  remote?: RemotePrice | null;
   ownedBy?: string;
   shutdownDate?: string | null; // ISO date when the upstream announces retirement
   known?: KnownPrice | null;
@@ -26,6 +29,9 @@ const MAX_BODY = 8 * 1024 * 1024;
 
 const g = globalThis as unknown as { __ppUpstreamModels?: Map<string, { at: number; items: UpstreamModel[] }> };
 const cache = (g.__ppUpstreamModels ??= new Map<string, { at: number; items: UpstreamModel[] }>());
+
+/** The provider row fields the listing needs (a saved provider, or an unsaved draft from the admin form). */
+export type ProviderLike = Parameters<typeof toAdapter>[0] & { formats: string[] };
 
 const trimSlash = (s: string) => s.replace(/\/+$/, "");
 const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
@@ -76,7 +82,7 @@ function catalogFor(vendor: string): UpstreamModel[] {
   return KNOWN_PRICES.filter((k) => k.vendor === vendor).map((k) => ({ id: k.model, ownedBy: vendor, shutdownDate: k.retiresAt ?? null }));
 }
 
-async function fetchList(provider: NonNullable<Awaited<ReturnType<typeof loadProvider>>>, secret: string, keyExtra: JsonObject): Promise<UpstreamModel[]> {
+async function fetchList(provider: ProviderLike, secret: string, keyExtra: JsonObject, seen?: { url?: string; doc?: JsonObject }): Promise<UpstreamModel[]> {
   const adapter = toAdapter(provider);
   const s = adapter.settings;
   const formats = provider.formats;
@@ -120,6 +126,10 @@ async function fetchList(provider: NonNullable<Awaited<ReturnType<typeof loadPro
   const root = adapter.authStyle === "AZURE_API_KEY" || adapter.preset === "azure" ? `${adapter.baseUrl}/openai` : (str(s.openaiBaseUrl) ?? adapter.baseUrl);
   const url = withKey(adapter.preset === "azure" ? `${root}/models?api-version=${encodeURIComponent(str(s.azureApiVersion) ?? "2025-04-01-preview")}` : `${trimSlash(root)}/models`);
   const j = await getJson(url, hdr("openai_chat"));
+  if (seen) {
+    seen.url = adapter.preset === "azure" ? undefined : `${trimSlash(root)}/models`;
+    seen.doc = j; // (prices published on the list itself are read from here, without a second request)
+  }
   for (const m of Array.isArray(j.data) ? j.data : []) {
     if (!isObject(m) || typeof m.id !== "string") continue;
     out.push({ id: m.id, ownedBy: str(m.owned_by), shutdownDate: isoDate(m.shutdown_date) });
@@ -156,13 +166,22 @@ export async function listUpstreamModels(providerId: string): Promise<UpstreamMo
       } catch {
         throw new Error("The provider key could not be decrypted (ENCRYPTION_KEY changed?).");
       }
+      const keyExtra = (isObject(key.extra) ? key.extra : {}) as JsonObject;
+      const seen: { url?: string; doc?: JsonObject } = {};
       try {
-        items = await fetchList(provider, secret, (isObject(key.extra) ? key.extra : {}) as JsonObject);
+        items = await fetchList(provider, secret, keyExtra, seen);
       } catch (err) {
         if (err instanceof ListError) throw new Error(err.message);
         logger.warn("listing upstream models failed", { providerId, err: err instanceof Error ? err.message : "unknown" });
         throw new Error("The provider's model list could not be fetched.");
       }
+      // the provider's own published prices (resellers, other proxies, OpenRouter ...): a starting point for Our cost
+      const prices = seen.doc ? parseRemotePricing(seen.doc, "/models") : new Map<string, RemotePrice>();
+      if (!NO_PRICE_API_PRESETS.has(provider.preset)) {
+        const more = await fetchRemotePricing(toAdapter(provider), secret, keyExtra, { timeoutMs: 6_000, skipUrls: seen.url ? [seen.url] : [] }).catch(() => null);
+        for (const [id, p] of more?.prices ?? []) if (!prices.has(id)) prices.set(id, p);
+      }
+      if (prices.size) items = items.map((m) => ({ ...m, remote: prices.get(m.id) ?? null }));
     }
     items.sort((a, b) => a.id.localeCompare(b.id));
     raw = { at: Date.now(), items };
@@ -174,6 +193,38 @@ export async function listUpstreamModels(providerId: string): Promise<UpstreamMo
     const known = lookupKnownPrice(provider.preset, m.id);
     return { ...m, shutdownDate: m.shutdownDate ?? known?.retiresAt ?? null, known, alreadyRouted: routed.has(m.id) };
   });
+}
+
+export interface ProbeResult {
+  latencyMs: number;
+  models: { ok: boolean; count: number; sample: string[]; error?: string };
+  pricing: { count: number; rows: Array<{ id: string } & RemotePrice>; tried: RemotePricingResult["tried"] };
+}
+
+/**
+ * "Test connection" / "Fetch pricing" for a provider - saved or still a draft in the admin form: list the models with
+ * the given credential and read the provider's published prices. Never returns the secret; errors are secret-free.
+ */
+export async function probeProvider(provider: ProviderLike, secret: string | null, keyExtra: JsonObject = {}, opts: { pricing?: boolean; models?: boolean } = {}): Promise<ProbeResult> {
+  const t0 = Date.now();
+  const res: ProbeResult = { latencyMs: 0, models: { ok: false, count: 0, sample: [] }, pricing: { count: 0, rows: [], tried: [] } };
+  if (opts.models !== false) {
+    if (!secret && provider.preset !== "fal" && provider.preset !== "replicate") res.models.error = "Enter an API key (or add one to the provider) to test the connection.";
+    else {
+      try {
+        const items = await fetchList(provider, secret ?? "", keyExtra);
+        res.models = { ok: true, count: items.length, sample: items.slice(0, 12).map((m) => m.id) };
+      } catch (err) {
+        res.models.error = err instanceof ListError ? err.message : "The provider could not be reached.";
+      }
+    }
+    res.latencyMs = Date.now() - t0;
+  }
+  if (opts.pricing !== false) {
+    const r = await fetchRemotePricing(toAdapter(provider), secret, keyExtra, { timeoutMs: 8_000 });
+    res.pricing = { count: r.prices.size, rows: [...r.prices.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(0, 500).map(([id, p]) => ({ id, ...p })), tried: r.tried };
+  }
+  return res;
 }
 
 export function __resetUpstreamModelsCacheForTests(): void {

@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { BASE, ctx, db, guard, mkdir, OUT, Scn, tracked, raw } from "./lib";
 
-const CLAUDE = process.env.CLAUDE_BIN ?? "C:/Users/rehab/.local/bin/claude.exe";
+const CLAUDE = process.env.CLAUDE_BIN ?? (process.platform === "win32" ? "C:/Users/rehab/.local/bin/claude.exe" : "claude");
 
 function runClaude(args: string[], prompt: string, cwd: string, configDir: string, timeoutMs: number, defaultEnv = false): Promise<{ code: number | null; stdout: string; stderr: string; ms: number }> {
   return new Promise((resolve) => {

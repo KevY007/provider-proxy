@@ -209,7 +209,7 @@ export async function scenarioE(s: Scn) {
   const call = async () => {
     const t0 = Date.now();
     const r = await c
-      .messages.create({ model: "claude-sonnet-5-5", max_tokens: 200, messages: [{ role: "user", content: [{ type: "text", text: doc, cache_control: { type: "ephemeral" } }, { type: "text", text: "\n\nQuestion: what is the vault passphrase mentioned in the sample room note? Reply with only the passphrase." }] }] })
+      .messages.create({ model: "claude-sonnet-5-5", max_tokens: 2000, messages: [{ role: "user", content: [{ type: "text", text: doc, cache_control: { type: "ephemeral" } }, { type: "text", text: "\n\nQuestion: what is the vault passphrase mentioned in the sample room note? Reply with only the passphrase." }] }] })
       .withResponse();
     return { msg: r.data, rid: await nextId(r), ms: Date.now() - t0 };
   };

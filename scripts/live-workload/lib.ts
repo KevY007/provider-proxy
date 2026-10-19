@@ -415,7 +415,9 @@ export async function runScenario(id: string, title: string, fn: (s: Scn) => Pro
     reqs = await verifyRequests(s, since);
     await sleep(1800); // let the batched meter-writer flush balance updates
     const balAfter = D((await db.user.findUniqueOrThrow({ where: { id: ctx.userId }, select: { balance: true } })).balance);
-    const sumP = reqs.reduce((a, r) => a.plus(r.price), new Decimal(0));
+    // + Batch API results: metered as their own rows (deterministic ids, batchId set), not under a tracked request id
+    const batchRows = await db.requestLog.findMany({ where: { userId: ctx.userId, batchId: { not: null }, createdAt: { gte: new Date(since - 60_000) } }, select: { price: true } });
+    const sumP = reqs.reduce((a, r) => a.plus(r.price), new Decimal(0)).plus(batchRows.reduce((a, r) => a.plus(D(r.price)), new Decimal(0)));
     const spent = balBefore.minus(balAfter);
     // refunds/credits excluded; other concurrent traffic does not exist (sequential scenarios)
     s.check("balance decreased by exactly the sum of the logged prices", spent.minus(sumP).abs().lte(0.000001), `balance moved ${spent.toSignificantDigits(8)} vs logged ${sumP.toSignificantDigits(8)}`);

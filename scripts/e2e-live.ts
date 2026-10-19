@@ -7,7 +7,7 @@
  *
  * It creates (via the database / server functions, not the browser) a throwaway customer `live-e2e@example.com`
  * with $5 and fresh API keys, then drives the gateway over HTTP and asserts for every call: status, wire shape,
- * model-name masking, and metering - a RequestLog row with price > cost > 0, profit == price - cost, the user's
+ * model-name masking, and metering - a RequestLog row with price >= cost > 0, profit == price - cost, the user's
  * balance decreased by EXACTLY the logged price and ApiKey.spent grew by the same amount.
  * The video check (one sora-2 job, 4 s, ~$0.40 upstream) only runs when everything before it passed AND the model is
  * enabled. NOTE: OpenAI shut the Sora API down on 2026-09-24 (GET /v1/models/sora-2 carries that shutdown_date and
@@ -158,8 +158,9 @@ async function billed(requestId: string | null, before: Snap, e: BilledExpect = 
     assert(price.isZero() && cost.isZero(), `free upstream expected, got price=${price} cost=${cost}`);
   } else {
     assert(cost.gt(0), `cost must be > 0 (got ${cost})`);
-    assert(price.gt(cost), `price must exceed cost (price=${price} cost=${cost})`);
-    assert(profit.gt(0), `profit must be > 0 (got ${profit})`);
+    // (match-official default: price == cost on official-vendor routes, so profit can be exactly 0)
+    assert(price.gte(cost), `price must not be below cost (price=${price} cost=${cost})`);
+    assert(profit.gte(0), `profit must be >= 0 (got ${profit})`);
     assert(profit.equals(price.minus(cost)), `profit ${profit} != price ${price} - cost ${cost}`);
   }
   assert(before.balance.minus(after.balance).equals(price), `balance moved by ${before.balance.minus(after.balance)} but the logged price is ${price}`);

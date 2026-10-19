@@ -74,8 +74,10 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
   function onPick(p: PickedModel) {
     const known = p.row?.known ?? p.lookup?.known ?? null;
     const direct = p.lookup?.direct ?? false;
-    const official = tableToFields(known?.official, "official");
-    const cost = direct ? officialAsCost(known?.official) : {};
+    // what the provider itself publishes through its API (reseller / proxy / OpenRouter): a starting point for Our cost
+    const remote = p.row?.remote ?? null;
+    const official = known ? tableToFields(known.official, "official") : tableToFields(remote?.official, "official");
+    const cost = direct ? officialAsCost(known?.official) : remote ? tableToFields(remote.prices, "cost") : {};
     const next = { ...official, ...cost };
     const rule = defaultRule(next);
     setUpstreamModel(p.id);
@@ -89,18 +91,21 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
       displayName: known?.displayName ?? prettyModelName(p.id),
       vendor: known?.vendor ?? (provider && !["custom", "openrouter", "together", "fireworks", "azure"].includes(provider.preset) ? provider.preset : ""),
       capabilities: known?.capabilities?.length ? known.capabilities.filter((c) => (MODEL_CAPABILITIES as readonly string[]).includes(c)) : ["chat"],
-      contextWindow: known?.contextWindow ? String(known.contextWindow) : "",
-      maxOutput: known?.maxOutput ? String(known.maxOutput) : "",
+      contextWindow: known?.contextWindow ? String(known.contextWindow) : remote?.contextWindow ? String(remote.contextWindow) : "",
+      maxOutput: known?.maxOutput ? String(known.maxOutput) : remote?.maxOutput ? String(remote.maxOutput) : "",
       retiresAt: (p.row?.shutdownDate ?? known?.retiresAt ?? "").slice(0, 10),
       status: "ACTIVE",
     });
     setErrors({});
+    const fromApi = !direct && remote ? ` Our cost is prefilled from the prices this provider publishes through its API (${remote.source}); check them before saving.` : "";
     if (known) {
       setNote(
         known.needsReview
-          ? { tone: "warn", text: "We found this model in our built-in price list, but the numbers are a best guess. Please check them against the vendor's pricing page." }
-          : { tone: "ok", text: direct ? "Prefilled from our built-in price list. This provider is the model's maker, so Our cost starts equal to the Official price." : "Official prices prefilled from our built-in price list. Enter what this provider charges you as Our cost." },
+          ? { tone: "warn", text: `We found this model in our built-in price list, but the numbers are a best guess. Please check them against the vendor's pricing page.${fromApi}` }
+          : { tone: "ok", text: direct ? "Prefilled from our built-in price list. This provider is the model's maker, so Our cost starts equal to the Official price." : `Official prices prefilled from our built-in price list.${fromApi || " Enter what this provider charges you as Our cost."}` },
       );
+    } else if (remote) {
+      setNote({ tone: "ok", text: `Prefilled from the prices this provider publishes through its API (${remote.source}).${remote.official ? " The Official price comes from the same source." : " Enter the Official price from the vendor's pricing page (it powers the customer savings display)."} Check the numbers before saving.` });
     } else {
       setNote({ tone: "info", text: "We don't have a price on file for this model. Enter the Official price from the vendor's pricing page (it powers the customer savings display) and what the provider charges you as Our cost." });
     }

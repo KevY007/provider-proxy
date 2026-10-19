@@ -89,7 +89,7 @@ export async function scenarioG(s: Scn) {
     const ac = new AbortController();
     const guardTimer = setTimeout(() => {
       if (!ttft) ac.abort();
-    }, 240_000);
+    }, 600_000); // a large techpack from Opus with thinking can take > 4 minutes
     let text = "";
     let finish = "";
     let usage: { prompt_tokens?: number; completion_tokens?: number } | undefined;

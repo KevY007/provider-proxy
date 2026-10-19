@@ -34,8 +34,24 @@ DeepSeek, Mistral, Together, Fireworks, OpenRouter, Codex-Everywhere, fal.ai, Re
 | Priority | Tie-breaker between routes of equal route priority |
 | Timeout | Headers timeout per attempt, from the end of the upload. Default 600000 ms. |
 | Max concurrency | Slots across all of the provider's keys (blank = no provider cap) |
-| Extra headers (JSON) | Sent on every upstream request |
-| Settings (JSON) | `anthropicVersion`, `anthropicBaseUrl`, `geminiBaseUrl`, `openaiBaseUrl`, `azureApiVersion`, `stripFields: [...]`, `forceStreamUsage` (default true), `http2: true` (opt-in upstream HTTP/2, https only), `idleTimeoutSec` (cut a silent stream), fal: `falMode` `sync`/`queue`/`auto`, `queueBaseUrl`, `falSyncTimeoutMs`; Replicate: `replicateWait` (seconds, opt in to `Prefer: wait`) |
+| Extra headers (JSON) | Sent on every upstream request. Credential-like values (`authorization`, `*key*`, `*token*`, `*secret*`, ...) are stored encrypted and shown as `[encrypted]`; leave that value as it is to keep it |
+| Settings (JSON) | `anthropicVersion`, `anthropicBaseUrl`, `geminiBaseUrl`, `openaiBaseUrl`, `azureApiVersion`, `stripFields: [...]`, `forceStreamUsage` (default true), `http2: true` (opt-in upstream HTTP/2, https only), `idleTimeoutSec` (cut a silent stream), `pricingUrl` (where the provider publishes its prices, see below), fal: `falMode` `sync`/`queue`/`auto`, `queueBaseUrl`, `falSyncTimeoutMs`; Replicate: `replicateWait` (seconds, opt in to `Prefer: wait`) |
+
+**Test connection / Fetch pricing.** The provider form (new or saved) has two buttons that use the values currently in
+the form, so a provider can be checked before you save it. Type an API key just for the test (never stored), or leave
+it empty on a saved provider to use its first active key.
+
+- **Test connection** lists the models the key can see (count, latency, a sample) or says why it failed (rejected key,
+  no model list, unreachable).
+- **Fetch pricing** reads the prices the provider publishes through its own API, if it does: OpenRouter-style `pricing`
+  on `/models` or `/api/v1/models`, LiteLLM `/model/info`, Together / DeepInfra-style `pricing` fields, another
+  ProviderProxy (`x_pricing` on `/v1/models`, `/api/pricing`; it also carries the official price), or any JSON price list at
+  the provider's `settings.pricingUrl`. Prices are normalised to USD per 1M tokens / per image. Official vendor APIs
+  (OpenAI, Anthropic, Google) publish none; for them the built-in catalog is used.
+
+Found prices are a **starting point**: when you add a model or a route from this provider, the wizard prefills Our
+cost (and the official price, when the source publishes one) from them and says where they came from. The model picker
+marks such models with **provider price**. Nothing is saved until you confirm.
 
 **Keys / accounts.** Each upstream credential is a key. You can add one at a time, or use **Bulk add keys** with one
 per line as `secret` or `label|secret` (blank lines and `#` comments are skipped, duplicates are skipped, up to 500).

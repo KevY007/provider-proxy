@@ -92,7 +92,7 @@ export async function scenarioC(s: Scn) {
     const pdf = path.join(path.dirname(f), "techpack-chrome.pdf");
     const chrome = [process.env.CHROME_PATH, "C:/Program Files/Google/Chrome/Application/chrome.exe", "/opt/pw-browsers/chromium", "/usr/bin/chromium", "/usr/bin/google-chrome"].find((c) => !!c && fs.existsSync(c)) ?? "chrome";
     fs.rmSync(pdf, { force: true });
-    const r = spawnSync(chrome, ["--headless=new", "--disable-gpu", "--no-pdf-header-footer", `--print-to-pdf=${pdf}`, `file:///${f.replace(/\\/g, "/")}`], { encoding: "utf8", timeout: 120_000 });
+    const r = spawnSync(chrome, ["--headless=new", "--disable-gpu", ...(process.getuid?.() === 0 ? ["--no-sandbox"] : []), "--no-pdf-header-footer", `--print-to-pdf=${pdf}`, `file:///${f.replace(/\\/g, "/")}`], { encoding: "utf8", timeout: 120_000 });
     // headless=new can exit before the PDF is flushed: wait for the file size to settle
     for (let i = 0, last = -1; i < 40; i++) {
       const sz = fs.existsSync(pdf) ? fs.statSync(pdf).size : 0;

@@ -153,7 +153,18 @@ export function UpstreamModelPicker({ providerId, value, onPick }: { providerId:
                   className={cn("flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left text-sm hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none", on && "bg-primary/5")}
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-xs">{m.id}</span>
-                  {summary ? <span className="text-xs text-muted-foreground">{summary}</span> : <span className="text-xs text-muted-foreground/60">no price on file</span>}
+                  {summary ? (
+                    <span className="text-xs text-muted-foreground">{summary}</span>
+                  ) : m.remote ? (
+                    <span className="text-xs text-muted-foreground">{knownSummary(m.remote.prices)}</span>
+                  ) : (
+                    <span className="text-xs text-muted-foreground/60">no price on file</span>
+                  )}
+                  {m.remote && (
+                    <Badge variant="outline" className="text-[10px]" title={`Published by this provider (${m.remote.source})`}>
+                      provider price
+                    </Badge>
+                  )}
                   {m.shutdownDate && (
                     <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400">
                       retires {m.shutdownDate.slice(0, 10)}
