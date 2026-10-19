@@ -54,3 +54,6 @@ next-env.d.ts
 
 # live workload artifacts
 live-output/
+
+# bundled seed (pnpm build:seed)
+dist/

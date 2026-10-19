@@ -16,6 +16,8 @@ const eslintConfig = defineConfig([
     ".claude/**",
     // Live-workload output (gitignored; may hold a CLI config dir).
     "live-output/**",
+    // Bundled seed (pnpm build:seed).
+    "dist/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

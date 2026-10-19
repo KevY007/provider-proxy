@@ -16,6 +16,8 @@ const schema = z.object({
     blank,
     z.string().default("postgresql://proxy:proxy@localhost:5433/proxy"),
   ),
+  /** CA certificate of the database server (PEM or base64 of it), e.g. Supabase's. See lib/db-config.ts. */
+  DATABASE_CA_CERT: optStr,
   DB_POOL_SIZE: z.preprocess(blank, z.coerce.number().int().min(1).max(500).default(20)),
   REDIS_URL: optStr,
   APP_URL: z.preprocess(blank, z.string().default("http://localhost:3000")),
