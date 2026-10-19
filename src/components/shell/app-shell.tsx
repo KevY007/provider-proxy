@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useTransition } from "react";
-import { ChevronRight, Eye, Wallet } from "lucide-react";
+import { ChevronRight, Eye, LayoutDashboard, ShieldCheck, Wallet } from "lucide-react";
 import { BrandMark } from "@/components/common/brand-mark";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -65,8 +65,10 @@ export function AppShell({
   const groups: NavGroup[] = navForRole(variant === "admin" ? adminNav : customerNav, user.role);
   const current = findNavItem(groups, pathname);
   const section = variant === "admin" ? "Admin" : siteName;
-  // wide data tables (request logs) use the whole width instead of the reading-width column
-  const fullWidth = /^\/(admin|dashboard)\/logs(\/|$)/.test(pathname);
+  // data-heavy pages (tables, dashboards) use the whole width; forms keep the reading width
+  const fullWidth =
+    (pathname.startsWith("/admin") && !/^\/admin\/(settings|models\/new)(\/|$)/.test(pathname)) ||
+    /^\/dashboard\/(logs|keys|models|usage|billing)(\/|$)/.test(pathname);
 
   return (
     <SidebarProvider defaultOpen={defaultOpen}>
@@ -112,6 +114,19 @@ export function AppShell({
           ))}
         </SidebarContent>
         <SidebarFooter>
+          {/* staff switch between the two consoles (not while impersonating: that session is the customer's) */}
+          {!impersonating && (variant === "admin" || user.role === "ADMIN" || user.role === "SUPPORT") && (
+            <SidebarMenu>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild tooltip={variant === "admin" ? "Developer dashboard" : "Admin console"}>
+                  <Link href={variant === "admin" ? "/dashboard" : "/admin"}>
+                    {variant === "admin" ? <LayoutDashboard /> : <ShieldCheck />}
+                    <span>{variant === "admin" ? "Developer dashboard" : "Admin console"}</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          )}
           <div className="px-2 pb-1 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
             {user.email}
           </div>

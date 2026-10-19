@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import {
   Area,
   AreaChart as RAreaChart,
@@ -204,11 +205,34 @@ export function DonutChart({
   data.forEach((d, i) => {
     config[d.name] = { label: d.name, color: d.color ?? chartColor(i) };
   });
+  // recharts anchors a pie tooltip to the middle of the slice; follow the cursor instead (flipped near the edges)
+  const [pos, setPos] = useState<{ x: number; y: number } | undefined>(undefined);
+  const track = (e: React.MouseEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - r.left;
+    const y = e.clientY - r.top;
+    setPos({ x: x > r.width - 180 ? x - 172 : x + 14, y: y > r.height - 70 ? y - 62 : y + 14 });
+  };
   return (
-    <div className={cn("relative w-full", className)} style={{ height }}>
+    <div className={cn("relative w-full", className)} style={{ height }} onMouseMove={track} onMouseLeave={() => setPos(undefined)}>
       <ChartContainer config={config} className="!aspect-auto h-full w-full">
         <RPieChart>
-          <Tooltip isAnimationActive={false} content={<ChartTooltipContent hideLabel formatter={valueFormatter ? (v) => <span className="tabular-nums">{valueFormatter(Number(v))}</span> : undefined} />} />
+          <Tooltip
+            isAnimationActive={false}
+            position={pos}
+            wrapperStyle={{ pointerEvents: "none" }}
+            content={
+              <ChartTooltipContent
+                hideLabel
+                formatter={(v, name) => (
+                  <div className="flex w-full items-center justify-between gap-4">
+                    <span className="text-muted-foreground">{name}</span>
+                    <span className="font-medium tabular-nums">{valueFormatter ? valueFormatter(Number(v)) : String(v)}</span>
+                  </div>
+                )}
+              />
+            }
+          />
           <Pie data={data} dataKey="value" nameKey="name" innerRadius="58%" outerRadius="85%" paddingAngle={2} stroke="none">
             {data.map((d, i) => (
               <Cell key={d.name} fill={d.color ?? chartColor(i)} />
