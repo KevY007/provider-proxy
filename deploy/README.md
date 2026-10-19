@@ -255,66 +255,74 @@ and enable the providers you use.
 
 ## 10. Continuous deployment (push to `main` = deploy)
 
-`.github/workflows/deploy.yml` runs after **CI** passes on a push to `main` (or by hand: Actions > Deploy > Run
-workflow): it builds the image on Cloud Build (`deploy/cloudbuild-image.yaml`, BuildKit), updates and runs the
-migration job, rolls the service to the new image (Cloud Run moves traffic only once the new revision passes its
-startup probe, so a broken build never takes the site down), keeps the seed job on the same image and checks
-`/api/healthz`. GitHub signs in to Google Cloud without any stored key (Workload Identity Federation).
+The deployment pulls from the repository: a **Cloud Build trigger** in your project watches `main` and, on every
+push, builds the image (BuildKit), updates and runs the migration job, rolls the service to the new image (Cloud Run
+moves traffic only once the new revision passes its startup probe, so a broken build never takes the site down),
+keeps the seed job on the same image and checks `/api/healthz`. Nothing deployment-specific lives in the repository:
+the build steps, project, region and service names are stored in the trigger, and forks or other clones never deploy
+anywhere.
 
 One-time setup (after steps 1-9):
 
+1. Connect the repository: Cloud Build > Repositories > Connect repository > GitHub (install the Google Cloud Build
+   GitHub app on the account that owns the repository, granting it only this repository).
+2. A deploy service account that may build, push to this image repo only, and manage only this service and its jobs:
+
 ```bash
-export PN=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
-export GH_REPO=OWNER/REPO                          # this repository
-export BUILD_SA=$SERVICE-build@$PROJECT_ID.iam.gserviceaccount.com
 export DEPLOY_SA=$SERVICE-deploy@$PROJECT_ID.iam.gserviceaccount.com
-export BUCKET=$PROJECT_ID-$SERVICE-builds
-gcloud services enable sts.googleapis.com
-gcloud iam service-accounts create $SERVICE-build  --display-name="$SERVICE image builds"
-gcloud iam service-accounts create $SERVICE-deploy --display-name="$SERVICE deploys from GitHub"
-
-# build: push to this image repo only, write build logs, use a dedicated source bucket
-gcloud storage buckets create gs://$BUCKET --location=$REGION --uniform-bucket-level-access
-for sa in $BUILD_SA $DEPLOY_SA; do for role in roles/storage.objectAdmin roles/storage.legacyBucketReader; do
-  gcloud storage buckets add-iam-policy-binding gs://$BUCKET --member=serviceAccount:$sa --role=$role; done; done
-gcloud artifacts repositories add-iam-policy-binding $REPO --location=$REGION --member=serviceAccount:$BUILD_SA --role=roles/artifactregistry.writer
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$BUILD_SA --role=roles/logging.logWriter
-
-# deploy: start builds, act as the build + runtime accounts, and manage only THIS service and its jobs
-for role in roles/cloudbuild.builds.editor roles/serviceusage.serviceUsageConsumer; do
-  gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$DEPLOY_SA --role=$role; done
-for sa in $BUILD_SA $SA_EMAIL; do
-  gcloud iam service-accounts add-iam-policy-binding $sa --member=serviceAccount:$DEPLOY_SA --role=roles/iam.serviceAccountUser; done
+gcloud iam service-accounts create $SERVICE-deploy --display-name="$SERVICE deploys"
+gcloud artifacts repositories add-iam-policy-binding $REPO --location=$REGION --member=serviceAccount:$DEPLOY_SA --role=roles/artifactregistry.writer
+gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$DEPLOY_SA --role=roles/logging.logWriter
+gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL --member=serviceAccount:$DEPLOY_SA --role=roles/iam.serviceAccountUser
 gcloud run services add-iam-policy-binding $SERVICE --region=$REGION --member=serviceAccount:$DEPLOY_SA --role=roles/run.developer
 for j in $SERVICE-migrate $SERVICE-seed; do
   gcloud run jobs add-iam-policy-binding $j --region=$REGION --member=serviceAccount:$DEPLOY_SA --role=roles/run.developer; done
-
-# keyless sign-in, accepted only for this repository's main branch
-gcloud iam workload-identity-pools create $SERVICE-github --location=global
-gcloud iam workload-identity-pools providers create-oidc github --location=global --workload-identity-pool=$SERVICE-github \
-  --issuer-uri=https://token.actions.githubusercontent.com \
-  --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
-  --attribute-condition="assertion.repository == '$GH_REPO' && assertion.ref == 'refs/heads/main'"
-gcloud iam service-accounts add-iam-policy-binding $DEPLOY_SA --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/projects/$PN/locations/global/workloadIdentityPools/$SERVICE-github/attribute.repository/$GH_REPO"
 ```
 
-Then add these **repository variables** (GitHub > Settings > Secrets and variables > Actions > Variables; none of
-them is a secret). Without `GCP_PROJECT_ID` the workflow does nothing, so forks and other clones never deploy:
+3. The trigger, with its build steps kept in Google Cloud (`trigger-build.yaml` is a local file, not part of the
+   repository):
 
-| Variable | Value |
-|---|---|
-| `GCP_PROJECT_ID` | `$PROJECT_ID` |
-| `GCP_REGION` | `$REGION` |
-| `CLOUD_RUN_SERVICE` | `$SERVICE` (also the Artifact Registry repo name) |
-| `GCP_WIF_PROVIDER` | `projects/$PN/locations/global/workloadIdentityPools/$SERVICE-github/providers/github` |
-| `GCP_DEPLOY_SA` | `$DEPLOY_SA` |
-| `GCP_BUILD_SA` | `projects/$PROJECT_ID/serviceAccounts/$BUILD_SA` |
-| `GCP_BUILD_BUCKET` | `$BUCKET` |
-| `PUBLIC_URL` | `https://$DOMAIN` (optional; the smoke test uses the run.app URL without it) |
+```yaml
+# trigger-build.yaml
+substitutions:
+  _REGION: us-west1                       # $REGION
+  _SERVICE: provider-proxy                # $SERVICE
+  _IMAGE: REGION-docker.pkg.dev/PROJECT_ID/REPO/provider-proxy
+  _URL: https://SERVICE-URL               # the run.app URL or your domain
+options: { logging: CLOUD_LOGGING_ONLY, machineType: E2_HIGHCPU_8 }
+timeout: 2400s
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args: ["build", "-t", "${_IMAGE}:${SHORT_SHA}", "."]
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_IMAGE}:${SHORT_SHA}"]
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ["-ec", "gcloud run jobs update ${_SERVICE}-migrate --region=${_REGION} --image=${_IMAGE}:${SHORT_SHA} --quiet && gcloud run jobs execute ${_SERVICE}-migrate --region=${_REGION} --wait"]
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ["-ec", "gcloud run deploy ${_SERVICE} --region=${_REGION} --image=${_IMAGE}:${SHORT_SHA} --quiet && (gcloud run jobs update ${_SERVICE}-seed --region=${_REGION} --image=${_IMAGE}:${SHORT_SHA} --quiet || true)"]
+  - id: smoke
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ["-c", "for i in 1 2 3 4 5 6; do curl -fsS --max-time 30 ${_URL}/api/healthz && exit 0; sleep 10; done; exit 1"]
+```
 
-`deploy/cloudbuild.yaml` (build + migrate + deploy in one Cloud Build run) remains as an alternative for a Cloud Build
-trigger.
+```bash
+gcloud builds triggers create github --name=$SERVICE-main --repo-owner=OWNER --repo-name=REPO_NAME \
+  --branch-pattern='^main$' --inline-config=trigger-build.yaml \
+  --service-account=projects/$PROJECT_ID/serviceAccounts/$DEPLOY_SA
+gcloud builds triggers run $SERVICE-main --branch=main      # first deploy / redeploy by hand
+```
+
+Watch runs under Cloud Build > History. To change the pipeline, edit the trigger (console, or `gcloud builds triggers
+import`); the repository stays deployment-agnostic. `deploy/cloudbuild.yaml` (build + migrate + deploy in one run)
+and `deploy/cloudbuild-image.yaml` (image only, for `gcloud builds submit`) remain for manual builds.
 
 ## 11. Cron (Cloud Scheduler, optional) and Stripe webhook
 
