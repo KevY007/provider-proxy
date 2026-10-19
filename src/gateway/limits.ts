@@ -187,6 +187,31 @@ onGatewayInvalidate((scope, id) => {
   if (scope === "users" || scope === "all") clearSpendCaches(id);
 });
 
+/**
+ * The throttle bucket of a client address: IPv4 as is, IPv6 by /64 (one subscriber gets a whole /64, so rotating
+ * addresses inside it must not reset the counters).
+ */
+export function ipBucket(ip: string): string {
+  if (!ip.includes(":")) return ip;
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (mapped) return mapped[1];
+  const [head, tail] = ip.toLowerCase().split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail !== undefined && tail ? tail.split(":") : [];
+  const full = tail !== undefined ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill("0"), ...right] : left;
+  return `${full.slice(0, 4).map((x) => x || "0").join(":")}::/64`;
+}
+
+/** Bounded map: when full, the oldest half is evicted (never a wholesale clear that would reset every throttle). */
+function bounded<V>(m: Map<string, V>, max: number): void {
+  if (m.size <= max) return;
+  let drop = Math.floor(m.size / 2);
+  for (const k of m.keys()) {
+    if (drop-- <= 0) break;
+    m.delete(k);
+  }
+}
+
 // ------------------------------------------------------------------ failed-auth throttle
 const failMap = new Map<string, { n: number; resetAt: number }>();
 const FAIL_LIMIT = 300;
@@ -195,32 +220,41 @@ const FAIL_WINDOW_MS = 60_000;
 /** Record a failed key lookup from `ip`; returns true when the IP has exceeded the failure budget. */
 export function noteAuthFailure(ip: string): boolean {
   const now = Date.now();
-  let e = failMap.get(ip);
+  const k = ipBucket(ip);
+  let e = failMap.get(k);
   if (!e || e.resetAt < now) {
     e = { n: 0, resetAt: now + FAIL_WINDOW_MS };
-    failMap.set(ip, e);
-    if (failMap.size > 50_000) failMap.clear();
+    failMap.delete(k);
+    failMap.set(k, e);
+    bounded(failMap, 50_000);
   }
   e.n++;
   return e.n > FAIL_LIMIT;
 }
 
 export function isAuthThrottled(ip: string): boolean {
-  const e = failMap.get(ip);
+  const e = failMap.get(ipBucket(ip));
   return !!e && e.resetAt >= Date.now() && e.n > FAIL_LIMIT;
 }
 
 // ------------------------------------------------------------------ log flood guard for unauthenticated requests
 const anonLog = new Map<string, { n: number; resetAt: number }>();
+const ANON_GLOBAL_PER_MINUTE = 2_000;
+let anonGlobal = { n: 0, resetAt: 0 };
 
 /** At most `perMinute` anonymous (no known user) request logs per IP. */
 export function allowAnonymousLog(ip: string, perMinute = 20): boolean {
   const now = Date.now();
-  let e = anonLog.get(ip);
+  // global ceiling per instance: address rotation cannot flood the table either
+  if (anonGlobal.resetAt < now) anonGlobal = { n: 0, resetAt: now + 60_000 };
+  if (++anonGlobal.n > ANON_GLOBAL_PER_MINUTE) return false;
+  const k = ipBucket(ip);
+  let e = anonLog.get(k);
   if (!e || e.resetAt < now) {
     e = { n: 0, resetAt: now + 60_000 };
-    anonLog.set(ip, e);
-    if (anonLog.size > 50_000) anonLog.clear();
+    anonLog.delete(k);
+    anonLog.set(k, e);
+    bounded(anonLog, 50_000);
   }
   e.n++;
   return e.n <= perMinute;

@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { db } from "../../src/lib/db";
-import { generateApiKey, randomToken, sha256 } from "../../src/lib/crypto";
+import { generateApiKey, randomToken } from "../../src/lib/crypto";
 import { hashPassword } from "../../src/lib/auth/password";
 import { invalidateGatewayConfig } from "../../src/gateway/cache";
 import { Decimal } from "../../src/lib/money";
@@ -183,7 +183,17 @@ export async function expectedCost(log: LogRow): Promise<{ cost: Decimal; note: 
     tokens = tokens.times(D(model.longContextMultiplier));
     lc = ` (long-context x${model.longContextMultiplier})`;
   }
-  const flat = new Decimal(log.imageCount).times(D(route.imageCost)).plus(D(route.requestCost)).plus(new Decimal(log.videoSeconds).times(D(route.perSecondCost)));
+  // Batch API results: the supplier's batch discount on the token part
+  const batchId = (log as unknown as { batchId?: string | null }).batchId;
+  if (batchId) {
+    tokens = tokens.times(new Decimal(1).minus(D(route.batchCostDiscountPct ?? 50).div(100)));
+    lc += " (batch)";
+  }
+  let flat = new Decimal(log.imageCount).times(D(route.imageCost)).plus(D(route.requestCost)).plus(new Decimal(log.videoSeconds).times(D(route.perSecondCost)));
+  // server tools (web search, code execution hours ...): units x the route's tool cost
+  const usage = ((log as unknown as { toolUsage?: Record<string, number> }).toolUsage ?? {}) as Record<string, number>;
+  const toolCosts = (route.toolCosts ?? {}) as Record<string, unknown>;
+  for (const [k, units] of Object.entries(usage)) if (toolCosts[k] !== undefined && units > 0) flat = flat.plus(D(toolCosts[k] as never).times(units));
   return { cost: tokens.plus(flat), note: `recomputed from route costs${lc}` };
 }
 
@@ -299,7 +309,7 @@ export async function waitLog(rid: string, tries = 200) {
 }
 
 export interface VerifyOpts {
-  /** expect these requests to be billable (price > cost > 0). Default: any request that carries usage. */
+  /** expect these requests to be billable (price >= cost > 0; equal under the match-official default). Default: any request that carries usage. */
   expectBilled?: boolean;
   /** tolerance for recomputed cost (relative) */
   tol?: number;
@@ -327,13 +337,14 @@ async function verifyRequests(s: Scn, since: number): Promise<ReqRow[]> {
     const cost = D(log.cost);
     const hasUsage = log.inputTokens + log.outputTokens + log.imageCount + log.characters > 0 || log.videoSeconds > 0 || log.audioSeconds > 0;
     sumPrice = sumPrice.plus(price);
-    if (log.status !== "SUCCESS" && t.status < 400) notSuccess++;
+    // (a stream the scenario itself abandoned is CANCELLED although its HTTP status was 200)
+    if (log.status !== "SUCCESS" && log.status !== "CANCELLED" && t.status < 400) notSuccess++;
     let costRecheck = "";
     if (hasUsage && log.status === "SUCCESS") {
       billed++;
-      if (!(cost.gt(0) && price.gt(cost))) {
+      if (!(cost.gt(0) && price.gte(cost))) {
         badPrice++;
-        s.note(`request ${log.id}: expected price > cost > 0, got price=${price} cost=${cost}`);
+        s.note(`request ${log.id}: expected price >= cost > 0, got price=${price} cost=${cost}`);
       }
       if (!D(log.officialPrice).gt(0)) noOfficial++;
       const exp = await expectedCost(log);
@@ -374,7 +385,7 @@ async function verifyRequests(s: Scn, since: number): Promise<ReqRow[]> {
   }
   s.check("every request has a RequestLog row", missing === 0, `${mine.length} requests, ${missing} missing`);
   if (billed > 0) {
-    s.check("billed rows: price > cost > 0", badPrice === 0, `${billed} billed rows, ${badPrice} bad`);
+    s.check("billed rows: price >= cost > 0", badPrice === 0, `${billed} billed rows, ${badPrice} bad`);
     s.check("billed rows: officialPrice recorded", noOfficial === 0, `${noOfficial} without officialPrice`);
     s.check("logged cost == cost recomputed from the route cost table", badCost === 0, badCost ? costNotes.slice(0, 3).join(" ; ") : `${billed} rows`);
     if (badCost) for (const n of costNotes.slice(0, 5)) s.bug(`cost mismatch: ${n}`);

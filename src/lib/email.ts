@@ -173,6 +173,20 @@ export const emailTemplates = {
     };
   },
 
+  /** Repeated wrong 2FA codes: somebody who knows the password may be trying to get in. */
+  async twoFactorAlert(p: { name?: string | null }): Promise<TemplateResult> {
+    const { siteName } = await getSettings();
+    return {
+      subject: `Repeated failed sign-in attempts on your ${siteName} account`,
+      html: layout({
+        siteName,
+        title: "Failed two-factor attempts",
+        body: `${hello(p.name)}<p>Someone entered your correct password but kept failing the two-factor step, so further attempts are blocked for now. If this was not you, change your password right away.</p>`,
+        cta: { label: "Change password", url: `${appUrl}/dashboard/settings` },
+      }),
+    };
+  },
+
   /** Sent to the OLD address when someone asks to move the account to a new one. */
   async emailChangeNotice(p: { name?: string | null; newEmail: string }): Promise<TemplateResult> {
     const { siteName } = await getSettings();

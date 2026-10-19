@@ -100,14 +100,14 @@ const adjustSchema = z.object({
 
 /** Credit (positive) or debit (negative) a customer's balance with a mandatory, audited reason. */
 export async function adjustBalanceAction(input: unknown): Promise<ActionResult<{ balance: string; email: string }>> {
-  return run("adjustBalance", async ({ adminId }) => {
+  return run("adjustBalance", async ({ adminId, ip }) => {
     const data = parseInput(adjustSchema, input);
     const customer = await db.user.findFirst({
       where: data.customer.includes("@") ? { email: data.customer.toLowerCase() } : { id: data.customer },
       select: { id: true, email: true },
     });
     if (!customer) throw new ActionFail("No customer found with that email or ID", { customer: "No customer found" });
-    const res = await adminAdjustBalance(adminId, customer.id, data.amount, data.reason);
+    const res = await adminAdjustBalance(adminId, customer.id, data.amount, data.reason, ip);
     revalidatePath("/admin/billing");
     revalidatePath(`/admin/customers/${customer.id}`);
     return {

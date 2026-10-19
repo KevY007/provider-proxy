@@ -147,8 +147,16 @@ export async function requireAdmin(opts: RequireAdminOptions = {}): Promise<Auth
   if (!s) redirect(await loginRedirectPath("/admin"));
   const role = s.user.role;
   if (role === "CUSTOMER") redirect("/dashboard");
+  if (await staffNeedsTwoFactor(s)) redirect("/dashboard/settings?require2fa=1");
   if (opts.adminOnly && role !== "ADMIN") redirect("/admin");
   return s;
+}
+
+/** Staff without 2FA while `requireStaffTwoFactor` is on (impersonation sessions are judged by the staff member behind them). */
+async function staffNeedsTwoFactor(s: AuthSession): Promise<boolean> {
+  if (s.user.role === "CUSTOMER" || s.user.totpEnabled) return false;
+  const { getSetting } = await import("@/lib/settings");
+  return !!(await getSetting("requireStaffTwoFactor"));
 }
 
 /** For server actions: like requireUser but throws AuthError instead of redirecting. */
@@ -164,6 +172,7 @@ export async function requireAdminForAction(opts: RequireAdminOptions = {}): Pro
   if (s.user.role === "CUSTOMER" || (opts.adminOnly && s.user.role !== "ADMIN")) {
     throw new AuthError("forbidden", "You don't have permission to do that");
   }
+  if (await staffNeedsTwoFactor(s)) throw new AuthError("forbidden", "Enable two-factor authentication (Settings) to use the admin console.");
   return s;
 }
 

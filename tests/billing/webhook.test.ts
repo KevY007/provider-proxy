@@ -21,6 +21,7 @@ describe.skipIf(!up)("stripe webhook handlers", () => {
   beforeEach(() => {
     granted.mockClear();
     stripe = mockStripe();
+    stripe.paymentMethods.retrieve.mockImplementation(async () => ({ id: "pm", card: { fingerprint: "fp_test" } }));
     setStripeClientForTests(stripe);
   });
   afterEach(() => setStripeClientForTests(null));
@@ -148,12 +149,45 @@ describe.skipIf(!up)("stripe webhook handlers", () => {
     expect(await db.auditLog.count({ where: { targetId: u.id, action: "billing.chargeback" } })).toBe(1);
   });
 
+  it("charge.dispute.closed (won) reverses the chargeback once and re-activates a customer we suspended for it", async () => {
+    const u = await makeUser();
+    const p = await pendingPayment(u.id, "40", "pi_won");
+    await handleStripeEvent(event("payment_intent.succeeded", piSucceeded("pi_won", p.id, 4000)));
+    await handleStripeEvent(event("charge.dispute.created", { id: "dp_won", charge: "ch_w", payment_intent: "pi_won", amount: 4000, reason: "fraudulent" }));
+    expect(await balanceOf(u.id)).toBe("0.00");
+    const closed = event("charge.dispute.closed", { id: "dp_won", charge: "ch_w", payment_intent: "pi_won", amount: 4000, status: "won" });
+    await Promise.all([handleStripeEvent(closed), handleStripeEvent(closed)]);
+    expect(await balanceOf(u.id)).toBe("40.00");
+    expect((await db.payment.findUniqueOrThrow({ where: { id: p.id } })).status).toBe("SUCCEEDED");
+    expect((await db.user.findUniqueOrThrow({ where: { id: u.id } })).status).toBe("ACTIVE");
+    // lost: nothing changes
+    const u2 = await makeUser();
+    const p2 = await pendingPayment(u2.id, "10", "pi_lost");
+    await handleStripeEvent(event("payment_intent.succeeded", piSucceeded("pi_lost", p2.id, 1000)));
+    await handleStripeEvent(event("charge.dispute.created", { id: "dp_lost", charge: "ch_l", payment_intent: "pi_lost", amount: 1000 }));
+    await handleStripeEvent(event("charge.dispute.closed", { id: "dp_lost", charge: "ch_l", payment_intent: "pi_lost", amount: 1000, status: "lost" }));
+    expect(await balanceOf(u2.id)).toBe("0.00");
+    expect((await db.user.findUniqueOrThrow({ where: { id: u2.id } })).status).toBe("SUSPENDED");
+  });
+
+  it("charge.dispute.closed (won) keeps a customer an admin suspended afterwards for another reason", async () => {
+    const u = await makeUser();
+    const p = await pendingPayment(u.id, "20", "pi_won2");
+    await handleStripeEvent(event("payment_intent.succeeded", piSucceeded("pi_won2", p.id, 2000)));
+    await handleStripeEvent(event("charge.dispute.created", { id: "dp_won2", charge: "ch_w2", payment_intent: "pi_won2", amount: 2000 }));
+    await new Promise((r) => setTimeout(r, 5));
+    await db.auditLog.create({ data: { action: "customer.suspend", targetType: "User", targetId: u.id } });
+    await handleStripeEvent(event("charge.dispute.closed", { id: "dp_won2", charge: "ch_w2", payment_intent: "pi_won2", amount: 2000, status: "won" }));
+    expect(await balanceOf(u.id)).toBe("20.00");
+    expect((await db.user.findUniqueOrThrow({ where: { id: u.id } })).status).toBe("SUSPENDED");
+  });
+
   it("setup_intent.succeeded sets the default card and grants trial credit when a card is required", async () => {
     const u = await makeUser({ stripeCustomerId: `cus_${Math.random().toString(36).slice(2)}` });
     const ev = event("setup_intent.succeeded", { id: "seti_1", customer: u.stripeCustomerId, payment_method: "pm_new", metadata: { userId: u.id } });
     await handleStripeEvent(ev);
     expect((await db.user.findUniqueOrThrow({ where: { id: u.id } })).defaultPaymentMethodId).toBe("pm_new");
-    expect(granted).toHaveBeenCalledWith(u.id);
+    expect(granted).toHaveBeenCalledWith(u.id, { cardFingerprint: "fp_test" });
 
     // a second card does not steal the default
     await handleStripeEvent(event("setup_intent.succeeded", { id: "seti_2", customer: u.stripeCustomerId, payment_method: "pm_second", metadata: { userId: u.id } }));

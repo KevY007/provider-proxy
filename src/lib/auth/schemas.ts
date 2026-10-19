@@ -41,6 +41,15 @@ export const resetPasswordSchema = z
     message: "Passwords do not match",
   });
 
+/** One-time recovery code (shown once when 2FA is enabled), e.g. "k3x9p-2mfq7". */
+export const RECOVERY_CODE_RE = /^[a-z0-9]{5}-[a-z0-9]{5}$/i;
+
+/** The 2FA sign-in step takes an authenticator code or a recovery code. */
+export const twoFactorCodeSchema = z
+  .string()
+  .trim()
+  .refine((v) => /^\d{6}$/.test(v) || RECOVERY_CODE_RE.test(v), "Enter the 6-digit code or a recovery code");
+
 export const totpCodeSchema = z
   .string()
   .trim()

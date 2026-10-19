@@ -21,9 +21,6 @@ Page content (lay it out in a clean grid, nothing overlapping, text no smaller t
 7. CONSTRUCTION NOTES: numbered list of at least 8 notes (seam allowances, pocket attachment, collar construction, button placement spacing, finishing, wash).
 Make it look like a professional, print-ready techpack page.`;
 
-function dataUrl(png: Buffer, mime: string) {
-  return `data:${mime};base64,${png.toString("base64")}`;
-}
 
 const L_WORDS = ["CJ-2027-014", "Dockside", "POINTS? OF MEASURE|POM", "TRIMS?", "COLORWAY", "CONSTRUCTION", "FRONT", "BACK", "SIDE", "stitch|SPI"];
 

@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { FieldGroup } from "@/components/ui/field";
 import { SubmitButton, TextField } from "@/components/common/form-fields";
 import { verifyTwoFactorAction } from "@/lib/auth/actions";
-import { totpCodeSchema } from "@/lib/auth/schemas";
+import { twoFactorCodeSchema } from "@/lib/auth/schemas";
 
 export function TwoFactorForm({ next }: { next?: string }) {
   const router = useRouter();
@@ -17,7 +17,7 @@ export function TwoFactorForm({ next }: { next?: string }) {
   function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     const code = String(new FormData(e.currentTarget).get("code") ?? "").replace(/\s/g, "");
-    const parsed = totpCodeSchema.safeParse(code);
+    const parsed = twoFactorCodeSchema.safeParse(code);
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message);
       return;
@@ -47,11 +47,10 @@ export function TwoFactorForm({ next }: { next?: string }) {
         <TextField
           name="code"
           label="Authentication code"
-          inputMode="numeric"
           autoComplete="one-time-code"
-          pattern="[0-9]*"
-          maxLength={7}
+          maxLength={11}
           placeholder="123456"
+          description="The 6-digit code from your authenticator app, or one of your recovery codes."
           autoFocus
           required
           className="text-center text-lg tracking-[0.4em]"

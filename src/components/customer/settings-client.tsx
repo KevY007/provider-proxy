@@ -166,6 +166,7 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
   const router = useRouter();
   const [setup, setSetup] = useState<TotpSetup | null>(null);
   const [code, setCode] = useState("");
+  const [recovery, setRecovery] = useState<string[] | null>(null);
   const [disableOpen, setDisableOpen] = useState(false);
   const [dPassword, setDPassword] = useState("");
   const [dCode, setDCode] = useState("");
@@ -198,7 +199,11 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
             onSubmit={(e) => {
               e.preventDefault();
               f.run(
-                () => enableTotpAction({ code }),
+                async () => {
+                  const r = await enableTotpAction({ code });
+                  if (r.ok && r.data) setRecovery(r.data.recoveryCodes);
+                  return r;
+                },
                 () => {
                   setSetup(null);
                   setCode("");
@@ -228,6 +233,24 @@ function TwoFactorSection({ enabled }: { enabled: boolean }) {
           <ShieldCheck className="size-4" /> Set up 2FA
         </Button>
       )}
+
+      <Dialog open={!!recovery} onOpenChange={(o) => !o && setRecovery(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Save your recovery codes</DialogTitle>
+            <DialogDescription>Each code signs you in once if you lose your authenticator. They are shown only now: store them in your password manager.</DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-2 rounded-lg border bg-muted/40 p-3 font-mono text-sm">
+            {recovery?.map((c) => (
+              <span key={c}>{c}</span>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2">
+            <CopyButton value={(recovery ?? []).join("\n")} toastMessage="Recovery codes copied" />
+            <Button onClick={() => setRecovery(null)}>I saved them</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={disableOpen} onOpenChange={setDisableOpen}>
         <DialogContent className="sm:max-w-md">

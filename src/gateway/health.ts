@@ -1,3 +1,4 @@
+import { openHeaders } from "@/lib/secret-headers";
 import { describeNetworkError } from "./util";
 import type { HealthStatus } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
@@ -23,8 +24,7 @@ async function loadKey(id: string) {
 }
 
 export function toAdapter(p: ProviderRow): AdapterProvider {
-  const headers: Record<string, string> = {};
-  if (isObject(p.extraHeaders)) for (const [k, v] of Object.entries(p.extraHeaders)) if (typeof v === "string") headers[k.toLowerCase()] = v;
+  const headers = openHeaders(p.extraHeaders);
   return {
     slug: p.slug,
     preset: p.preset,

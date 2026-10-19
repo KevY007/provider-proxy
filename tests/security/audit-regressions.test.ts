@@ -19,7 +19,10 @@ import { scrubText } from "@/gateway/shape";
 import { assertPublicUrl, isPrivateAddress } from "@/gateway/ssrf";
 import { collectText, estimateInputTokens } from "@/gateway/tokenizer";
 import { describeNetworkError } from "@/gateway/util";
-import { verifyUserTotp } from "@/lib/auth/totp";
+import { grantTrialCredit } from "@/lib/auth/service";
+import { consumeRecoveryCode, newRecoveryCodes, verifyUserTotp } from "@/lib/auth/totp";
+import { ipBucket } from "@/gateway/limits";
+import { MASKED, maskHeaders, openHeaders, sealHeaders } from "@/lib/secret-headers";
 import { encrypt } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { safeNextPath } from "@/lib/http";
@@ -144,6 +147,30 @@ describe("W4 chart style injection", () => {
   });
 });
 
+describe("S4 credential-like admin headers are encrypted at rest and masked", () => {
+  it("seal -> open round trip; masked for admins; MASKED keeps the stored value", () => {
+    const stored = sealHeaders({ Authorization: "Bearer real-secret", "X-Team": "blue" });
+    expect(String(stored.Authorization)).toMatch(/^enc:/);
+    expect(JSON.stringify(stored)).not.toContain("real-secret");
+    expect(stored["X-Team"]).toBe("blue");
+    expect(openHeaders(stored)).toEqual({ authorization: "Bearer real-secret", "x-team": "blue" });
+    expect(maskHeaders(stored)).toEqual({ Authorization: MASKED, "X-Team": "blue" });
+    const resaved = sealHeaders({ Authorization: MASKED, "X-Team": "red" }, stored);
+    expect(openHeaders(resaved).authorization).toBe("Bearer real-secret");
+    // legacy plain values keep working
+    expect(openHeaders({ "x-api-key": "plain" })).toEqual({ "x-api-key": "plain" });
+  });
+});
+
+describe("G9 throttle buckets", () => {
+  it("IPv6 addresses of one /64 share a bucket; IPv4 and mapped IPv4 stay exact", () => {
+    expect(ipBucket("2001:db8:1:2:aaaa::1")).toBe(ipBucket("2001:db8:1:2:ffff:1:2:3"));
+    expect(ipBucket("2001:db8:1:2::1")).not.toBe(ipBucket("2001:db8:1:3::1"));
+    expect(ipBucket("1.2.3.4")).toBe("1.2.3.4");
+    expect(ipBucket("::ffff:1.2.3.4")).toBe("1.2.3.4");
+  });
+});
+
 // ------------------------------------------------------------------ database-backed
 const h = createHarness("sec");
 
@@ -246,6 +273,35 @@ describe.skipIf(!dbOk)("database-backed regressions", () => {
     const code = new OTPAuth.TOTP({ secret, digits: 6, period: 30, algorithm: "SHA1" }).generate();
     expect((await verifyUserTotp(u.id, code)).ok).toBe(true);
     expect((await verifyUserTotp(u.id, code)).ok).toBe(false);
+  });
+
+  it("B5: one card unlocks the trial credit only once across accounts", async () => {
+    const before = await db.setting.findUnique({ where: { key: "trialCredit" } });
+    await db.setting.upsert({ where: { key: "trialCredit" }, create: { key: "trialCredit", value: 5 }, update: { value: 5 } });
+    const { invalidateSettingsCache } = await import("@/lib/settings");
+    invalidateSettingsCache();
+    try {
+      const fp = `fp_${h.sfx}`;
+      const a = await h.makeUser("tr1", { balance: "0" });
+      const b = await h.makeUser("tr2", { balance: "0" });
+      expect((await grantTrialCredit(a.id, { cardFingerprint: fp })).granted).toBe(true);
+      expect(await grantTrialCredit(b.id, { cardFingerprint: fp })).toMatchObject({ granted: false, reason: "card_already_used" });
+      expect((await grantTrialCredit(b.id, { cardFingerprint: `${fp}-other` })).granted).toBe(true);
+    } finally {
+      if (before) await db.setting.update({ where: { key: "trialCredit" }, data: { value: before.value as never } });
+      else await db.setting.delete({ where: { key: "trialCredit" } });
+      invalidateSettingsCache();
+    }
+  });
+
+  it("W12: recovery codes sign in once each", async () => {
+    const u = await h.makeUser("rec", { balance: "0" });
+    const { codes, hashes } = newRecoveryCodes();
+    await db.user.update({ where: { id: u.id }, data: { totpEnabled: true, totpRecoveryCodes: hashes } });
+    expect((await consumeRecoveryCode(u.id, codes[0].toUpperCase())).ok).toBe(true);
+    expect((await consumeRecoveryCode(u.id, codes[0])).ok).toBe(false);
+    expect((await consumeRecoveryCode(u.id, "aaaaa-bbbbb")).ok).toBe(false);
+    expect((await consumeRecoveryCode(u.id, codes[1])).remaining).toBe(8);
   });
 
   it("(sanity) the gateway still serves normal requests", async () => {

@@ -190,8 +190,11 @@ export async function registerPaymentMethod(
     const { getSetting } = await import("@/lib/settings");
     if (await getSetting("requireCardForTrial")) {
       const { grantTrialCredit } = await import("@/lib/auth/service");
-      const r = await grantTrialCredit(userId);
+      // one trial per physical card: the fingerprint is the same for that card on every account
+      const pm = await getStripe().paymentMethods.retrieve(paymentMethodId);
+      const r = await grantTrialCredit(userId, { cardFingerprint: pm.card?.fingerprint ?? null });
       if (r.granted) logger.info("trial credit granted after card attached", { userId });
+      else if (r.reason === "card_already_used") logger.warn("trial credit refused: card already unlocked a trial on another account", { userId });
     }
   } catch (err) {
     logger.error("trial grant after card attach failed", { userId, err });

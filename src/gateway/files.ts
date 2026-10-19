@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { Prisma, UpstreamObject } from "@/generated/prisma/client";
+import { decrypt, encrypt } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { Decimal } from "@/lib/money";
@@ -127,7 +128,9 @@ export async function handleRaw(ctx: Ctx): Promise<Response> {
     const uploadId = ctx.url.searchParams.get("upload_id");
     if (uploadId) {
       row = await owned(ctx, "gemini_upload", uploadId);
-      const url = typeof metaOf(row).url === "string" ? (metaOf(row).url as string) : null;
+      const stored = typeof metaOf(row).url === "string" ? (metaOf(row).url as string) : null;
+      // (encrypted at rest: the upstream session URL may carry credentials; older rows hold it in plain text)
+      const url = stored && stored.startsWith("enc:") ? safeDecrypt(stored.slice(4)) : stored;
       if (!url) throw notFound(ctx, "file", uploadId);
       st.sessionUrl = url;
     }
@@ -166,6 +169,14 @@ async function affinityKey(userId: string, format: InboundFormat): Promise<strin
   const rows = await db.upstreamObject.findMany({ where: { userId, kind: { in: ["file", "upload"] } }, orderBy: { createdAt: "desc" }, take: 20 });
   for (const r of rows) if (metaOf(r).fmt === format) return r.providerKeyId;
   return null;
+}
+
+function safeDecrypt(v: string): string | null {
+  try {
+    return decrypt(v);
+  } catch {
+    return null;
+  }
 }
 
 const metaOf = (r: { meta: unknown }): JsonObject => (isObject(r.meta) ? (r.meta as JsonObject) : {});
@@ -348,7 +359,7 @@ export async function handleFilesOk(ctx: Ctx, cand: Candidate, h: UpstreamHandle
     const url = h.res.headers.get("x-goog-upload-url");
     if (url) {
       const id = `gup_${randomBytes(18).toString("base64url")}`;
-      await register(ctx, cand, "gemini_upload", id, { fmt, url });
+      await register(ctx, cand, "gemini_upload", id, { fmt, url: `enc:${encrypt(url)}` });
       headers.set("x-goog-upload-url", `${publicOrigin(ctx)}/upload/v1beta/files?upload_id=${id}&upload_protocol=resumable`);
     }
     const file = isObject(json) && isObject(json.file) ? json.file : null;

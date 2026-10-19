@@ -141,6 +141,10 @@ model User {
   autoRechargeAmount     Decimal     @default(20) @db.Decimal(24, 12)
   lowBalanceAlertAt      Decimal?    @db.Decimal(24, 12)
   trialGrantedAt         DateTime?
+  // fingerprint of the card a card-gated trial was granted for (one trial per card, across accounts)
+  trialCardFingerprint   String?
+  // 2FA recovery codes: sha256 hashes, each usable once (removed when used)
+  totpRecoveryCodes      String[]  @default([])
   signupIp               String?
   lastLoginAt            DateTime?
   maxConcurrency         Int? // §9b customer-side concurrent request slots
@@ -160,6 +164,7 @@ model User {
   @@index([role])
   @@index([status])
   @@index([createdAt])
+  @@index([trialCardFingerprint])
 }
 
 model Session {

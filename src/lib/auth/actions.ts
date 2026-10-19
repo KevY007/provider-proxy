@@ -14,6 +14,8 @@ import {
   resetPasswordSchema,
   signupSchema,
   totpCodeSchema,
+  twoFactorCodeSchema,
+  RECOVERY_CODE_RE,
   emailSchema,
 } from "./schemas";
 import {
@@ -38,7 +40,7 @@ import {
   revokeOtherSessions,
   revokeSession,
 } from "./session";
-import { beginTotpSetup, disableTotp, enableTotp, verifyUserTotp, type TotpSetup } from "./totp";
+import { beginTotpSetup, consumeRecoveryCode, disableTotp, enableTotp, verifyUserTotp, type TotpSetup } from "./totp";
 import { AuthError, type ActionResult } from "./types";
 
 /**
@@ -113,15 +115,17 @@ export async function loginAction(
 }
 
 export async function verifyTwoFactorAction(input: unknown): Promise<ActionResult<{ redirectTo: string }>> {
-  const parsed = z.object({ code: totpCodeSchema, next: z.string().optional() }).safeParse(input);
+  const parsed = z.object({ code: twoFactorCodeSchema, next: z.string().optional() }).safeParse(input);
   if (!parsed.success) return invalid(parsed.error);
   const pending = await getPendingTwoFactorSession();
   if (!pending) return failure("Your login session expired. Please log in again.");
   const { ip } = await meta();
   try {
-    const v = await verifyUserTotp(pending.user.id, parsed.data.code);
+    const recovery = RECOVERY_CODE_RE.test(parsed.data.code);
+    const v = recovery ? await consumeRecoveryCode(pending.user.id, parsed.data.code) : await verifyUserTotp(pending.user.id, parsed.data.code);
     if (v.rateLimited) return failure("Too many attempts. Please wait a few minutes.");
     if (!v.ok) return { ok: false, error: "Invalid code", fieldErrors: { code: "That code is incorrect or expired" } };
+    if (recovery) await audit(pending.user.id, "auth.2fa_recovery_code_used", { type: "User", id: pending.user.id }, { remaining: (v as { remaining?: number }).remaining ?? null }, ip);
     await completeTwoFactor(pending.session.id, pending.user.id, ip);
     const fallback = pending.user.role === "CUSTOMER" ? "/dashboard" : "/admin";
     return { ok: true, data: { redirectTo: safeNextPath(parsed.data.next, fallback) } };
@@ -253,14 +257,14 @@ export async function beginTotpSetupAction(): Promise<ActionResult<TotpSetup>> {
   });
 }
 
-export async function enableTotpAction(input: unknown): Promise<ActionResult> {
+export async function enableTotpAction(input: unknown): Promise<ActionResult<{ recoveryCodes: string[] }>> {
   const parsed = z.object({ code: totpCodeSchema }).safeParse(input);
   if (!parsed.success) return invalid(parsed.error);
-  return withUser(async (s) => {
-    const ok = await enableTotp(s.user.id, parsed.data.code);
-    if (!ok) return { ok: false, error: "Invalid code", fieldErrors: { code: "That code is incorrect or expired" } };
+  return withUser<{ recoveryCodes: string[] }>(async (s) => {
+    const codes = await enableTotp(s.user.id, parsed.data.code);
+    if (!codes) return { ok: false, error: "Invalid code", fieldErrors: { code: "That code is incorrect or expired" } };
     await audit(s.user.id, "auth.2fa_enabled", { type: "User", id: s.user.id });
-    return { ok: true, message: "Two-factor authentication enabled." };
+    return { ok: true, data: { recoveryCodes: codes }, message: "Two-factor authentication enabled." };
   });
 }
 
