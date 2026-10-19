@@ -46,7 +46,7 @@ export function openaiModel(m: ModelRec, mult: Decimal): Json {
     pricing: openRouterPricing(m.sell, mult),
     top_provider: { context_length: m.contextWindow, max_completion_tokens: m.maxOutput, is_moderated: false },
     architecture: modalities(m.capabilities),
-    x_pricing: { unit: "usd_per_1m", currency: "USD", yours: matrix.yours, official: matrix.official, savings_pct: matrix.savings_pct, units: matrix.unit },
+    x_pricing: { unit: "usd_per_1m", currency: "USD", yours: matrix.yours, official: matrix.official, savings_pct: matrix.savings_pct, units: matrix.unit, ...(Object.keys(matrix.tools).length ? { tools: matrix.tools } : {}) },
     ...(m.retiresAt ? { x_retires_at: new Date(m.retiresAt).toISOString() } : {}),
   };
 }

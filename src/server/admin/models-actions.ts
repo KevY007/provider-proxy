@@ -15,11 +15,15 @@ import {
   PRICING_MODES,
   modelToExport,
   parseModelImport,
+  toolPricesForForm,
   routeFormSchema,
   type ModelFields,
   type RouteFields,
 } from "./models-calc";
 import { dstr } from "./serialize";
+
+/** A parsed tool-price map as a Json column value (undefined = leave the column alone). */
+const toolJson = (v: Record<string, string> | undefined) => (v === undefined ? undefined : (v as Prisma.InputJsonValue));
 
 function modelData(f: ModelFields) {
   return {
@@ -59,6 +63,9 @@ function modelData(f: ModelFields) {
     officialPerMinutePrice: f.officialPerMinutePrice,
     officialPerMillionChars: f.officialPerMillionChars,
     officialPerSecondPrice: f.officialPerSecondPrice,
+    toolPrices: toolJson(f.toolPrices),
+    officialToolPrices: toolJson(f.officialToolPrices),
+    batchDiscountPct: f.batchDiscountPct,
     pricingMode: f.pricingMode,
     pricingValue: f.pricingValue,
     retiresAt: f.retiresAt,
@@ -87,7 +94,17 @@ function routeData(f: RouteFields) {
     perMinuteCost: f.perMinuteCost,
     perMillionCharsCost: f.perMillionCharsCost,
     perSecondCost: f.perSecondCost,
+    toolCosts: toolJson(f.toolCosts),
+    batchCostDiscountPct: f.batchCostDiscountPct,
   };
+}
+
+/** Comparable text of a model column for the audit "changed" list (Json tool maps by value, not "[object Object]"). */
+function auditText(v: unknown): string {
+  if (v !== null && typeof v === "object" && typeof (v as { toFixed?: unknown }).toFixed !== "function" && !(v instanceof Date)) {
+    return JSON.stringify(Object.entries(toolPricesForForm(v)).sort(([a], [b]) => a.localeCompare(b)));
+  }
+  return String(v ?? "");
 }
 
 async function assertNamesFree(slug: string, aliases: string[], excludeId?: string) {
@@ -140,7 +157,8 @@ export async function updateModel(id: string, input: unknown) {
         await tx.$executeRaw`UPDATE "ApiKey" SET "allowedModels" = array_replace("allowedModels", ${before.slug}, ${f.slug}) WHERE ${before.slug} = ANY("allowedModels")`;
       }
     });
-    const changed = Object.keys(modelData(f)).filter((k) => String((before as Record<string, unknown>)[k] ?? "") !== String((modelData(f) as Record<string, unknown>)[k] ?? ""));
+    const next = modelData(f) as Record<string, unknown>;
+    const changed = Object.keys(next).filter((k) => next[k] !== undefined && auditText((before as Record<string, unknown>)[k]) !== auditText(next[k]));
     await audit(admin.id, "model.update", { type: "Model", id }, { slug: f.slug, changed, prevSlug: before.slug }, ip);
     await afterPricingChange(id);
     await invalidateGatewayConfig("models", id);
@@ -199,6 +217,8 @@ export async function duplicateModel(id: string, newSlug: string) {
             perMinuteCost: r.perMinuteCost,
             perMillionCharsCost: r.perMillionCharsCost,
             perSecondCost: r.perSecondCost,
+            toolCosts: (r.toolCosts ?? {}) as Prisma.InputJsonValue,
+            batchCostDiscountPct: r.batchCostDiscountPct,
           })),
         },
       },

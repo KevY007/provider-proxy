@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { getBreakdown, getTotals } from "@/server/analytics/queries";
 import { dstr, dstr0, iso } from "./serialize";
-import { primaryEnabledRoute, rowUnits, summarizeRow, type RowUnit } from "./models-calc";
+import { primaryEnabledRoute, rowUnits, summarizeRow, toolPricesForForm, type RowUnit } from "./models-calc";
 
 export interface ModelRow {
   id: string;
@@ -115,6 +115,10 @@ export function serializeModel(m: NonNullable<Awaited<ReturnType<typeof db.model
     officialPerMinutePrice: dstr(m.officialPerMinutePrice) ?? "",
     officialPerMillionChars: dstr(m.officialPerMillionChars) ?? "",
     officialPerSecondPrice: dstr(m.officialPerSecondPrice) ?? "",
+    /** server tools: { key: USD per unit } */
+    toolPrices: toolPricesForForm(m.toolPrices),
+    officialToolPrices: toolPricesForForm(m.officialToolPrices),
+    batchDiscountPct: dstr(m.batchDiscountPct) ?? "",
     pricingMode: m.pricingMode as string,
     pricingValue: dstr(m.pricingValue) ?? "",
     retiresAt: m.retiresAt ? m.retiresAt.toISOString().slice(0, 10) : "",
@@ -148,6 +152,9 @@ export interface RouteRow {
   perMinuteCost: string;
   perMillionCharsCost: string;
   perSecondCost: string;
+  /** server tools: { key: USD per unit } */
+  toolCosts: Record<string, string>;
+  batchCostDiscountPct: string;
 }
 
 export async function getModelDetail(id: string) {
@@ -188,6 +195,8 @@ export async function getModelDetail(id: string) {
     perMinuteCost: dstr(r.perMinuteCost) ?? "",
     perMillionCharsCost: dstr(r.perMillionCharsCost) ?? "",
     perSecondCost: dstr(r.perSecondCost) ?? "",
+    toolCosts: toolPricesForForm(r.toolCosts),
+    batchCostDiscountPct: dstr0(r.batchCostDiscountPct),
   }));
   return { model: serializeModel(model), routes, providers, groups, totals };
 }

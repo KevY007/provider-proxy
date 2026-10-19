@@ -7,6 +7,7 @@
  *   bestRouteCost(routes)              -> cheapest enabled route { input, output } or null
  *   parseModelImport(text)             -> per-item validation of a bulk JSON import
  *   modelToExport(model, routes)       -> JSON-friendly export shape (providers by slug)
+ *   parseToolPriceMap / toolPricesForForm / previewToolPrices -> server-tool unit prices ({ web_search_request: "0.01" })
  *   MODEL_PRICE_PAIRS, MODEL_CAPABILITIES, ...
  */
 import { z } from "zod";
@@ -249,6 +250,113 @@ const jsonObj = z.unknown().transform((v, ctx) => {
   }
 }).default({});
 
+// ---------------------------------------------------------------------------
+// server tools (Json columns Model.toolPrices / officialToolPrices, ModelRoute.toolCosts): { key: USD per unit }
+
+/** Price keys the gateway meters today (free-form keys are allowed too). */
+export const TOOL_KEY_SUGGESTIONS: ReadonlyArray<{ key: string; hint: string }> = [
+  { key: "web_search_request", hint: "Anthropic web search, USD per search" },
+  { key: "code_execution_hour", hint: "Anthropic code execution, USD per container hour" },
+  { key: "web_search_call", hint: "OpenAI Responses web search, USD per call" },
+  { key: "file_search_call", hint: "OpenAI Responses file search, USD per call" },
+];
+
+export const TOOL_KEY_RE = /^[a-z0-9][a-z0-9_.:-]{0,63}$/i;
+
+/**
+ * `{ key: number | "decimal" }` (an object, or JSON text of one) -> `{ key: "decimal" }`. Blank values are dropped
+ * (= no price for that tool). Errors name the offending key.
+ */
+export function parseToolPriceMap(raw: unknown): { value: Record<string, string>; error?: undefined } | { error: string; value?: undefined } {
+  let v = raw;
+  if (v === null || v === undefined) return { value: {} };
+  if (typeof v === "string") {
+    if (!v.trim()) return { value: {} };
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return { error: "Must be a JSON object like {\"web_search_request\": 0.01}" };
+    }
+  }
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return { error: "Must be an object of tool key -> USD per unit" };
+  const out: Record<string, string> = {};
+  for (const [rawKey, x] of Object.entries(v as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    const n = plainDecimal(x);
+    if (n === null || n === undefined || (typeof n === "string" && n.trim() === "")) continue;
+    if (!TOOL_KEY_RE.test(key)) return { error: `"${rawKey}" is not a valid tool key (letters, numbers, _ . : - only)` };
+    const str = String(n).trim();
+    if (!/^\d+(\.\d+)?$/.test(str)) return { error: `${key}: must be a non-negative number` };
+    out[key] = str;
+  }
+  return { value: out };
+}
+
+/** Optional: undefined stays undefined (= leave the column alone), anything else is parsed. */
+const toolMapOpt = z.unknown().transform((raw, ctx): Record<string, string> | undefined => {
+  if (raw === undefined) return undefined;
+  const r = parseToolPriceMap(raw);
+  if (r.error !== undefined) {
+    ctx.addIssue({ code: "custom", message: r.error });
+    return z.NEVER;
+  }
+  return r.value;
+}).optional();
+
+/** A percent 0-100. undefined stays undefined (leave alone); blank -> `blank`. */
+const pctOpt = <B extends string | null>(blankValue: B) =>
+  z.unknown().transform((raw, ctx): string | B | undefined => {
+    if (raw === undefined) return undefined;
+    const v = plainDecimal(raw);
+    if (v === null || (typeof v === "string" && v.trim() === "")) return blankValue;
+    const s = String(v).trim();
+    if (!/^\d+(\.\d+)?$/.test(s) || Number(s) > 100) {
+      ctx.addIssue({ code: "custom", message: "Must be a percent between 0 and 100" });
+      return z.NEVER;
+    }
+    return s;
+  }).optional();
+
+/** A Json tool-price column (DB strings like "0.010000000000") -> plain decimal strings for forms ("0.01"). */
+export function toolPricesForForm(v: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return out;
+  for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+    if (x === null || x === undefined || x === "") continue;
+    try {
+      const d = new Decimal(String(x));
+      if (d.isFinite() && d.gte(0)) out[k] = d.toFixed();
+    } catch {
+      /* not a number: skip */
+    }
+  }
+  return out;
+}
+
+/**
+ * Customer price per tool under a pricing rule (mirrors the server's `deriveSellUpdates`): % of official -> official x pct,
+ * markup -> our cost x (1 + pct); keys without a basis keep their typed (fixed) price.
+ */
+export function previewToolPrices(
+  mode: string,
+  ruleValue: Num,
+  official: Record<string, string>,
+  cost: Record<string, string>,
+  fixed: Record<string, string>,
+): Record<string, number | null> {
+  const out: Record<string, number | null> = {};
+  for (const [k, v] of Object.entries(fixed)) out[k] = toNum(v);
+  const value = toNum(ruleValue);
+  if (mode === "FIXED" || value === null || value <= 0) return out;
+  const basis = mode === "PERCENT_OF_OFFICIAL" ? official : cost;
+  const factor = mode === "PERCENT_OF_OFFICIAL" ? new Decimal(value).div(100) : new Decimal(value).div(100).plus(1);
+  for (const [k, v] of Object.entries(basis)) {
+    const b = toNum(v);
+    if (b !== null) out[k] = new Decimal(String(v)).times(factor).toNumber();
+  }
+  return out;
+}
+
 const strList = z
   .array(z.string())
   .nullish()
@@ -315,6 +423,10 @@ const modelFieldsBase = z.object({
   officialPerMinutePrice: decOpt,
   officialPerMillionChars: decOpt,
   officialPerSecondPrice: decOpt,
+  toolPrices: toolMapOpt,
+  officialToolPrices: toolMapOpt,
+  /** Batch API: percent off the token price for customers (blank = the vendors' 50). */
+  batchDiscountPct: pctOpt(null),
   pricingMode: z.enum(PRICING_MODES).default("FIXED"),
   pricingValue: decOpt,
   retiresAt: dateOpt,
@@ -352,6 +464,9 @@ export const routeFieldsSchema = z.object({
   perMinuteCost: decOpt,
   perMillionCharsCost: decOpt,
   perSecondCost: decOpt,
+  toolCosts: toolMapOpt,
+  /** Batch API: what the supplier takes off its token prices (blank = 50). */
+  batchCostDiscountPct: pctOpt("50"),
 });
 export type RouteFields = z.output<typeof routeFieldsSchema>;
 

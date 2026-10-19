@@ -15,6 +15,7 @@ import { DateRangePicker } from "@/components/common/date-range-picker";
 import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
 import { rangeToParams, type DateRangeValue } from "@/lib/date-range";
+import { formatToolUsage } from "@/lib/tool-usage";
 import { formatDuration, formatNumber } from "@/lib/utils";
 import { explainError, logStatusInfo } from "@/server/customer/log-status";
 import { requestSaving } from "@/server/customer/savings";
@@ -88,6 +89,16 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
             {row.original.stream && (
               <span title="Streaming">
                 <Radio className="size-3 text-primary" />
+              </span>
+            )}
+            {row.original.batchId && (
+              <span title={`Batch ${row.original.batchId}`} className="rounded border px-1 text-[10px] text-muted-foreground">
+                batch
+              </span>
+            )}
+            {Object.keys(row.original.toolUsage).length > 0 && (
+              <span title={formatToolUsage(row.original.toolUsage)} className="rounded border px-1 text-[10px] text-muted-foreground">
+                tools
               </span>
             )}
           </span>
@@ -304,6 +315,8 @@ function LogSheet({ row, onClose }: { row: LogRow | null; onClose: () => void })
                 {row.reasoningTokens > 0 && <Row label="Reasoning tokens">{formatNumber(row.reasoningTokens)}</Row>}
                 {row.imageCount > 0 && <Row label="Images">{formatNumber(row.imageCount)}</Row>}
                 {row.videoSeconds > 0 && <Row label="Video seconds">{formatNumber(row.videoSeconds)}</Row>}
+                {Object.keys(row.toolUsage).length > 0 && <Row label="Server tools"><span className="font-mono text-xs">{formatToolUsage(row.toolUsage)}</span></Row>}
+                {row.batchId && <Row label="Batch"><span className="break-all font-mono text-xs">{row.batchId}</span></Row>}
                 {row.usageEstimated && <Row label="Usage">Estimated</Row>}
                 <Row label="Official price">{Number(row.officialPrice) > 0 ? <MoneyText value={row.officialPrice} /> : <span className="text-muted-foreground">not recorded</span>}</Row>
                 <Row label="Charged"><MoneyText value={row.price} /></Row>

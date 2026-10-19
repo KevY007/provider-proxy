@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { Decimal } from "@/lib/money";
-import { computeAmount, costTable, effectiveMultiplier, estimatePrice, longContextFactor, priceRequest, sellTable } from "@/gateway/pricing";
+import {
+  DEFAULT_BATCH_DISCOUNT_PCT,
+  computeAmount,
+  costTable,
+  discountFactor,
+  effectiveMultiplier,
+  effectiveOfficial,
+  estimatePrice,
+  longContextFactor,
+  officialTable,
+  priceRequest,
+  sellTable,
+  toolTable,
+} from "@/gateway/pricing";
+import { deriveSellUpdates } from "@/server/pricing/fields";
 import { emptyUsage, type Usage } from "@/gateway/types";
 
 const usage = (p: Partial<Usage>): Usage => ({ ...emptyUsage(), ...p });
@@ -120,5 +134,121 @@ describe("pricing", () => {
   it("estimatePrice is input*price + output*price (+request) times the multiplier", () => {
     const s = sellTable({ inputPrice: "1", outputPrice: "2", requestPrice: "0.001" });
     expect(estimatePrice(1000, 4096, s, "2").toString()).toBe(new Decimal("0.001").plus(new Decimal(4096).times(2).div(1e6)).plus("0.001").times(2).toString());
+  });
+});
+
+describe("pricing: server tools", () => {
+  const s = sellTable({ inputPrice: "0", outputPrice: "0", toolPrices: { web_search_request: "0.01", code_execution_hour: "0.05" } });
+  const c = costTable({ inputCost: "0", outputCost: "0", toolCosts: { web_search_request: "0.008", code_execution_hour: "0.05" } });
+
+  it("toolTable keeps non-negative numbers and drops everything else", () => {
+    const t = toolTable({ a: "0.01", b: 2, c: -1, d: "x", e: null, f: "" });
+    expect(Object.keys(t).sort()).toEqual(["a", "b"]);
+    expect(t.a.toString()).toBe("0.01");
+    expect(toolTable(null)).toEqual({});
+    expect(toolTable([1, 2])).toEqual({});
+    expect(toolTable("nope")).toEqual({});
+  });
+
+  it("prices each tool per unit; unknown/unpriced tools are free", () => {
+    const u = usage({ toolUsage: { web_search_request: 3, code_execution_hour: 0.5, mystery_tool: 7 } });
+    // 3 x 0.01 + 0.5 x 0.05
+    expect(computeAmount(u, s).toString()).toBe("0.055");
+    expect(computeAmount(usage({ toolUsage: { web_search_request: 0 } }), s).toString()).toBe("0");
+  });
+
+  it("adds tools on top of tokens and flat prices", () => {
+    const t = sellTable({ inputPrice: "1", outputPrice: "2", requestPrice: "0.001", toolPrices: { web_search_request: "0.01" } });
+    const p = computeAmount(usage({ inputTokens: 1_000_000, outputTokens: 1_000_000, toolUsage: { web_search_request: 2 } }), t);
+    expect(p.toString()).toBe("3.021");
+  });
+
+  it("the multiplier applies to the tool price but never to the tool cost", () => {
+    const b = priceRequest(usage({ toolUsage: { web_search_request: 10 } }), s, c, "1.5", null);
+    expect(b.price.toString()).toBe("0.15"); // 10 x 0.01 x 1.5
+    expect(b.cost.toString()).toBe("0.08"); // 10 x 0.008
+    expect(b.profit.toString()).toBe("0.07");
+  });
+
+  it("official tool price falls back to sell x multiplier per tool", () => {
+    const off = officialTable({ officialInputPrice: "0", officialOutputPrice: "0", officialToolPrices: { web_search_request: "0.02" } });
+    const eff = effectiveOfficial(off, s, "2");
+    expect(eff.tools!.web_search_request.toString()).toBe("0.02"); // official wins, never multiplied
+    expect(eff.tools!.code_execution_hour.toString()).toBe("0.1"); // no official -> sell 0.05 x 2
+    const b = priceRequest(usage({ toolUsage: { web_search_request: 1, code_execution_hour: 1 } }), s, c, "2", null, true, off);
+    expect(b.price.toString()).toBe("0.12"); // (0.01 + 0.05) x 2
+    expect(b.official.toString()).toBe("0.12"); // 0.02 + 0.1
+  });
+});
+
+describe("pricing: batch discount", () => {
+  it("discountFactor clamps to [0, 1]", () => {
+    expect(discountFactor(50).toString()).toBe("0.5");
+    expect(discountFactor(0).toString()).toBe("1");
+    expect(discountFactor(-10).toString()).toBe("1");
+    expect(discountFactor(150).toString()).toBe("0");
+    expect(discountFactor(null).toString()).toBe("1");
+    expect(DEFAULT_BATCH_DISCOUNT_PCT).toBe(50);
+  });
+
+  it("tokenDiscountPct takes the discount off tokens only (not flat request or tool prices)", () => {
+    const t = sellTable({ inputPrice: "2", outputPrice: "8", requestPrice: "0.01", toolPrices: { web_search_request: "0.01" } });
+    const u = usage({ inputTokens: 1_000_000, outputTokens: 1_000_000, toolUsage: { web_search_request: 1 } });
+    expect(computeAmount(u, t).toString()).toBe("10.02");
+    // tokens 10 x 0.5 = 5, + request 0.01 + tool 0.01
+    expect(computeAmount(u, t, { tokenDiscountPct: 50 }).toString()).toBe("5.02");
+    // multiplier applies after the discount, to everything
+    expect(computeAmount(u, t, { tokenDiscountPct: 50, multiplier: 2 }).toString()).toBe("10.04");
+  });
+
+  it("applies the long-context factor first, THEN the batch discount", () => {
+    const t = sellTable({ inputPrice: "1", outputPrice: "0", requestPrice: "0.5" });
+    const lc = { threshold: 100_000, multiplier: new Decimal(5) };
+    // 200k x 1 / 1e6 = 0.2 -> x5 = 1 -> x0.5 = 0.5 ; + 0.5 flat (neither scaled nor discounted)
+    expect(computeAmount(usage({ inputTokens: 200_000 }), t, { longContext: lc, tokenDiscountPct: 50 }).toString()).toBe("1");
+    expect(computeAmount(usage({ inputTokens: 200_000 }), t, { longContext: lc }).toString()).toBe("1.5");
+  });
+
+  it("priceRequest(..., batch) uses the model / route discounts, defaulting to 50, and the vendors' 50 for official", () => {
+    const t = sellTable({ inputPrice: "4", outputPrice: "0", toolPrices: { web_search_request: "0.01" } });
+    const co = costTable({ inputCost: "2", outputCost: "0", toolCosts: { web_search_request: "0.01" } });
+    const off = officialTable({ officialInputPrice: "4", officialOutputPrice: "0" });
+    const u = usage({ inputTokens: 1_000_000, toolUsage: { web_search_request: 1 } });
+
+    const def = priceRequest(u, t, co, 1, null, true, off, { sellPct: null, costPct: undefined });
+    expect(def.price.toString()).toBe("2.01");
+    expect(def.cost.toString()).toBe("1.01");
+    expect(def.official.toString()).toBe("2.01");
+
+    const custom = priceRequest(u, t, co, 1, null, true, off, { sellPct: 25, costPct: 60 });
+    expect(custom.price.toString()).toBe("3.01"); // 4 x 0.75 + 0.01
+    expect(custom.cost.toString()).toBe("0.81"); // 2 x 0.4 + 0.01
+    expect(custom.official.toString()).toBe("2.01"); // the vendor's own batch price stays 50% off
+    expect(custom.profit.toString()).toBe("2.2");
+
+    const noBatch = priceRequest(u, t, co, 1, null, true, off);
+    expect(noBatch.price.toString()).toBe("4.01");
+    expect(noBatch.official.toString()).toBe("4.01");
+  });
+});
+
+describe("deriveSellUpdates: server tools", () => {
+  it("PERCENT_OF_OFFICIAL: official tool price x percent", () => {
+    const u = deriveSellUpdates({ officialToolPrices: { web_search_request: "0.01", code_execution_hour: "0.05" } }, null, { mode: "PERCENT_OF_OFFICIAL", value: 100 });
+    expect(u.toolPrices).toEqual({ web_search_request: "0.010000000000", code_execution_hour: "0.050000000000" });
+    const half = deriveSellUpdates({ officialToolPrices: { web_search_request: "0.01" } }, null, { mode: "PERCENT_OF_OFFICIAL", value: 50 });
+    expect(half.toolPrices).toEqual({ web_search_request: "0.005000000000" });
+  });
+
+  it("MARKUP_OVER_COST: route tool cost x (1 + markup), keeping sell-only keys", () => {
+    const u = deriveSellUpdates({ toolPrices: { custom_tool: "1" } }, { toolCosts: { web_search_call: "0.01" } }, { mode: "MARKUP_OVER_COST", value: 30 });
+    expect(u.toolPrices).toEqual({ custom_tool: "1.000000000000", web_search_call: "0.013000000000" });
+  });
+
+  it("returns no toolPrices when nothing changes, there is no basis, or the rule is FIXED", () => {
+    expect(deriveSellUpdates({ toolPrices: { web_search_request: "0.01" }, officialToolPrices: { web_search_request: "0.01" } }, null, { mode: "PERCENT_OF_OFFICIAL", value: 100 })).not.toHaveProperty("toolPrices");
+    expect(deriveSellUpdates({ toolPrices: {} }, { toolCosts: {} }, { mode: "MARKUP_OVER_COST", value: 30 })).not.toHaveProperty("toolPrices");
+    expect(deriveSellUpdates({ toolPrices: {} }, null, { mode: "MARKUP_OVER_COST", value: 30 })).not.toHaveProperty("toolPrices");
+    expect(deriveSellUpdates({ officialToolPrices: { web_search_request: "0.01" } }, null, { mode: "FIXED", value: 1 })).toEqual({});
   });
 });

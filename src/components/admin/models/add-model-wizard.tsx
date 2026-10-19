@@ -13,7 +13,7 @@ import { useAction } from "@/components/admin/use-action";
 import { createModelWithRoute } from "@/server/admin/models-actions";
 import { MODEL_CAPABILITIES, MODEL_PRICE_PAIRS, type PricingModeId } from "@/server/admin/models-calc";
 import type { WizardProvider } from "@/server/admin/models-queries";
-import { defaultRule, officialAsCost, prettyModelName, slugifyModelId, stepForField, tableToFields, uniqueName, validatePublicName } from "@/server/admin/wizard-calc";
+import { defaultRule, knownToolFields, officialAsCost, prettyModelName, slugifyModelId, stepForField, tableToFields, uniqueName, validatePublicName } from "@/server/admin/wizard-calc";
 import type { PriceUnitKey } from "@/server/pricing/preview";
 import { PriceExplainer, PriceGrid, RuleSelector, usePricingPreview, type PriceValues } from "./pricing-editor";
 import { ProviderPicker, Stepper, UpstreamModelPicker, type PickedModel } from "./wizard-parts";
@@ -55,8 +55,14 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
   const [ruleTouched, setRuleTouched] = useState(false);
   const [note, setNote] = useState<{ tone: "ok" | "warn" | "info"; text: string } | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
-  // catalog extras with no input on screen: description, Anthropic 1h cache write, long-context surcharge
-  const [extras, setExtras] = useState<{ description: string; cacheWrite1h: number | null; longContext: { threshold: number; multiplier: number } | null }>({ description: "", cacheWrite1h: null, longContext: null });
+  // catalog extras with no input on screen: description, Anthropic 1h cache write, long-context surcharge, server-tool prices
+  const [extras, setExtras] = useState<{
+    description: string;
+    cacheWrite1h: number | null;
+    longContext: { threshold: number; multiplier: number } | null;
+    tools: Record<string, number> | null;
+    direct: boolean;
+  }>({ description: "", cacheWrite1h: null, longContext: null, tools: null, direct: false });
 
   const provider = providers.find((p) => p.id === providerId);
   const setDetail = <K extends keyof Details>(k: K, v: Details[K]) => setD((s) => ({ ...s, [k]: v }));
@@ -73,7 +79,7 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
     const next = { ...official, ...cost };
     const rule = defaultRule(next);
     setUpstreamModel(p.id);
-    setExtras({ description: known?.description ?? "", cacheWrite1h: direct ? (known?.cacheWrite1h ?? null) : null, longContext: known?.longContext ?? null });
+    setExtras({ description: known?.description ?? "", cacheWrite1h: direct ? (known?.cacheWrite1h ?? null) : null, longContext: known?.longContext ?? null, tools: known?.tools ?? null, direct });
     setValues(next);
     setMode(rule.mode);
     setRuleValue(rule.value);
@@ -123,6 +129,8 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
       costs.cacheWrite1hCost = String(extras.cacheWrite1h);
       sell.cacheWrite1hPrice = String(Number(((cw > 0 && cwCustomer > 0 ? extras.cacheWrite1h * (cwCustomer / cw) : extras.cacheWrite1h)).toPrecision(10)));
     }
+    // server tools from the catalog (no input on screen; editable on the model page afterwards)
+    const tools = knownToolFields(extras.tools, extras.direct, { mode, value: ruleValue });
     const res = await run(
       () =>
         createModelWithRoute({
@@ -144,8 +152,10 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
             pricingValue: mode === "FIXED" ? "" : ruleValue,
             ...sell,
             ...official,
+            officialToolPrices: tools.officialToolPrices,
+            toolPrices: tools.toolPrices,
           },
-          costs,
+          costs: { ...costs, toolCosts: tools.toolCosts },
         }),
       {
         refresh: false,

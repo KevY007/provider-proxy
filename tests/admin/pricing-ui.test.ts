@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { primaryEnabledRoute, compactUnits, fmtPct, modelFieldsSchema, MODEL_PRICE_PAIRS, OFFICIAL_PRICE_FIELDS, rowUnits, summarizeRow, toPriceTable } from "@/server/admin/models-calc";
-import { defaultRule, knownSummary, officialAsCost, prettyModelName, slugifyModelId, stepForField, tableToFields, uniqueName, validatePublicName } from "@/server/admin/wizard-calc";
+import { defaultRule, knownSummary, knownToolFields, officialAsCost, prettyModelName, slugifyModelId, stepForField, tableToFields, toolsToFields, uniqueName, validatePublicName } from "@/server/admin/wizard-calc";
+import { lookupKnownPrice } from "@/gateway/price-catalog";
 import { deriveQuickStart } from "@/server/admin/quickstart";
 import { addCreditSchema, creditDescription, creditLabelFromDescription, grantCreditsSchema } from "@/server/admin/credits";
 import { friendlySettingIssue } from "@/server/admin/settings-calc";
@@ -194,5 +195,27 @@ describe("friendly settings validation", () => {
     expect(friendlySettingIssue("Max upstream attempts", { code: "invalid_type", expected: "int" })).toMatch(/whole number/);
     expect(friendlySettingIssue("X", { code: "invalid_type", expected: "number" })).toBe("X must be a number.");
     expect(friendlySettingIssue("X", undefined)).toMatch(/isn't valid/);
+  });
+});
+
+describe("wizard: server-tool prefill", () => {
+  it("toolsToFields keeps non-negative numbers as strings", () => {
+    expect(toolsToFields({ web_search_request: 0.01, bad: Number.NaN, neg: -1 })).toEqual({ web_search_request: "0.01" });
+    expect(toolsToFields(undefined)).toEqual({});
+  });
+
+  it("knownToolFields: official from the catalog, cost only for direct providers, customer price under the rule", () => {
+    const k = lookupKnownPrice("anthropic", "claude-haiku-4-5-20251001")!;
+    expect(k.tools).toBeTruthy();
+    const direct = knownToolFields(k.tools, true, { mode: "PERCENT_OF_OFFICIAL", value: "100" });
+    expect(direct.officialToolPrices).toEqual({ web_search_request: "0.01", code_execution_hour: "0.05" });
+    expect(direct.toolCosts).toEqual(direct.officialToolPrices);
+    expect(direct.toolPrices).toEqual(direct.officialToolPrices);
+    const resold = knownToolFields(k.tools, false, { mode: "PERCENT_OF_OFFICIAL", value: "80" });
+    expect(resold.toolCosts).toEqual({});
+    expect(resold.toolPrices).toEqual({ web_search_request: "0.008", code_execution_hour: "0.04" });
+    expect(knownToolFields(k.tools, true, { mode: "MARKUP_OVER_COST", value: "30" }).toolPrices).toEqual({ web_search_request: "0.013", code_execution_hour: "0.065" });
+    expect(knownToolFields(k.tools, false, { mode: "FIXED", value: "" }).toolPrices).toEqual({ web_search_request: "0.01", code_execution_hour: "0.05" });
+    expect(knownToolFields(undefined, true, { mode: "FIXED", value: "" })).toEqual({ officialToolPrices: {}, toolCosts: {}, toolPrices: {} });
   });
 });

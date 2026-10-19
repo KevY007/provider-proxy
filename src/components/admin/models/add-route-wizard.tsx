@@ -9,7 +9,7 @@ import { useAction } from "@/components/admin/use-action";
 import { createRoute } from "@/server/admin/models-actions";
 import { MODEL_PRICE_PAIRS } from "@/server/admin/models-calc";
 import type { WizardProvider } from "@/server/admin/models-queries";
-import { officialAsCost, stepForField } from "@/server/admin/wizard-calc";
+import { officialAsCost, stepForField, toolsToFields } from "@/server/admin/wizard-calc";
 import type { PriceUnitKey } from "@/server/pricing/preview";
 import { PriceGrid, type PriceValues } from "./pricing-editor";
 import { ProviderPicker, Stepper, UpstreamModelPicker, type PickedModel } from "./wizard-parts";
@@ -41,6 +41,7 @@ export function AddRouteWizard({
   const [providerId, setProviderId] = useState("");
   const [upstreamModel, setUpstreamModel] = useState("");
   const [costs, setCosts] = useState<Record<string, string>>({});
+  const [toolCosts, setToolCosts] = useState<Record<string, string>>({});
   const [priority, setPriority] = useState("0");
   const [weight, setWeight] = useState("1");
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -53,6 +54,7 @@ export function AddRouteWizard({
     setUpstreamModel(p.id);
     // direct providers charge the official price; otherwise start from the model's official price as a reference only when we know it is direct
     setCosts(direct ? officialAsCost(known?.official) : {});
+    setToolCosts(direct ? toolsToFields(known?.tools) : {});
     setHint(direct ? "This provider is the model's maker, so Our cost starts equal to the official price." : "Enter what this provider charges you for each unit.");
     setErrors({});
     setStep(3);
@@ -68,6 +70,7 @@ export function AddRouteWizard({
   async function add() {
     const payload: Record<string, unknown> = { providerId, upstreamModel, enabled: true, priority, weight };
     for (const p of MODEL_PRICE_PAIRS) if (costs[p.cost]) payload[p.cost] = costs[p.cost];
+    if (Object.keys(toolCosts).length) payload.toolCosts = toolCosts;
     const res = await run(() => createRoute(modelId, payload), {
       onError: (_e, fe) => {
         if (!fe) return;

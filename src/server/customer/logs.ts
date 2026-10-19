@@ -1,6 +1,7 @@
 import "server-only";
 import { db } from "@/lib/db";
 import type { Prisma, RequestStatus } from "@/generated/prisma/client";
+import { toolUsageMap } from "@/lib/tool-usage";
 
 /** Customer-safe RequestLog access. NEVER select provider/providerKey/upstreamModel/internalError/attempts-detail/bodies. */
 
@@ -40,6 +41,10 @@ export interface LogRow {
   usageEstimated: boolean;
   /** Number of upstream attempts only; details stay internal. */
   attempts: number;
+  /** Server tools the request used, e.g. { web_search_request: 2 } */
+  toolUsage: Record<string, number>;
+  /** Batch API: the batch this result was metered from */
+  batchId: string | null;
 }
 
 const SAFE_SELECT = {
@@ -66,6 +71,8 @@ const SAFE_SELECT = {
   ttftMs: true,
   usageEstimated: true,
   attempts: true,
+  toolUsage: true,
+  batchId: true,
 } satisfies Prisma.RequestLogSelect;
 
 type SafeRow = Prisma.RequestLogGetPayload<{ select: typeof SAFE_SELECT }>;
@@ -96,6 +103,8 @@ function toRow(r: SafeRow): LogRow {
     ttftMs: r.ttftMs,
     usageEstimated: r.usageEstimated,
     attempts: Array.isArray(r.attempts) ? r.attempts.length : 0,
+    toolUsage: toolUsageMap(r.toolUsage),
+    batchId: r.batchId,
   };
 }
 

@@ -84,6 +84,14 @@ describe("price matrix (x_pricing)", () => {
     expect(stt.savings_pct).toEqual({});
   });
 
+  it("lists server-tool prices per unit (multiplier on yours, official as-is)", () => {
+    const sell = sellTable({ inputPrice: "1", outputPrice: "5", toolPrices: { web_search_request: "0.01", code_execution_hour: "0.05" } });
+    const official = officialTable({ officialInputPrice: "1", officialOutputPrice: "5", officialToolPrices: { web_search_request: "0.01" } });
+    const m = priceMatrix(sell, official, d("0.8"));
+    expect(m.tools).toEqual({ code_execution_hour: { yours: 0.04 }, web_search_request: { yours: 0.008, official: 0.01, savings_pct: 20 } });
+    expect(priceMatrix(sellTable({ inputPrice: "1", outputPrice: "1" }), null, d(1)).tools).toEqual({});
+  });
+
   it("applies the multiplier to your price only", () => {
     const m = priceMatrix(sellTable({ inputPrice: "2", outputPrice: "10" }), officialTable({ officialInputPrice: "4", officialOutputPrice: "20" }), d("0.5"));
     expect(m.yours).toEqual({ input: 1, output: 5 });

@@ -1,5 +1,6 @@
 import "server-only";
 import { db } from "@/lib/db";
+import { toolUsageCsv, toolUsageMap } from "@/lib/tool-usage";
 import { dstr0 } from "./serialize";
 import { LOG_PAGE_SIZE, buildLogWhere, encodeCursor, type LogCursor, type LogFilters } from "./logs-query";
 
@@ -22,6 +23,8 @@ const rowSelect = {
   officialPrice: true,
   latencyMs: true,
   queueMs: true,
+  toolUsage: true,
+  batchId: true,
   user: { select: { id: true, email: true } },
   apiKey: { select: { id: true, prefix: true, name: true } },
   provider: { select: { id: true, name: true } },
@@ -53,6 +56,9 @@ export interface LogRow {
   officialPrice: string;
   latencyMs: number;
   queueMs: number;
+  /** Server tools used ("web_search_request=2; ..."), "" when none. */
+  serverTools: string;
+  batchId: string | null;
 }
 
 function toRow(r: Awaited<ReturnType<typeof fetchRows>>[number]): LogRow {
@@ -80,6 +86,8 @@ function toRow(r: Awaited<ReturnType<typeof fetchRows>>[number]): LogRow {
     officialPrice: dstr0(r.officialPrice),
     latencyMs: r.latencyMs,
     queueMs: r.queueMs,
+    serverTools: toolUsageCsv(toolUsageMap(r.toolUsage)),
+    batchId: r.batchId,
   };
 }
 
@@ -182,6 +190,8 @@ export async function getLogDetailData(id: string) {
     videoSeconds: r.videoSeconds,
     characters: r.characters,
     usageEstimated: r.usageEstimated,
+    toolUsage: toolUsageMap(r.toolUsage),
+    batchId: r.batchId,
     price: dstr0(r.price),
     cost: dstr0(r.cost),
     profit: dstr0(r.profit),
