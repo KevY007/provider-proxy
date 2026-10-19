@@ -90,19 +90,28 @@ Skip this in the lean profile. Without Redis the app keeps rate limits, concurre
 invalidation in memory, which is exact for **one** instance, so the lean profile pins `--max-instances=1`. As soon as
 you run more than one instance you need Redis, so those limits and holds are shared.
 
-```bash
-gcloud redis instances create providerproxy-redis --region=$REGION --tier=basic --size=1 \
-  --redis-version=redis_7_0
+Give the proxy its own small network (nothing else uses it) and a password-protected instance. `standard` keeps a
+replica in a second zone and fails over automatically; `basic` is half the price without that.
 
-export REDIS_HOST=$(gcloud redis instances describe providerproxy-redis --region=$REGION --format='value(host)')
+```bash
+gcloud services enable compute.googleapis.com redis.googleapis.com
+gcloud compute networks create $SERVICE-vpc --subnet-mode=custom
+gcloud compute networks subnets create $SERVICE-$REGION --network=$SERVICE-vpc --region=$REGION \
+  --range=10.80.0.0/20 --enable-private-ip-google-access      # /20 = room for ~4000 instances' egress addresses
+gcloud redis instances create $SERVICE-redis --region=$REGION --tier=standard --size=1 --redis-version=redis_7_2 \
+  --network=projects/$PROJECT_ID/global/networks/$SERVICE-vpc --enable-auth --redis-config=maxmemory-policy=volatile-lru
+
+export REDIS_HOST=$(gcloud redis instances describe $SERVICE-redis --region=$REGION --format='value(host)')
+export REDIS_AUTH=$(gcloud redis instances get-auth-string $SERVICE-redis --region=$REGION --format='value(authString)')
+printf 'redis://:%s@%s:6379/0' "$REDIS_AUTH" "$REDIS_HOST" | gcloud secrets create REDIS_URL --data-file=-
 ```
 
 The service reaches Redis through **Direct VPC egress** (flags in step 9). Unlike a Serverless VPC connector it has
-no VMs that bill while the service is idle.
+no VMs that bill while the service is idle. Every key the app writes has a TTL, so `volatile-lru` only ever evicts
+expired-soon data; 1 GB holds the shared state of a very large deployment.
 
-`REDIS_URL=redis://$REDIS_HOST:6379`
-
-> Memorystore bills around the clock, even when the service is idle (basic 1 GB is the smallest instance).
+> Memorystore bills around the clock, even when the service is idle (1 GB: roughly $35/month basic, $70/month
+> standard; check the pricing page for your region).
 
 ## 5. Secrets (Secret Manager)
 
@@ -213,14 +222,24 @@ gcloud run deploy $SERVICE \
   --liveness-probe=httpGet.path=/api/healthz,periodSeconds=30
 ```
 
-Scale-out profile (after step 4): change these flags and add the Redis secret:
+Scale-out profile (after step 4): change these flags, add the Redis secret and switch the database URL to the
+**transaction pooler** (Supabase: port 6543 instead of 5432; `DIRECT_URL` for migrations stays on the session
+pooler):
 
 ```bash
-  --max-instances=20 --cpu=2 --memory=2Gi \
-  --network=default --subnet=default --vpc-egress=private-ranges-only \
-  --set-secrets="...,REDIS_URL=REDIS_URL:latest" \
-  --set-env-vars="...,DB_POOL_SIZE=8"        # keep max-instances x DB_POOL_SIZE under the pooler limits (step 3)
+  --max-instances=100 --concurrency=500 --cpu=2 --memory=2Gi \
+  --network=$SERVICE-vpc --subnet=$SERVICE-$REGION --vpc-egress=private-ranges-only \
+  --set-secrets="...,DATABASE_URL=DATABASE_URL_POOLED:latest,REDIS_URL=REDIS_URL:latest" \
+  --set-env-vars="...,DB_POOL_SIZE=2"
 ```
+
+Why these numbers: the request path needs no database round trip (auth, limits, holds and config are cached or in
+Redis; metering is batched), so each instance needs only a couple of connections. With the transaction pooler,
+`max-instances x DB_POOL_SIZE` client connections (here at most 200) share the role's own connection limit (20 in
+`deploy/supabase-setup.sql`) on the database, so the proxy can never take connections away from other apps on the
+same database. 100 instances x 500 concurrent requests = 50,000 requests in flight; for more, raise
+`--max-instances` (Cloud Run quota: "Maximum instances per service" / regional CPU) and the pooler's client limit
+(Supabase compute size) together. Idle, it still scales to zero.
 
 Always on, no cold starts (e.g. while the service fronts your main app around the clock):
 `gcloud run services update $SERVICE --region=$REGION --min-instances=1`.
