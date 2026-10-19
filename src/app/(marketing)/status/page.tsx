@@ -60,18 +60,20 @@ export default async function StatusPage() {
 
       <div
         className={cn(
-          "mb-8 flex items-center gap-3 rounded-xl border p-5",
+          "mb-8 flex flex-wrap items-center gap-3 rounded-xl border p-5",
           snap.overall === "operational" && "border-emerald-500/30 bg-emerald-500/10",
           snap.overall === "degraded" && "border-amber-500/30 bg-amber-500/10",
           snap.overall === "down" && "border-red-500/30 bg-red-500/10",
         )}
       >
-        <Icon className={cn("size-6", TEXT_COLOR[snap.overall])} />
-        <div className="flex-1">
+        <Icon className={cn("size-6 shrink-0", TEXT_COLOR[snap.overall])} />
+        <div className="min-w-0 flex-1 basis-48">
           <p className="font-medium">{banner}</p>
           <p className="text-xs text-muted-foreground">Updated {new Date(snap.generatedAt).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
         </div>
-        <AutoRefresh seconds={30} />
+        <div className="w-full pl-9 sm:w-auto sm:pl-0">
+          <AutoRefresh seconds={30} />
+        </div>
       </div>
 
       {snap.vendors.length === 0 ? (
