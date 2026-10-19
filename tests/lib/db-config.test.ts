@@ -16,7 +16,11 @@ describe("dbConnection", () => {
     const c = dbConnection("postgresql://u:p@aws-0-us-west-2.pooler.supabase.com:5432/postgres?sslmode=require&uselibpqcompat=true", PEM, { max: 10 });
     expect(c.pool.connectionString).toBe("postgresql://u:p@aws-0-us-west-2.pooler.supabase.com:5432/postgres");
     expect(c.pool.max).toBe(10);
-    expect(c.pool.ssl).toEqual({ ca: PEM, rejectUnauthorized: true }); // host name checked too (no override)
+    const ssl = c.pool.ssl as { ca: string[]; rejectUnauthorized: boolean; checkServerIdentity?: unknown };
+    expect(ssl.ca).toContain(PEM); // the provider's CA ...
+    expect(ssl.ca.length).toBeGreaterThan(100); // ... on top of the public roots
+    expect(ssl.rejectUnauthorized).toBe(true);
+    expect(ssl.checkServerIdentity).toBeUndefined(); // host name checked too
   });
 
   it("CA as base64 or with escaped newlines", () => {
@@ -25,10 +29,10 @@ describe("dbConnection", () => {
     expect(() => decodeCaCert("bm90IGEgY2VydA==")).toThrow(/neither a PEM/);
   });
 
-  it("?schema= goes to the adapter and the search_path, not to pg", () => {
+  it("?schema= goes to the adapter (and the per-connection search_path), not to pg", () => {
     const c = dbConnection("postgresql://u:p@h:5432/postgres?schema=providerproxy&sslmode=require", PEM);
     expect(c.schema).toBe("providerproxy");
-    expect(c.pool.options).toBe("-c search_path=providerproxy");
+    expect(c.pool.options).toBeUndefined(); // no startup option (poolers may drop it); db.ts SETs it per connection
     expect(c.pool.connectionString).toBe("postgresql://u:p@h:5432/postgres");
     expect(() => dbConnection("postgresql://u:p@h/db?schema=a;drop")).toThrow(/identifier/);
   });

@@ -164,7 +164,11 @@ the default group.
 
 ## Customers and credits (`/admin/customers`)
 
-The list has search, balance, spend and CSV export. The detail page shows:
+The list has search, balance, spend and CSV export. **Create user** (admins) adds an account that is active and
+verified right away, with a role, a group and optional starting credit (recorded as promotional credit); the invite
+email links to a page where the user picks their own password (valid 7 days, afterwards **Send password reset**).
+New self-service sign-ups are switched on and off under Settings > Access > **Signups enabled** (the ADMIN_EMAIL
+account can always sign up). The detail page shows:
 - **Profile & controls**: status (suspend / activate), role, verify email, group (pool), price multiplier (stacks on
   the group's), billing mode (PREPAID / POSTPAID), credit limit (how far below $0 the balance may go), monthly spend
   limit, max concurrency (across all their keys).
@@ -172,6 +176,10 @@ The list has search, balance, spend and CSV export. The detail page shows:
   **Correction** (ADJUSTMENT, may be negative), plus a required reason. **Grant credit** applies to many customers
   selected in the list. **Adjust balance** is also available.
 - Keys, usage, logs and Stripe payments.
+- **Edit** (name and email; an email set by an admin counts as verified) and **Delete** (type the email to
+  confirm). An account without payments or ledger entries is removed; one with billing history is anonymised and
+  locked instead so the books stay complete: email replaced, name cleared, password and 2FA wiped, suspended, API
+  keys revoked. You cannot delete yourself or the last active admin.
 - **Revoke sessions**, **Send password reset**, **Impersonate**. Impersonation works on ACTIVE customers only and is
   audited. The session ends after 1 hour (it never rolls) or as soon as the staff member is no longer active staff.
 
@@ -200,7 +208,7 @@ The list has search, balance, spend and CSV export. The detail page shows:
 
 | Group | Setting (default) |
 |---|---|
-| Access | `signupEnabled` (true), `requireEmailVerification` (true), `defaultGroupSlug` ("standard") |
+| Access | `signupEnabled` (true), `requireEmailVerification` (true), `requireStaffTwoFactor` (true in production), `defaultGroupSlug` ("standard"). What visitors who are not signed in may see: `publicPricing` (true; off hides the home-page price table and savings, `/pricing` and `/api/pricing`), `publicModels` (true; off also hides model names, counts and vendors on the home page and status page, real model ids in the docs, and public pricing), `publicStatus` (true; off sends `/status` to sign-in). Signed-in users always see everything; private pricing is sent with `cache-control: private, no-store`. |
 | Billing | `trialCredit` ($0), `requireCardForTrial` (false), `minTopup` ($5), `maxTopup` ($1000), `minBalanceToCall` ($0; reject when balance + credit limit <= this), `lowBalanceEmail` (true), `autoRechargeMaxPerDay` (3) |
 | Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never), `autoPriceSyncHours` (6), `autoPriceSyncCalls` (100) |
 | Monitoring and background work | All off by default, so an idle server does nothing. `activeHealthChecks` (false; **Uptime monitoring**: ping every upstream key with a free model-list request every `healthCheckIntervalMin` (5) minutes and record uptime + ping history even when nobody calls), `backgroundJobs` (false; run upkeep every `maintenanceIntervalMin` (5) minutes and billing hourly on a timer instead of only during activity). Timers need a running instance; see [OPERATIONS.md](OPERATIONS.md#background-jobs-cold-by-default). |

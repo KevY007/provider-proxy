@@ -24,6 +24,7 @@ import { getSetting } from "@/lib/settings";
 import { formatMultiplier } from "@/server/customer/pricing";
 import { getCatalogModels, getDefaultGroup } from "@/server/customer/catalog";
 import { vendorLabel } from "@/server/customer/labels";
+import { publicVisibility } from "@/server/customer/visibility";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
@@ -53,13 +54,16 @@ const FAQ = [
 ];
 
 export default async function HomePage() {
-  const [siteName, models, group] = await Promise.all([getSetting("siteName"), getCatalogModels(), getDefaultGroup()]);
+  const [siteName, models, group, vis] = await Promise.all([getSetting("siteName"), getCatalogModels(), getDefaultGroup(), publicVisibility()]);
+  // with private pricing nothing price-related reaches a visitor who is not signed in (table, savings, links)
+  const showPrices = vis.pricing;
+  const showModels = vis.models;
   const multiplier = group?.priceMultiplier ?? "1";
   const rows = buildPriceRows(models, multiplier);
-  const chatModel = models.find((m) => m.capabilities.includes("chat"))?.slug ?? "gpt-6-sol";
+  const chatModel = (showModels && models.find((m) => m.capabilities.includes("chat"))?.slug) || "gpt-6-sol";
   const featured = rows.filter((r) => !r.isImage && r.savings !== null).slice(0, 8);
   const savingsList = rows.map((r) => r.savings).filter((s): s is number => s !== null && s > 0);
-  const avgSavings = savingsList.length ? Math.round(savingsList.reduce((a, b) => a + b, 0) / savingsList.length) : null;
+  const avgSavings = showPrices && savingsList.length ? Math.round(savingsList.reduce((a, b) => a + b, 0) / savingsList.length) : null;
 
   const families = new Map<string, { count: number; names: string[] }>();
   for (const m of models) {
@@ -73,7 +77,7 @@ export default async function HomePage() {
     <div>
       {/* Hero */}
       <section className="relative overflow-hidden border-b">
-        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 [background:radial-gradient(60rem_30rem_at_20%_-10%,color-mix(in_oklch,var(--primary)_18%,transparent),transparent),radial-gradient(40rem_25rem_at_90%_10%,color-mix(in_oklch,var(--chart-3)_14%,transparent),transparent)]" />
+        <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 [background:radial-gradient(60rem_30rem_at_20%_-10%,color-mix(in_oklch,var(--primary)_18%,transparent),transparent),radial-gradient(40rem_25rem_at_90%_10%,color-mix(in_oklch,var(--chart-4)_10%,transparent),transparent)]" />
         <div className="mx-auto grid w-full max-w-6xl items-center gap-12 px-4 py-16 lg:grid-cols-[1.05fr_1fr] lg:py-24">
           <div className="space-y-6">
             <span className="inline-flex items-center gap-2 rounded-full border bg-card/60 px-3 py-1 text-xs text-muted-foreground">
@@ -83,7 +87,7 @@ export default async function HomePage() {
             <h1 className="text-4xl font-semibold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl">
               Every frontier model.
               <br />
-              <span className="bg-gradient-to-r from-primary to-[var(--chart-3)] bg-clip-text text-transparent">One endpoint.</span> Pay as you go.
+              <span className="bg-gradient-to-r from-primary to-[var(--chart-4)] bg-clip-text text-transparent">One endpoint.</span> Pay as you go.
             </h1>
             <p className="max-w-xl text-lg text-muted-foreground">
               A single API key and base URL for the best models from OpenAI, Anthropic, Google and more, billed per token
@@ -116,8 +120,15 @@ export default async function HomePage() {
       <section className="border-b bg-card/30">
         <div className="mx-auto grid w-full max-w-6xl grid-cols-2 gap-6 px-4 py-8 md:grid-cols-4">
           {[
-            { v: String(models.length), l: "models available" },
-            { v: String(families.size), l: "model vendors" },
+            ...(showModels
+              ? [
+                  { v: String(models.length), l: "models available" },
+                  { v: String(families.size), l: "model vendors" },
+                ]
+              : [
+                  { v: "1", l: "API key for every model" },
+                  { v: "SSE", l: "streaming & tool calls" },
+                ]),
             { v: "3", l: "API formats, one base URL" },
             { v: avgSavings ? `${avgSavings}%` : "PAYG", l: avgSavings ? "average savings vs list" : "no monthly fee" },
           ].map((s) => (
@@ -130,46 +141,50 @@ export default async function HomePage() {
       </section>
 
       {/* Price table */}
-      <section className="mx-auto w-full max-w-6xl px-4 py-16">
-        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
-          <div className="space-y-2">
-            <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Official vs. {siteName}</h2>
-            <p className="max-w-xl text-muted-foreground">
-              Live prices from our catalog{group ? <> on the {group.name} pool ({formatMultiplier(multiplier)})</> : null}. Cheaper pools are available for every key.
-            </p>
+      {showPrices && (
+        <section className="mx-auto w-full max-w-6xl px-4 py-16">
+          <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+            <div className="space-y-2">
+              <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Official vs. {siteName}</h2>
+              <p className="max-w-xl text-muted-foreground">
+                Live prices from our catalog{group ? <> on the {group.name} pool ({formatMultiplier(multiplier)})</> : null}. Cheaper pools are available for every key.
+              </p>
+            </div>
+            <Button asChild variant="outline">
+              <Link href="/pricing">
+                Full pricing <ArrowRight className="size-4" />
+              </Link>
+            </Button>
           </div>
-          <Button asChild variant="outline">
-            <Link href="/pricing">
-              Full pricing <ArrowRight className="size-4" />
-            </Link>
-          </Button>
-        </div>
-        <PriceTable rows={featured.length ? featured : rows.slice(0, 8)} compact />
-      </section>
+          <PriceTable rows={featured.length ? featured : rows.slice(0, 8)} compact />
+        </section>
+      )}
 
       {/* Model families */}
-      <section className="border-y bg-card/30">
-        <div className="mx-auto w-full max-w-6xl px-4 py-16">
-          <div className="mb-8 max-w-xl space-y-2">
-            <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">The models you want, in one place</h2>
-            <p className="text-muted-foreground">Switch vendors by changing one string. Your code, keys and billing stay the same.</p>
+      {showModels && (
+        <section className="border-y bg-card/30">
+          <div className="mx-auto w-full max-w-6xl px-4 py-16">
+            <div className="mb-8 max-w-xl space-y-2">
+              <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">The models you want, in one place</h2>
+              <p className="text-muted-foreground">Switch vendors by changing one string. Your code, keys and billing stay the same.</p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {[...families.entries()].map(([vendor, f]) => (
+                <Link key={vendor} href={showPrices ? "/pricing" : "/signup"} className="group rounded-xl border bg-card p-5 transition hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold">{vendorLabel(vendor)}</h3>
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{f.count} models</span>
+                  </div>
+                  <p className="mt-3 text-sm text-muted-foreground">{f.names.join(" · ")}{f.count > f.names.length ? " · ..." : ""}</p>
+                  <span className="mt-4 inline-flex items-center gap-1 text-sm text-primary opacity-0 transition group-hover:opacity-100">
+                    {showPrices ? "See prices" : "Get started"} <ArrowRight className="size-3.5" />
+                  </span>
+                </Link>
+              ))}
+            </div>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {[...families.entries()].map(([vendor, f]) => (
-              <Link key={vendor} href="/pricing" className="group rounded-xl border bg-card p-5 transition hover:border-primary/40 hover:shadow-lg hover:shadow-primary/5">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-semibold">{vendorLabel(vendor)}</h3>
-                  <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{f.count} models</span>
-                </div>
-                <p className="mt-3 text-sm text-muted-foreground">{f.names.join(" · ")}{f.count > f.names.length ? " · ..." : ""}</p>
-                <span className="mt-4 inline-flex items-center gap-1 text-sm text-primary opacity-0 transition group-hover:opacity-100">
-                  See prices <ArrowRight className="size-3.5" />
-                </span>
-              </Link>
-            ))}
-          </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* Features */}
       <section className="mx-auto w-full max-w-6xl px-4 py-16">
@@ -226,7 +241,7 @@ export default async function HomePage() {
 
       {/* CTA */}
       <section className="mx-auto w-full max-w-6xl px-4 pb-20">
-        <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/15 via-card to-[var(--chart-3)]/10 p-10 text-center">
+        <div className="relative overflow-hidden rounded-2xl border bg-gradient-to-br from-primary/15 via-card to-[var(--chart-4)]/10 p-10 text-center">
           <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Start building in minutes</h2>
           <p className="mx-auto mt-2 max-w-lg text-muted-foreground">Create an account, grab an API key and point your SDK at {appUrl}/v1.</p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">

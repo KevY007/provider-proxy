@@ -22,6 +22,8 @@ export type InvalidateScope = "all" | "providers" | "models" | "groups" | "setti
 
 const TTL_MS = 30_000;
 const NEG_TTL_MS = 3_000;
+/** How long an expired API key record may still be served while it refreshes in the background. */
+const AUTH_STALE_MS = 10 * 60_000;
 
 // ------------------------------------------------------------------ record types
 export interface ProviderRec {
@@ -533,9 +535,18 @@ export async function getAuthRecord(hash: string): Promise<AuthRecord | null> {
   const now = Date.now();
   const hit = cell.auth.get(hash);
   if (hit && now - hit.at < TTL_MS) return hit.rec;
+  // Stale but recent: answer from the cache and refresh in the background, so a key's request never waits on the
+  // database (admin changes still apply at once: they drop the entry via invalidateGatewayConfig).
+  if (hit && now - hit.at < AUTH_STALE_MS) {
+    if (!cell.authLoading.has(hash)) void refreshAuth(hash, hit.rec).catch(() => undefined);
+    return hit.rec;
+  }
   const neg = cell.negative.get(hash);
   if (neg && neg > now) return null;
+  return refreshAuth(hash, null);
+}
 
+function refreshAuth(hash: string, stale: AuthRecord | null): Promise<AuthRecord | null> {
   const inflight = cell.authLoading.get(hash);
   if (inflight) return inflight;
   const p = loadAuth(hash)
@@ -548,10 +559,16 @@ export async function getAuthRecord(hash: string): Promise<AuthRecord | null> {
           for (const k of drop) cell.auth.delete(k);
         }
       } else {
+        cell.auth.delete(hash);
         cell.negative.set(hash, Date.now() + NEG_TTL_MS);
         if (cell.negative.size > 20_000) cell.negative.clear();
       }
       return rec;
+    })
+    .catch((err) => {
+      // database trouble: keep serving the last known record rather than failing every request of the key
+      if (stale) return stale;
+      throw err;
     })
     .finally(() => {
       cell.authLoading.delete(hash);

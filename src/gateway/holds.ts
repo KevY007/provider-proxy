@@ -68,7 +68,7 @@ export interface ReserveOutcome {
 }
 
 const HOLD_TTL_MS = 5 * 60_000; // renewed by the heartbeat while the request is alive
-const PENDING_TTL_MS = 10 * 60_000; // settled debit waiting for the meter writer
+const PENDING_TTL_MS = 2 * 3600_000; // settled debit waiting for the meter writer (outlives a long DB outage, so it cannot be spent twice)
 const BAL_TTL_MS = 10 * 60_000;
 const HEARTBEAT_MS = 60_000;
 const MAX_HOLD_AGE_MS = 65 * 60_000;
