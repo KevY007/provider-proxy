@@ -38,10 +38,13 @@ describe.skipIf(!dbOk)("listUpstreamModels", () => {
     __resetUpstreamModelsCacheForTests();
     await fetch(`${h.base}/__mock/reset`);
     await listUpstreamModels(P.oa.id);
+    const stats1 = (await (await fetch(`${h.base}/__mock/stats`)).json()) as { byKey: Record<string, { total: number }>; byPath: Record<string, number> };
     await listUpstreamModels(P.oa.id);
     await listUpstreamModels(P.oa.id);
-    const stats = (await (await fetch(`${h.base}/__mock/stats`)).json()) as { byKey: Record<string, { total: number }> };
-    expect(stats.byKey[h.secret("k2")]?.total).toBe(1); // one upstream call, with the priority-5 key
+    const stats = (await (await fetch(`${h.base}/__mock/stats`)).json()) as { byKey: Record<string, { total: number }>; byPath: Record<string, number> };
+    expect(stats.byPath["/v1/models"]).toBe(1); // the list is fetched once, with the priority-5 key (+ the provider's price list endpoints)
+    expect(stats.byKey[h.secret("k2")]?.total).toBe(stats1.byKey[h.secret("k2")]?.total); // cached: no more upstream calls
+    expect(stats.byKey[h.secret("k2")]?.total).toBeGreaterThanOrEqual(1);
     expect(stats.byKey[h.secret("k1")]?.total ?? 0).toBe(0);
   });
 

@@ -23,7 +23,10 @@ async function loadKey(id: string) {
   return db.providerKey.findUnique({ where: { id }, include: { provider: true } });
 }
 
-export function toAdapter(p: ProviderRow): AdapterProvider {
+/** The provider fields an adapter needs (a saved row or an admin-form draft). */
+export type AdapterSource = Pick<ProviderRow, "slug" | "preset" | "baseUrl" | "authStyle" | "tags" | "extraHeaders" | "settings">;
+
+export function toAdapter(p: AdapterSource): AdapterProvider {
   const headers = openHeaders(p.extraHeaders);
   return {
     slug: p.slug,

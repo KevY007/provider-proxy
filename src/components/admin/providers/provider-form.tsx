@@ -126,7 +126,7 @@ export function ProviderFormFields({
           value={state.settings}
           onChange={(v) => set({ settings: v })}
           error={errors.settings}
-          description="anthropicVersion, azureApiVersion, stripFields, forceStreamUsage, anthropicBaseUrl, geminiBaseUrl, idleTimeoutSec (cut a silent stream), http2 (OPT-IN, default off: true = HTTP/2 to this https upstream; enable only for providers known to speak h2)."
+          description="anthropicVersion, azureApiVersion, stripFields, forceStreamUsage, anthropicBaseUrl, geminiBaseUrl, idleTimeoutSec (cut a silent stream), pricingUrl (a URL where this provider publishes its prices, for Fetch pricing), http2 (OPT-IN, default off: true = HTTP/2 to this https upstream; enable only for providers known to speak h2)."
         />
       </div>
       <TextAreaField label="Notes" value={state.notes} onChange={(v) => set({ notes: v })} rows={2} description="Internal only." />

@@ -19,6 +19,7 @@ import type { ProviderPreset } from "@/gateway/providers/presets";
 import type { SlotSnapshot } from "@/gateway/slots";
 import { formatNumber, formatPercent } from "@/lib/utils";
 import { emptyProviderForm, ProviderFormFields, providerPayload, type ProviderFormState } from "./provider-form";
+import { ProviderProbe } from "./provider-probe";
 
 export function ProvidersTable({ rows, presets, initialSlots, canEdit }: { rows: ProviderListRow[]; presets: ProviderPreset[]; initialSlots: SlotSnapshot; canEdit: boolean }) {
   const { snapshot } = useSlotSnapshot(initialSlots);
@@ -176,6 +177,7 @@ function AddProviderDialog({ presets }: { presets: ProviderPreset[] }) {
         description={preset?.description}
       />
       <ProviderFormFields state={state} set={set} errors={fieldErrors} />
+      <ProviderProbe state={state} />
     </FormDialog>
   );
 }

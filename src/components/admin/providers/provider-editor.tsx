@@ -11,6 +11,7 @@ import { useAction } from "@/components/admin/use-action";
 import { deleteProvider, updateProvider } from "@/server/admin/providers-actions";
 import type { ProviderDetail } from "@/server/admin/providers-queries";
 import { ProviderFormFields, providerPayload, type ProviderFormState } from "./provider-form";
+import { ProviderProbe } from "./provider-probe";
 
 export function ProviderEditor({
   provider,
@@ -54,6 +55,7 @@ export function ProviderEditor({
         <fieldset disabled={!canEdit || pending} className="contents">
           <ProviderFormFields state={state} set={(p) => setState((s) => ({ ...s, ...p }))} errors={fieldErrors} />
         </fieldset>
+        {canEdit && <ProviderProbe state={state} providerId={provider.id} hasKeys={keyCount > 0} />}
         {canEdit && presetFormats && (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border bg-muted/30 p-3 text-sm">
             <span className="text-muted-foreground">

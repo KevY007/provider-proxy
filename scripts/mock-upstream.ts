@@ -2502,7 +2502,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   ]);
   const known =
     (method === "POST" && (postRoutes.has(path) || !!gem)) ||
-    (method === "GET" && (path === "/v1/models" || !!modelOne || path === "/v1beta/models" || !!gemModelOne)) ||
+    (method === "GET" && (path === "/v1/models" || path === "/v1/model/info" || !!modelOne || path === "/v1beta/models" || !!gemModelOne)) ||
     !!resp ||
     isFilesPath(path) ||
     isBatchesPath(path);
@@ -2548,6 +2548,14 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   // --- GETs / bodiless ---
   if (method === "GET") {
     if (path === "/v1/models") return handleModels(ctx);
+    // LiteLLM-style price list (what a reseller / proxy publishes): USD per token
+    if (path === "/v1/model/info")
+      return sendJson(ctx, 200, {
+        data: [
+          { model_name: "gpt-mock", model_info: { input_cost_per_token: 0.0000025, output_cost_per_token: 0.00001, cache_read_input_token_cost: 0.00000125, max_input_tokens: 128000, max_output_tokens: 16384 } },
+          { model_name: "image-mock", model_info: { output_cost_per_image: 0.04 } },
+        ],
+      });
     if (modelOne) return handleModels(ctx, decodeURIComponent(modelOne[1]));
     if (path === "/v1beta/models") return handleGeminiModels(ctx);
     if (gemModelOne) return handleGeminiModels(ctx, decodeURIComponent(gemModelOne[1]));

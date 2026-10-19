@@ -8,6 +8,7 @@ import { decrypt, encrypt, secretHint } from "@/lib/crypto";
 import { slugify } from "@/lib/utils";
 import { invalidateGatewayConfig } from "@/gateway/cache";
 import { checkProvider, checkProviderKey, type HealthResult } from "@/gateway/health";
+import { probeProvider, type ProbeResult } from "@/gateway/upstream-models";
 import { getSlotSnapshot, type SlotSnapshot } from "@/gateway/slots";
 import { ActionFail, adminAction, jsonObjectText, optDecimal, optInt, parseInput, slugSchema } from "./action";
 import { parseBulkKeys } from "./bulk-keys";
@@ -308,3 +309,73 @@ export async function testAllProviderKeys(providerId: string) {
 export async function fetchSlotSnapshot() {
   return adminAction<SlotSnapshot>({}, async () => ({ data: await getSlotSnapshot() }));
 }
+
+// ---------------------------------------------------------------- test connection / fetch pricing (saved or draft)
+
+const probeSchema = z.object({
+  providerId: z.string().optional().nullable(),
+  what: z.enum(["test", "pricing", "both"]).default("both"),
+  /** An API key typed just for this test (never stored). Empty = use the provider's first usable key. */
+  secret: z.string().trim().max(4000).optional().nullable(),
+  draft: z.object({
+    preset: z.string().trim().min(1).max(40).default("custom"),
+    baseUrl: z
+      .string()
+      .trim()
+      .min(1, "Enter the base URL first")
+      .refine((v) => /^https?:\/\/\S+$/i.test(v) && validUrl(v), "Must be an http(s) URL"),
+    authStyle: z.enum(AUTH_STYLES),
+    formats: z.array(z.string()).default(["openai_chat"]),
+    extraHeaders: headersObject.optional(),
+    settings: jsonObjectText.optional(),
+  }),
+});
+
+/**
+ * "Test connection" and "Fetch pricing" on the provider form - works before the provider is saved (draft values +
+ * a key typed for the test) and for saved providers (their first usable key when none is typed). Lists the models
+ * the key can see and reads the prices the provider publishes through its API (OpenRouter / LiteLLM / reseller /
+ * ProviderProxy shapes, or `settings.pricingUrl`). Read-only: nothing is stored.
+ */
+export async function probeProviderAction(input: unknown) {
+  return adminAction<ProbeResult>({ adminOnly: true }, async ({ admin, ip }) => {
+    const d = parseInput(probeSchema, input);
+    const saved = d.providerId ? await db.provider.findUnique({ where: { id: d.providerId }, include: { keys: true } }) : null;
+    if (d.providerId && !saved) throw new ActionFail("Provider not found");
+    let secret = d.secret || null;
+    let keyExtra: Record<string, unknown> = {};
+    if (!secret && saved) {
+      const now = Date.now();
+      const key = saved.keys
+        .filter((k) => k.status === "ACTIVE" || (k.status === "COOLDOWN" && (!k.cooldownUntil || k.cooldownUntil.getTime() <= now)))
+        .sort((a, b) => b.priority - a.priority)[0];
+      if (key) {
+        try {
+          secret = decrypt(key.secretEncrypted);
+          keyExtra = (key.extra && typeof key.extra === "object" ? key.extra : {}) as Record<string, unknown>;
+        } catch {
+          throw new ActionFail("The provider key could not be decrypted (ENCRYPTION_KEY changed?)");
+        }
+      }
+    }
+    const draft = {
+      slug: saved?.slug ?? "draft",
+      preset: d.draft.preset,
+      baseUrl: d.draft.baseUrl.replace(/\/+$/, ""),
+      authStyle: d.draft.authStyle,
+      tags: saved?.tags ?? [],
+      // masked ([encrypted]) values in the form keep the stored ones
+      extraHeaders: sealHeaders(d.draft.extraHeaders ?? {}, saved?.extraHeaders),
+      settings: (d.draft.settings ?? {}) as never,
+      formats: d.draft.formats,
+    };
+    const res = await probeProvider(draft as never, secret, keyExtra as never, { models: d.what !== "pricing", pricing: d.what !== "test" });
+    await audit(admin.id, "provider.probe", saved ? { type: "Provider", id: saved.id } : null, { baseUrl: draft.baseUrl, what: d.what, models: res.models.count, prices: res.pricing.count }, ip);
+    const parts = [
+      d.what !== "pricing" ? (res.models.ok ? `Connected: ${res.models.count} model(s) in ${res.latencyMs} ms` : `Connection failed: ${res.models.error ?? "unknown error"}`) : null,
+      d.what !== "test" ? (res.pricing.count ? `Prices found for ${res.pricing.count} model(s)` : "This provider does not publish prices through its API") : null,
+    ].filter(Boolean);
+    return { data: res, message: parts.join(" | ") };
+  });
+}
+
