@@ -91,6 +91,20 @@ describe.skipIf(!dbOk)("Batch APIs", () => {
       expect((await createAnthropic(alice.key, [req("dup", slug.an, "a"), req("dup", slug.an, "b")])).status).toBe(400);
     });
 
+    it("a file referenced inside a request must belong to the caller (another customer's file id -> 404)", async () => {
+      const anProvider = (await db.model.findFirstOrThrow({ where: { slug: slug.an }, include: { routes: true } })).routes[0].providerId;
+      const pk = await db.providerKey.findFirstOrThrow({ where: { providerId: anProvider } });
+      const fileId = `file_bob_${h.sfx}`;
+      await db.upstreamObject.create({ data: { kind: "file", upstreamId: fileId, providerId: anProvider, providerKeyId: pk.id, userId: bob.userId, meta: { fmt: "anthropic_files" } } });
+      const doc = [{ type: "document", source: { type: "file", file_id: fileId } }, { type: "text", text: "summarize" }];
+      const res = await createAnthropic(alice.key, [req("steal", slug.an, "x", { messages: [{ role: "user", content: doc }] })]);
+      expect(res.status).toBe(404);
+      expect(((await res.json()) as { error: { type: string; message: string } }).error.message).toContain(fileId);
+      // the owner may use it
+      const ok = await createAnthropic(bob.key, [req("mine", slug.an, "x", { messages: [{ role: "user", content: doc }] })]);
+      expect(ok.status, await ok.clone().text()).toBe(200);
+    });
+
     it("402 when the worst case of the batch does not fit the balance (upstream never contacted)", async () => {
       const poor = await h.makeUser("poor", { balance: "0.01" });
       const k = (await h.makeKey("poor", poor.id)).key;
