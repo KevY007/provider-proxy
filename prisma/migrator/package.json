@@ -1,0 +1,9 @@
+{
+  "name": "providerproxy-migrator",
+  "private": true,
+  "description": "Pinned Prisma CLI for `prisma migrate deploy` in the container's migration stage (installed with npm ci from the lockfile).",
+  "dependencies": {
+    "dotenv": "18.0.8",
+    "prisma": "7.10.1"
+  }
+}

@@ -1,0 +1,10 @@
+allowBuilds:
+  sharp: true
+  unrs-resolver: false
+  esbuild: true
+  prisma: true
+  "@prisma/engines": true
+  "@node-rs/argon2": false
+# security: lodash advisories (via prisma studio, not reached at runtime) - see docs/SECURITY-AUDIT.md
+overrides:
+  lodash@<4.17.24: ^4.18.1
