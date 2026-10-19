@@ -5,7 +5,7 @@ copy/paste `gcloud` commands are in **[deploy/README.md](../deploy/README.md)**;
 
 ```
 Client -> Cloud Run (one container: UI + gateway, --use-http2) -> Supabase Postgres (IPv4 pooler, TLS verify-full)
-                                     |-> Memorystore Redis (optional, Serverless VPC connector)
+                                     |-> Memorystore Redis (scale-out, Direct VPC egress, own small VPC)
 (optional) Cloud Scheduler -> POST /api/cron/health, POST /api/cron/billing   [Bearer CRON_SECRET]
 Cloud Run Job (same image) -> prisma migrate deploy
 Secret Manager -> env vars          Stripe -> POST /api/stripe/webhook
@@ -64,7 +64,7 @@ openssl rand -hex 24      # CRON_SECRET
 | `--min-instances=0` (default) | Scale to zero when nobody calls: no instance cost while idle. The first call after an idle period waits for a cold start (a few seconds). Use `--min-instances=1` for no cold starts, or for 24/7 timers (see below). |
 | `--concurrency=250` | Streams are I/O bound. Lower it if CPU saturates. |
 | `--execution-environment=gen2`, `--cpu=2 --memory=2Gi --cpu-boost` | Multipart and JSON bodies are spooled to `/tmp`, which is **in memory** on Cloud Run. Size memory for the uploads in flight at once. JSON bodies take about 3x their size while parsed. |
-| `--max-instances=1 --cpu=1 --memory=1Gi` (lean) | Without Redis, limits and funds holds are per instance, so one instance only. Scale-out: Redis, `--network=default --subnet=default --vpc-egress=private-ranges-only`, more instances, `--cpu=2 --memory=2Gi`. |
+| `--max-instances=1 --cpu=1 --memory=1Gi` (lean) | Without Redis, limits and funds holds are per instance, so one instance only. Scale-out: Redis, `--network=$SERVICE-vpc --subnet=$SERVICE-$REGION --vpc-egress=private-ranges-only`, `--max-instances=100 --concurrency=500 --cpu=2 --memory=2Gi`, the database URL on the transaction pooler with `DB_POOL_SIZE=2` (deploy/README.md steps 4 and 9). |
 | `--cpu-boost`, startup probe `initialDelaySeconds=0,periodSeconds=1` | Shorter cold starts: the instance takes traffic as soon as it is ready |
 | `--startup-probe` / `--liveness-probe` `httpGet.path=/api/healthz` | Only the DB gates readiness |
 | env `APP_URL=https://$DOMAIN`, `TRUSTED_PROXY_HOPS=1` (2 behind a Global LB), `DB_POOL_SIZE`, `ADMIN_EMAIL`, `EMAIL_FROM` | |
@@ -90,7 +90,7 @@ region before you rely on them.
 | Cloud Run with `--min-instances=1` | about $53 per month for 1 vCPU + 1 GiB, always warm | per instance kept warm |
 | Region | Cloud Run `us-west1` (Oregon) next to Supabase `us-west-2` (Oregon): about 1-2 ms per query | same |
 | Supabase (database) | Dedicated project on your Pro plan: Micro compute about $10/month (8 GB disk and daily backups included). Or a `?schema=` inside an existing project: $0 extra. | A larger compute size (Small about $15/month, Medium about $60/month); point-in-time recovery is an add-on |
-| Memorystore Redis | none | basic 1 GB about $36/month |
+| Memorystore Redis | none | 1 GB: basic about $36/month, standard (replica + automatic failover) about $70/month |
 | VPC | none | Direct VPC egress: no idle cost (a Serverless VPC connector would add about $12/month) |
 | Cloud Scheduler | none (optional) | optional, 3 jobs free per billing account |
 | Secret Manager, Artifact Registry | cents | cents |
