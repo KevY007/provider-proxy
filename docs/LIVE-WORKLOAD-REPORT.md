@@ -89,7 +89,7 @@ a. Before this run the dev DB providers had no `openai_files` / `anthropic_files
 b. `setup:live` does not store the catalog aliases, so dated ids 404: `POST /v1/messages {model:"claude-haiku-4-5-20251001"}` -> 404 `model_not_found` (`wqmejwdv0975tgqs4ijkouci`). That is the id Claude Code uses for its background/small model (not hit in the CLI runs here, which worked), and the vendor API accepts it. Expected: the alias listed in `price-catalog.ts` resolves.
 
 ### 7. [Low] Price-catalog values differ from the vendor reference (verify before launch)
-Per the Anthropic reference used by `claude-api` (cached 2026-10-06): Sonnet 5.5 cache read is $0.20/MTok, catalog has $0.10 (our recorded cost for cache reads is half); context window 1M / max output 128k for Sonnet 5.5, Opus 5.5, Haiku 5.5 (catalog: 500k/64k, 500k/64k, 200k/32k); Haiku 5.5 has a >100K-prompt tier ($0.50 / $2.50, no `longContext` set). All three are `needsReview` seeds. A 150k prompt to sonnet-5-5 worked, i.e. the gateway does not enforce the smaller windows.
+~~Per the Anthropic reference used by `claude-api` (cached 2026-10-06): Sonnet 5.5 cache read is $0.20/MTok, catalog has $0.10 (our recorded cost for cache reads is half);~~ **Correction (2026-10-17):** the live Anthropic pricing page says Sonnet 5.5 cache read is **$0.10/MTok**; the catalog was right and the cached reference was wrong. context window 1M / max output 128k for Sonnet 5.5, Opus 5.5, Haiku 5.5 (catalog: 500k/64k, 500k/64k, 200k/32k); Haiku 5.5 has a >100K-prompt tier ($0.50 / $2.50, no `longContext` set). All three are `needsReview` seeds. A 150k prompt to sonnet-5-5 worked, i.e. the gateway does not enforce the smaller windows.
 
 ### 8. [Low] `RequestLog.reasoningTokens` is 0 for Claude thinking
 `usage.output_tokens_details.thinking_tokens` (e.g. 5,479 on `vwcl1k8g3j8y3efe4f8b4vjo`) is not extracted; OpenAI reasoning tokens are (gpt-6-astra 2,303). Billing is unaffected (thinking is inside `output_tokens`).
@@ -103,3 +103,18 @@ Route cost = official list price and sell price = cost x 1.30, so `officialPrice
 - OpenAI side: Responses streaming + function-call rounds with `previous_response_id` (sticky), chat stream usage, image tokens metering, embeddings, Files upload + `input_file`.
 - Claude Code CLI works unmodified (`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`), streaming, caching and tool loops included.
 - Prompt-quality hint for operators: Sonnet 5.5 and Haiku 5.5 can burn the whole `max_tokens` on thinking for big structured outputs (observed twice natively: 48,000 thinking tokens, empty text, $0.48); `thinking:{type:"between_tools"}` or `output_config.effort:"low"` fixes it natively.
+
+## Fix verification (status 2026-10-19)
+
+All fixes for the bugs above are implemented and verified against the mock upstream (`pnpm test`, 729 passed). The
+**live** re-run (scenarios C, G, I, K, D of `scripts/live-workload`, budget Anthropic <= $15 / OpenAI <= $3) is still
+pending: it needs the owner's `LIVE_*` keys, which are not available in cloud sessions.
+
+| Bug | Fix | Mock evidence | Live re-check |
+|---|---|---|---|
+| 1 generated files not downloadable | `registerGeneratedFiles`, container file endpoints | `tests/gateway/server-tools.test.ts` | pending (C) |
+| 2 chat -> Claude reasoning | `translate/claude-reasoning.ts` | `tests/gateway/claude-reasoning.test.ts` | pending (G) |
+| 3 CANCELLED rows for completed streams | `StreamSession.deliveredEverything()` | `tests/gateway/stream*.test.ts` | pending (I) |
+| 5 server tools not metered | `Usage.toolUsage`, tool prices / costs | `tests/gateway/server-tools.test.ts`, `pricing.test.ts` | pending (D) |
+| 7a Sonnet 5.5 cache read | no change needed (catalog was right) | `tests/pricing/catalog.test.ts` | n/a |
+| Batch API missing | `src/gateway/batches.ts` | `tests/gateway/batches.test.ts` | pending (K) |

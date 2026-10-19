@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     // Per-agent dev dist dirs (NEXT_DIST_DIR=.next-foo).
     ".next-*/**",
     "src/generated/**",
+    // Agent worktrees (each is a full checkout with its own .next output).
+    ".claude/**",
     "out/**",
     "build/**",
     "next-env.d.ts",
