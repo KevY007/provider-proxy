@@ -122,3 +122,40 @@ export function canManageTarget(actorRole: string, targetRole: string, actorId: 
   if (targetRole !== "CUSTOMER" && actorRole !== "ADMIN") return { ok: false, reason: "Only an admin can manage staff accounts" };
   return { ok: true };
 }
+
+const emailField = z.string().trim().toLowerCase().min(3, "Required").max(254).email("Enter a valid email address");
+const nameField = z
+  .string()
+  .trim()
+  .max(120)
+  .nullable()
+  .optional()
+  .transform((v) => v || null);
+
+/** Admin "Create user": the account is active right away; the user sets a password through the invite link. */
+export const createCustomerSchema = z.object({
+  email: emailField,
+  name: nameField,
+  role: z.enum(CUSTOMER_ROLES).default("CUSTOMER"),
+  groupId: z.string().nullable().optional().transform((v) => v || null),
+  initialCredit: optMoney,
+  sendInvite: z.boolean().default(true),
+});
+export type CreateCustomerInput = z.input<typeof createCustomerSchema>;
+
+export const updateProfileSchema = z.object({
+  userId: z.string().min(1),
+  email: emailField,
+  name: nameField,
+});
+
+/** Placeholder email for an account that was deleted but keeps its billing history. */
+export const deletedEmail = (userId: string) => `deleted-${userId}@deleted.invalid`;
+
+/**
+ * Deleting an account with money history (ledger entries, payments) would cascade that history away, so such
+ * accounts are anonymised and locked instead; accounts without it are removed for good.
+ */
+export function deletionMode(history: { ledger: number; payments: number }): "delete" | "anonymize" {
+  return history.ledger > 0 || history.payments > 0 ? "anonymize" : "delete";
+}

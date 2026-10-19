@@ -582,6 +582,20 @@ function spillBuffer(reason: string): void {
   }
   cell.spilled = true;
   logger.error("METER_BUFFER_SPILLED", { reason, rows: entries.length, file: deadLetterPath() });
+  // the file lives on local (often in-memory) disk: log every row too, so usage stays recoverable from the logs
+  // if the instance goes away before the replay
+  for (const e of entries) {
+    logger.error("METER_SPILLED_ROW", {
+      reason,
+      requestId: e.log.id,
+      userId: e.userId,
+      apiKeyId: e.apiKeyId,
+      providerKeyId: e.providerKeyId,
+      price: e.price.toString(),
+      cost: e.cost.toString(),
+      entry: JSON.stringify({ ...e.log, requestBody: undefined, responseBody: undefined }),
+    });
+  }
 }
 
 function unlinkSafe(file: string): void {

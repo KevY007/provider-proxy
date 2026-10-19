@@ -61,7 +61,7 @@ export default async function Page({
             {user.groupName ? ` · group ${user.groupName}` : ""}
           </>
         }
-        actions={<CustomerHeaderActions userId={user.id} email={user.email} canImpersonate={canImpersonate} isSelf={user.id === me.id} />}
+        actions={<CustomerHeaderActions userId={user.id} email={user.email} name={user.name} canImpersonate={canImpersonate} isSelf={user.id === me.id} isAdmin={isAdmin} />}
       />
 
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

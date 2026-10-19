@@ -160,6 +160,21 @@ export const emailTemplates = {
     };
   },
 
+  /** An admin created the account: the link lets the user choose a password (a PASSWORD_RESET token). */
+  async invite(p: { name?: string | null; url: string; days: number }): Promise<TemplateResult> {
+    const { siteName } = await getSettings();
+    return {
+      subject: `You've been invited to ${siteName}`,
+      html: layout({
+        siteName,
+        title: `Your ${siteName} account is ready`,
+        preheader: "Choose a password to sign in.",
+        body: `${hello(p.name)}<p>An account has been created for you on ${escapeHtml(siteName)}. Choose a password to sign in. This link expires in ${p.days} days; after that, use "Forgot password" on the sign-in page.</p>`,
+        cta: { label: "Choose a password", url: p.url },
+      }),
+    };
+  },
+
   async emailChange(p: { name?: string | null; url: string; newEmail: string }): Promise<TemplateResult> {
     const { siteName } = await getSettings();
     return {

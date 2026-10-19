@@ -164,7 +164,11 @@ the default group.
 
 ## Customers and credits (`/admin/customers`)
 
-The list has search, balance, spend and CSV export. The detail page shows:
+The list has search, balance, spend and CSV export. **Create user** (admins) adds an account that is active and
+verified right away, with a role, a group and optional starting credit (recorded as promotional credit); the invite
+email links to a page where the user picks their own password (valid 7 days, afterwards **Send password reset**).
+New self-service sign-ups are switched on and off under Settings > Access > **Signups enabled** (the ADMIN_EMAIL
+account can always sign up). The detail page shows:
 - **Profile & controls**: status (suspend / activate), role, verify email, group (pool), price multiplier (stacks on
   the group's), billing mode (PREPAID / POSTPAID), credit limit (how far below $0 the balance may go), monthly spend
   limit, max concurrency (across all their keys).
@@ -172,6 +176,10 @@ The list has search, balance, spend and CSV export. The detail page shows:
   **Correction** (ADJUSTMENT, may be negative), plus a required reason. **Grant credit** applies to many customers
   selected in the list. **Adjust balance** is also available.
 - Keys, usage, logs and Stripe payments.
+- **Edit** (name and email; an email set by an admin counts as verified) and **Delete** (type the email to
+  confirm). An account without payments or ledger entries is removed; one with billing history is anonymised and
+  locked instead so the books stay complete: email replaced, name cleared, password and 2FA wiped, suspended, API
+  keys revoked. You cannot delete yourself or the last active admin.
 - **Revoke sessions**, **Send password reset**, **Impersonate**. Impersonation works on ACTIVE customers only and is
   audited. The session ends after 1 hour (it never rolls) or as soon as the staff member is no longer active staff.
 
