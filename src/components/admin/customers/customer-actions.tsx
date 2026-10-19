@@ -5,9 +5,24 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useAction } from "@/components/admin/use-action";
 import { impersonateCustomer, revokeCustomerSessions, sendCustomerPasswordReset } from "@/server/admin/customers-actions";
+import { DeleteUserDialog, EditProfileDialog } from "./user-dialogs";
 
 /** Header actions on the customer detail page. */
-export function CustomerHeaderActions({ userId, email, canImpersonate, isSelf }: { userId: string; email: string; canImpersonate: boolean; isSelf: boolean }) {
+export function CustomerHeaderActions({
+  userId,
+  email,
+  name,
+  canImpersonate,
+  isSelf,
+  isAdmin,
+}: {
+  userId: string;
+  email: string;
+  name: string | null;
+  canImpersonate: boolean;
+  isSelf: boolean;
+  isAdmin: boolean;
+}) {
   const { run, pending } = useAction();
   return (
     <>
@@ -59,6 +74,8 @@ export function CustomerHeaderActions({ userId, email, canImpersonate, isSelf }:
           if (!r.ok) throw new Error(r.error);
         }}
       />
+      {isAdmin && <EditProfileDialog userId={userId} email={email} name={name} />}
+      {isAdmin && <DeleteUserDialog userId={userId} email={email} disabled={isSelf} />}
       <Button variant="ghost" size="sm" asChild>
         <a href={`/admin/keys?q=${encodeURIComponent(email)}`}>
           <KeyRound className="size-4" /> All keys

@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { appUrl } from "@/lib/env";
 import { getSetting } from "@/lib/settings";
 import { getCatalogModels } from "@/server/customer/catalog";
+import { publicVisibility } from "@/server/customer/visibility";
 import { List } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +25,9 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
 }
 
 async function buildCtx(): Promise<DocCtx> {
-  const [siteName, models] = await Promise.all([getSetting("siteName"), getCatalogModels().catch(() => [])]);
+  const [siteName, vis] = await Promise.all([getSetting("siteName"), publicVisibility()]);
+  // examples use real model ids only when the model list is visible to this visitor (generic ids otherwise)
+  const models = vis.models ? await getCatalogModels().catch(() => []) : [];
   const pick = (pred: (m: (typeof models)[number]) => boolean, fallback: string) => models.find(pred)?.slug ?? fallback;
   return {
     appUrl,

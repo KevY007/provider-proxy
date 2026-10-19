@@ -8,6 +8,7 @@ import { invalidateGatewayConfig } from "@/gateway/cache";
 import { __resetPublicPricingForTests, getPublicPricing } from "@/gateway/public-pricing";
 import { GET as pricingRoute, OPTIONS as pricingOptions } from "@/app/api/pricing/route";
 import { db } from "@/lib/db";
+import { setSettings } from "@/lib/settings";
 
 const h = createHarness("cat");
 let model = { slug: "", id: "" };
@@ -174,5 +175,20 @@ describe.skipIf(!dbOk)("catalog pricing endpoints", () => {
     const pre = pricingOptions();
     expect(pre.status).toBe(204);
     expect(pre.headers.get("access-control-allow-origin")).toBe("*");
+  });
+
+  it("private pricing or a private model list: 401 for visitors, never cached", async () => {
+    try {
+      for (const off of [{ publicPricing: false }, { publicModels: false }]) {
+        await setSettings({ publicPricing: true, publicModels: true, ...off });
+        const res = await pricingRoute(new Request("http://x.test/api/pricing"));
+        expect(res.status).toBe(401);
+        expect(((await res.json()) as { error: { code: string } }).error.code).toBe("pricing_private");
+        expect(res.headers.get("cache-control")).toBe("no-store");
+      }
+    } finally {
+      await setSettings({ publicPricing: true, publicModels: true });
+    }
+    expect((await pricingRoute(new Request("http://x.test/api/pricing"))).status).toBe(200);
   });
 });

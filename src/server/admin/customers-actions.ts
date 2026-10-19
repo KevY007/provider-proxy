@@ -6,12 +6,15 @@ import { invalidateGatewayConfig } from "@/gateway/cache";
 import { appUrl } from "@/lib/env";
 import { audit } from "@/lib/audit";
 import { createSession, revokeAllSessions } from "@/lib/auth/session";
-import { RESET_TOKEN_TTL_MS, createVerificationToken, grantTrialCredit } from "@/lib/auth/service";
+import { RESET_TOKEN_TTL_MS, createVerificationToken, grantTrialCredit, normalizeEmail } from "@/lib/auth/service";
+import { hashPassword } from "@/lib/auth/password";
+import { randomToken } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { formatUSD } from "@/lib/money";
 import { emailTemplates, sendTemplate } from "@/lib/email";
+import { getSettings } from "@/lib/settings";
 import { adminAction, ActionFail, parseInput } from "./action";
-import { adjustBalanceSchema, canManageTarget, customerSettingsSchema } from "./customers-calc";
+import { adjustBalanceSchema, canManageTarget, createCustomerSchema, customerSettingsSchema, deletedEmail, deletionMode, updateProfileSchema } from "./customers-calc";
 import { addCreditSchema, creditDescription, CREDIT_KIND_INFO, grantCreditsSchema, type CreditKind } from "./credits";
 import { credit, debit, LedgerError } from "@/server/billing/ledger";
 
@@ -223,5 +226,128 @@ export async function impersonateCustomer(userId: string) {
     await createSession(target.id, { impersonatorId: admin.id, ip, userAgent });
     await audit(admin.id, "customer.impersonate", { type: "User", id: userId }, { email: target.email }, ip);
     return { data: { redirectTo: "/dashboard" }, message: `Now viewing as ${target.email}` };
+  });
+}
+
+const INVITE_DAYS = 7;
+
+async function sendInvite(user: { id: string; email: string; name: string | null }) {
+  const token = await createVerificationToken(user.id, "PASSWORD_RESET", INVITE_DAYS * 24 * 3600_000);
+  return sendTemplate(user.email, emailTemplates.invite({ name: user.name, url: `${appUrl}/reset-password?token=${token}`, days: INVITE_DAYS }));
+}
+
+/** Create an account (active and verified). The user picks a password through the emailed invite link. */
+export async function createCustomer(input: unknown) {
+  return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    const d = parseInput(createCustomerSchema, input);
+    const email = normalizeEmail(d.email);
+    if (await db.user.findUnique({ where: { email }, select: { id: true } })) throw new ActionFail("An account with this email already exists", { email: "Already registered" });
+    let groupId = d.groupId;
+    if (groupId) {
+      if (!(await db.group.findUnique({ where: { id: groupId }, select: { id: true } }))) throw new ActionFail("Group not found", { groupId: "Group not found" });
+    } else {
+      const settings = await getSettings();
+      groupId =
+        (await db.group.findUnique({ where: { slug: settings.defaultGroupSlug }, select: { id: true } }))?.id ??
+        (await db.group.findFirst({ where: { isDefault: true }, select: { id: true } }))?.id ??
+        null;
+    }
+    const user = await db.user.create({
+      data: {
+        email,
+        name: d.name,
+        // unusable until the user sets one through the invite (or a password reset)
+        passwordHash: await hashPassword(randomToken(32)),
+        role: d.role,
+        status: "ACTIVE",
+        emailVerifiedAt: new Date(),
+        groupId,
+      },
+      select: { id: true, email: true, name: true },
+    });
+    await audit(admin.id, "customer.create", { type: "User", id: user.id }, { email, role: d.role, initialCredit: d.initialCredit, invite: d.sendInvite }, ip);
+    const notes: string[] = [];
+    if (d.initialCredit && Number(d.initialCredit) > 0) {
+      try {
+        const res = await applyCredit(admin.id, user.id, "promotional", d.initialCredit, "Initial credit");
+        await audit(admin.id, "billing.add_credit", { type: "User", id: user.id }, { email, kind: "promotional", amount: d.initialCredit, reason: "Initial credit", ledgerEntryId: res.entry.id }, ip);
+        notes.push(`${formatUSD(d.initialCredit)} credit added`);
+      } catch (err) {
+        notes.push(`credit failed: ${err instanceof Error ? err.message : "error"}`);
+      }
+    }
+    if (d.sendInvite) notes.push((await sendInvite(user)).ok ? "invite sent" : "invite email failed (use Password reset to resend)");
+    return { data: { id: user.id }, message: `Created ${email}${notes.length ? `; ${notes.join(", ")}` : ""}` };
+  });
+}
+
+/** Edit name / email. An admin-set email counts as verified; the user's sessions stay valid. */
+export async function updateCustomerProfile(input: unknown) {
+  return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
+    const d = parseInput(updateProfileSchema, input);
+    const target = await loadTarget(d.userId);
+    if (target.id !== admin.id) {
+      const can = canManageTarget(admin.role, target.role, admin.id, target.id);
+      if (!can.ok) throw new ActionFail(can.reason!);
+    }
+    const email = normalizeEmail(d.email);
+    const emailChanged = email !== target.email;
+    if (emailChanged && (await db.user.findUnique({ where: { email }, select: { id: true } }))) throw new ActionFail("Another account uses this email", { email: "Already registered" });
+    await db.user.update({
+      where: { id: d.userId },
+      data: { name: d.name, ...(emailChanged ? { email, emailVerifiedAt: new Date() } : {}) },
+    });
+    if (emailChanged) await db.verificationToken.deleteMany({ where: { userId: d.userId, usedAt: null } });
+    await audit(admin.id, "customer.profile", { type: "User", id: d.userId }, { from: { email: target.email, name: target.name }, to: { email, name: d.name } }, ip);
+    await invalidateGatewayConfig("users", d.userId);
+    return { message: "Profile saved" };
+  });
+}
+
+/**
+ * Delete an account. Without billing history it is removed (its request logs stay, unlinked); with history it is
+ * anonymised and locked so the ledger and payments stay intact: email/name cleared, password and 2FA wiped,
+ * suspended, API keys revoked, signed out everywhere.
+ */
+export async function deleteCustomer(userId: string) {
+  return adminAction<{ redirectTo: string }>({ adminOnly: true }, async ({ admin, ip }) => {
+    if (userId === admin.id) throw new ActionFail("You cannot delete your own account");
+    const target = await loadTarget(userId);
+    if (target.role === "ADMIN" && (await db.user.count({ where: { role: "ADMIN", status: "ACTIVE", id: { not: userId } } })) === 0) {
+      throw new ActionFail("This is the last active admin");
+    }
+    const [ledger, payments] = await Promise.all([db.ledgerEntry.count({ where: { userId } }), db.payment.count({ where: { userId } })]);
+    const mode = deletionMode({ ledger, payments });
+    const revoked = await revokeAllSessions(userId);
+    if (mode === "delete") {
+      await db.user.delete({ where: { id: userId } });
+    } else {
+      await db.$transaction([
+        db.apiKey.updateMany({ where: { userId, status: { not: "REVOKED" } }, data: { status: "REVOKED" } }),
+        db.verificationToken.deleteMany({ where: { userId } }),
+        db.user.update({
+          where: { id: userId },
+          data: {
+            email: deletedEmail(userId),
+            name: null,
+            passwordHash: await hashPassword(randomToken(32)),
+            status: "SUSPENDED",
+            totpSecret: null,
+            totpEnabled: false,
+            totpRecoveryCodes: [],
+            autoRechargeEnabled: false,
+            defaultPaymentMethodId: null,
+            lowBalanceAlertAt: null,
+            signupIp: null,
+          },
+        }),
+      ]);
+    }
+    await audit(admin.id, "customer.delete", { type: "User", id: userId }, { email: target.email, mode, ledgerEntries: ledger, payments, revokedSessions: revoked }, ip);
+    await Promise.all([invalidateGatewayConfig("users", userId), invalidateGatewayConfig("apiKeys")]);
+    return {
+      data: { redirectTo: "/admin/customers" },
+      message: mode === "delete" ? `Deleted ${target.email}` : `${target.email} anonymised and locked (billing history kept)`,
+    };
   });
 }

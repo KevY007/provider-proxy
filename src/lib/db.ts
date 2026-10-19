@@ -1,4 +1,5 @@
 import { PrismaPg } from "@prisma/adapter-pg";
+import pg from "pg";
 import { PrismaClient } from "@/generated/prisma/client";
 import { dbConnection } from "./db-config";
 import { env } from "./env";
@@ -15,8 +16,14 @@ function createClient() {
     max: env.DB_POOL_SIZE,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    // TCP keep-alive: idle pooled connections survive NAT / pooler idle cuts instead of failing on next use
+    keepAlive: true,
   });
-  const adapter = new PrismaPg(conn.pool, conn.schema ? { schema: conn.schema } : undefined);
+  const pool = new pg.Pool(conn.pool);
+  const schema = conn.schema;
+  // queued before anything else on a fresh connection (pg runs a client's queries in order)
+  if (schema) pool.on("connect", (client) => void client.query(`SET search_path TO "${schema}"`).catch(() => undefined));
+  const adapter = new PrismaPg(pool, schema ? { schema } : undefined);
   return new PrismaClient({
     adapter,
     log: env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],

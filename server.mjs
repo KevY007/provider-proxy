@@ -84,6 +84,11 @@ function replaySocket(socket, head) {
   return d;
 }
 
+// SEARCH_INDEXING=off (per deployment, read at start): every page answers X-Robots-Tag noindex. Gateway paths are left
+// alone (responses there are passed through 1:1, and they are API responses behind a key anyway).
+const NO_INDEX = /^(off|false|0|no)$/i.test(process.env.SEARCH_INDEXING ?? "");
+const API_PATH = /^\/(v1|v1beta|upload)(\/|$|\?)/;
+
 /** Next calls `http.createServer(listener)` exactly once: give it our dual-protocol server instead. */
 function createDualServer(listener) {
   const wrapped = (req, res) => {
@@ -114,6 +119,7 @@ function createDualServer(listener) {
       const proto = Object.getPrototypeOf(res);
       Object.defineProperty(res, "writableFinished", { get: () => ended && Reflect.get(proto, "writableFinished", res), configurable: true });
     }
+    if (NO_INDEX && !API_PATH.test(req.url ?? "")) res.setHeader("x-robots-tag", "noindex, nofollow, noarchive");
     listener(req, res);
   };
 

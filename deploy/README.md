@@ -58,9 +58,12 @@ The app needs a plain Postgres database; it does not use Supabase Auth, Storage 
   `us-west-2` next to the Cloud Run region `us-west1`). Fully isolated from your main app: its own compute,
   connections and backups, so neither can slow down or break the other. Cost: the project's compute (Micro, about
   $10/month on the Pro plan).
-- **No extra cost: a dedicated schema inside an existing project** (e.g. `providerproxy`). Add `?schema=providerproxy`
-  to both URLs below; every table goes into that schema and nothing touches `public`. It shares compute and
-  connection limits with the other app, and it must use the **session** pooler (port 5432) at runtime.
+- **No extra cost: a dedicated schema inside an existing project.** Run `deploy/supabase-setup.sql` once: it creates a
+  `provider_proxy` login that owns a `provider_proxy` schema and can touch nothing else (other schemas, Auth,
+  Storage), capped at 20 connections with 60 s statement / idle-transaction timeouts, so the proxy can never starve
+  or lock the other app. Connect as `provider_proxy.<project-ref>` with `?schema=provider_proxy`, through the
+  **session** pooler (port 5432). It shares the project's compute and backups (a point-in-time restore rolls both
+  back).
 
 Connection strings come from the project's **Connect** dialog (Supabase dashboard). Cloud Run has no IPv6 egress and
 the direct host `db.<ref>.supabase.co` is IPv6-only, so use the **pooler** host (IPv4):
@@ -78,7 +81,8 @@ settings.
 
 Pool size per instance is `DB_POOL_SIZE`: keep `max-instances x DB_POOL_SIZE` under the project's pooler limits
 (pool size in Database settings > Connection pooling; max pooler clients per compute size). The lean profile uses
-1 instance x 10, which fits the smallest compute. Backups: the Pro plan takes daily backups (kept 7 days); point-in-time recovery is a paid add-on.
+1 instance x 8; leave headroom for the second instance that runs briefly during a rolling deploy and for the
+migration job (with the isolated role from `deploy/supabase-setup.sql`, connection limit 20: 2 x 8 + migrations fit). Backups: the Pro plan takes daily backups (kept 7 days); point-in-time recovery is a paid add-on.
 
 ## 4. Memorystore Redis (scale-out profile only)
 
@@ -203,7 +207,7 @@ gcloud run deploy $SERVICE \
   --timeout=3600 --concurrency=250 \
   --min-instances=0 --max-instances=1 \
   --no-cpu-throttling --cpu=1 --memory=1Gi --cpu-boost \
-  --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=10,TRUSTED_PROXY_HOPS=1" \
+  --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=8,TRUSTED_PROXY_HOPS=1" \
   --set-secrets="DATABASE_URL=DATABASE_URL:latest,DATABASE_CA_CERT=DATABASE_CA_CERT:latest,SESSION_SECRET=SESSION_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,CRON_SECRET=CRON_SECRET:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_PUBLISHABLE_KEY=STRIPE_PUBLISHABLE_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,SMTP_URL=SMTP_URL:latest" \
   --startup-probe=httpGet.path=/api/healthz,initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60 \
   --liveness-probe=httpGet.path=/api/healthz,periodSeconds=30
@@ -215,7 +219,7 @@ Scale-out profile (after step 4): change these flags and add the Redis secret:
   --max-instances=20 --cpu=2 --memory=2Gi \
   --network=default --subnet=default --vpc-egress=private-ranges-only \
   --set-secrets="...,REDIS_URL=REDIS_URL:latest" \
-  --set-env-vars="...,DB_POOL_SIZE=10"        # keep max-instances x DB_POOL_SIZE under the pooler limits (step 3)
+  --set-env-vars="...,DB_POOL_SIZE=8"        # keep max-instances x DB_POOL_SIZE under the pooler limits (step 3)
 ```
 
 Always on, no cold starts (e.g. while the service fronts your main app around the clock):
@@ -250,15 +254,76 @@ gcloud run jobs execute $SERVICE-seed --region=$REGION --wait
 Then log in as the admin, set up 2FA (required for staff in production), add upstream keys in **Admin > Providers**
 and enable the providers you use.
 
-## 10. CI/CD with Cloud Build (optional)
+## 10. Continuous deployment (push to `main` = deploy)
+
+The deployment pulls from the repository: a **Cloud Build trigger** in your project watches `main` and, on every
+push, builds the image (BuildKit), updates and runs the migration job, rolls the service to the new image (Cloud Run
+moves traffic only once the new revision passes its startup probe, so a broken build never takes the site down),
+keeps the seed job on the same image and checks `/api/healthz`. Nothing deployment-specific lives in the repository:
+the build steps, project, region and service names are stored in the trigger, and forks or other clones never deploy
+anywhere.
+
+One-time setup (after steps 1-9):
+
+1. Connect the repository: Cloud Build > Repositories > Connect repository > GitHub (install the Google Cloud Build
+   GitHub app on the account that owns the repository, granting it only this repository).
+2. A deploy service account that may build, push to this image repo only, and manage only this service and its jobs:
 
 ```bash
-gcloud builds submit --config deploy/cloudbuild.yaml \
-  --substitutions=_REGION=$REGION,_REPO=$REPO,_SERVICE=$SERVICE,_MIGRATE_JOB=$SERVICE-migrate
+export DEPLOY_SA=$SERVICE-deploy@$PROJECT_ID.iam.gserviceaccount.com
+gcloud iam service-accounts create $SERVICE-deploy --display-name="$SERVICE deploys"
+gcloud artifacts repositories add-iam-policy-binding $REPO --location=$REGION --member=serviceAccount:$DEPLOY_SA --role=roles/artifactregistry.writer
+gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$DEPLOY_SA --role=roles/logging.logWriter
+gcloud iam service-accounts add-iam-policy-binding $SA_EMAIL --member=serviceAccount:$DEPLOY_SA --role=roles/iam.serviceAccountUser
+gcloud run services add-iam-policy-binding $SERVICE --region=$REGION --member=serviceAccount:$DEPLOY_SA --role=roles/run.developer
+for j in $SERVICE-migrate $SERVICE-seed; do
+  gcloud run jobs add-iam-policy-binding $j --region=$REGION --member=serviceAccount:$DEPLOY_SA --role=roles/run.developer; done
 ```
 
-Create a Cloud Build trigger on your main branch with the same substitutions for push-to-deploy.
-Steps: build image -> push -> update + run the migration job -> deploy the service revision.
+3. The trigger, with its build steps kept in Google Cloud (`trigger-build.yaml` is a local file, not part of the
+   repository):
+
+```yaml
+# trigger-build.yaml
+substitutions:
+  _REGION: us-west1                       # $REGION
+  _SERVICE: provider-proxy                # $SERVICE
+  _IMAGE: REGION-docker.pkg.dev/PROJECT_ID/REPO/provider-proxy
+  _URL: https://SERVICE-URL               # the run.app URL or your domain
+options: { logging: CLOUD_LOGGING_ONLY, machineType: E2_HIGHCPU_8 }
+timeout: 2400s
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args: ["build", "-t", "${_IMAGE}:${SHORT_SHA}", "."]
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "${_IMAGE}:${SHORT_SHA}"]
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ["-ec", "gcloud run jobs update ${_SERVICE}-migrate --region=${_REGION} --image=${_IMAGE}:${SHORT_SHA} --quiet && gcloud run jobs execute ${_SERVICE}-migrate --region=${_REGION} --wait"]
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ["-ec", "gcloud run deploy ${_SERVICE} --region=${_REGION} --image=${_IMAGE}:${SHORT_SHA} --quiet && (gcloud run jobs update ${_SERVICE}-seed --region=${_REGION} --image=${_IMAGE}:${SHORT_SHA} --quiet || true)"]
+  - id: smoke
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ["-c", "for i in 1 2 3 4 5 6; do curl -fsS --max-time 30 ${_URL}/api/healthz && exit 0; sleep 10; done; exit 1"]
+```
+
+```bash
+gcloud builds triggers create github --name=$SERVICE-main --repo-owner=OWNER --repo-name=REPO_NAME \
+  --branch-pattern='^main$' --inline-config=trigger-build.yaml \
+  --service-account=projects/$PROJECT_ID/serviceAccounts/$DEPLOY_SA
+gcloud builds triggers run $SERVICE-main --branch=main      # first deploy / redeploy by hand
+```
+
+Watch runs under Cloud Build > History. To change the pipeline, edit the trigger (console, or `gcloud builds triggers
+import`); the repository stays deployment-agnostic. `deploy/cloudbuild.yaml` (build + migrate + deploy in one run)
+and `deploy/cloudbuild-image.yaml` (image only, for `gcloud builds submit`) remain for manual builds.
 
 ## 11. Cron (Cloud Scheduler, optional) and Stripe webhook
 

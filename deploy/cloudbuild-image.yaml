@@ -1,0 +1,21 @@
+# Build-only Cloud Build config (used by .github/workflows/deploy.yml): BuildKit is required by the Dockerfile's
+# cache mounts, which `gcloud builds submit --tag` does not enable.
+#
+#   gcloud builds submit . --config=deploy/cloudbuild-image.yaml --substitutions=_IMAGE=REGION-docker.pkg.dev/PROJECT/REPO/IMAGE:TAG
+substitutions:
+  _IMAGE: ""
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args: ["build", "-t", "${_IMAGE}", "."]
+
+images:
+  - ${_IMAGE}
+
+timeout: 1800s
