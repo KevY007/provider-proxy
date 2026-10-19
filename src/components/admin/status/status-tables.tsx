@@ -131,7 +131,7 @@ export function StatusTables({ providers, keys, failures }: { providers: StatusP
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Provider health</CardTitle>
-          <CardDescription>Latency and traffic errors come from real customer calls (nothing is pinged on a timer). Availability = successful health checks / all checks; checks run only when you press Run checks now, or on the cron when Active health probes is enabled in Settings.</CardDescription>
+          <CardDescription>Latency and traffic errors come from real customer calls (nothing is pinged on a timer). Availability = good samples / all samples, from traffic samples and uptime pings (pings run only with Run checks now, or on a timer when Uptime monitoring is on in Settings).</CardDescription>
         </CardHeader>
         <CardContent>
           <DataTable columns={providerCols} data={providers} pageSize={15} hideColumnToggle exportFilename="provider-health" emptyTitle="No providers" />
