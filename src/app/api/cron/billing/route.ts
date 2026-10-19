@@ -2,16 +2,16 @@ import { NextResponse } from "next/server";
 import { env } from "@/lib/env";
 import { safeEqual } from "@/lib/crypto";
 import { logger } from "@/lib/logger";
-import { runBillingCron } from "@/server/billing/cron";
-import { sweepBatches } from "@/gateway/batches";
+import { runDueJobs } from "@/server/maintenance";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 /**
- * Billing cron (Cloud Scheduler hourly): auto-recharge sweep, postpaid settlement, stale PENDING payment
- * reconciliation, and the Batch API sweep (meter ended batches; also run by the health cron). Auth: `Authorization: Bearer $CRON_SECRET`. GET and POST are equivalent.
+ * OPTIONAL Cloud Scheduler hook (hourly): auto-recharge sweep, postpaid settlement, stale PENDING payment
+ * reconciliation. By default the same job runs hourly while the server handles calls (server/maintenance.ts).
+ * Auth: `Authorization: Bearer $CRON_SECRET`. GET and POST are equivalent.
  */
 async function handle(req: Request) {
   if (!env.CRON_SECRET) {
@@ -24,13 +24,11 @@ async function handle(req: Request) {
   }
   const started = Date.now();
   try {
-    const summary = await runBillingCron();
-    const batches = await sweepBatches().catch((err) => {
-      logger.warn("batch sweep failed", { err });
-      return { polled: 0, metered: 0, failed: 0 };
-    });
-    logger.info("billing cron finished", { ms: Date.now() - started, ...summary, batches });
-    return NextResponse.json({ ok: true, ms: Date.now() - started, ...summary, batches });
+    const [job] = await runDueJobs("cron", { only: ["billing"] });
+    if (job.error) throw new Error(job.error);
+    const summary = (job.result ?? {}) as Record<string, unknown>;
+    logger.info("billing cron finished", { ms: Date.now() - started, ran: job.ran, ...summary });
+    return NextResponse.json({ ok: true, ms: Date.now() - started, ran: job.ran, ...summary });
   } catch (err) {
     logger.error("billing cron failed", { err });
     return NextResponse.json({ ok: false, error: "billing cron failed" }, { status: 500 });

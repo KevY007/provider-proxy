@@ -69,7 +69,7 @@ flowchart LR
   G --> MW --> PG[(PostgreSQL)]
   UI --> PG
   G <-.->|slots, holds, rate limits, cache invalidation| R[(Redis, optional)]
-  S[Cloud Scheduler] -->|/api/cron/health every 5 min, /api/cron/billing hourly| UI
+  S[Cloud Scheduler - optional] -.->|/api/cron/health, /api/cron/billing| UI
   ST[Stripe] -->|/api/stripe/webhook| UI
 ```
 
@@ -190,7 +190,7 @@ the `LIVE_*` keys and spend real money.
 
 ## Deploying
 
-Google Cloud Run + Cloud SQL + Secret Manager + Cloud Scheduler (Memorystore Redis optional):
+Google Cloud Run (scales to zero by default) + Cloud SQL + Secret Manager (Memorystore Redis and Cloud Scheduler optional):
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), with the full copy/paste walkthrough in
 [deploy/README.md](deploy/README.md). Any Docker host also works: set `POSTGRES_PASSWORD` (required) and the
 secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --build`.
@@ -205,7 +205,7 @@ secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --b
 | [docs/ADMIN-GUIDE.md](docs/ADMIN-GUIDE.md) | Running the admin console |
 | [docs/API-GUIDE.md](docs/API-GUIDE.md) | Endpoint inventory and behaviour for integrators. Examples are in the in-app `/docs`. |
 | [docs/PRICING-AND-BILLING.md](docs/PRICING-AND-BILLING.md) | Pricing vocabulary, rules, holds, Stripe, ledger |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Runbook: crons, dead letters, key rotation, incidents, monitoring, backups |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Runbook: background jobs, dead letters, key rotation, incidents, monitoring, backups |
 | [docs/PLAN.md](docs/PLAN.md) | Architecture contract (authoritative) |
 | [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md) | Fidelity evidence (chaos, drain, big bodies) |
 | [docs/LIVE-WORKLOAD-REPORT.md](docs/LIVE-WORKLOAD-REPORT.md) | Live workload test results |

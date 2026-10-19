@@ -1,4 +1,5 @@
 import { getClientIp } from "@/lib/http";
+import { noteActivity } from "@/server/maintenance";
 import { logger } from "@/lib/logger";
 import { authenticate } from "./auth";
 import { resolveModel } from "./cache";
@@ -84,6 +85,8 @@ async function run(ctx: Ctx): Promise<Response> {
   const snap = (ctx.snap = await getConfig());
   ctx.logBodies = snap.settings.logBodies;
   await authenticate(ctx);
+  // cold by default: background upkeep only runs while the server handles calls (throttled; see server/maintenance)
+  noteActivity("traffic", snap.settings);
   await acquireCustomerSlots(ctx);
 
   const path = ctx.path;

@@ -3,27 +3,35 @@
 For deployment see [DEPLOYMENT.md](DEPLOYMENT.md). For how things work see [ARCHITECTURE.md](ARCHITECTURE.md).
 Commands assume `$SERVICE`, `$REGION` and `$PROJECT_ID` from `deploy/README.md`.
 
-## Cron jobs
+## Background jobs (cold by default)
 
-Both are Cloud Scheduler HTTP jobs with `Authorization: Bearer $CRON_SECRET`. GET and POST both work.
+By default **nothing runs on a timer and no provider is contacted while nobody uses the service**. The background
+work runs while the server is busy anyway, as a side effect of real activity (an API call or an admin page), and is
+throttled: upkeep at most every 5 minutes, billing at most hourly (`src/server/maintenance.ts`). An idle deployment
+does nothing, so Cloud Run can scale it to zero.
 
-| Job | Schedule | Work | Response |
-|---|---|---|---|
-| `/api/cron/health` | `*/5 * * * *` | Provider health and latency from **real traffic** of the last 15 minutes (no upstream request; a provider without calls keeps its status). Only when the `activeHealthChecks` setting is on (default off) does it also probe every non-disabled key of every ACTIVE provider (key status INVALID on bad auth, COOLDOWN on 429/402, ACTIVE again on success) and prune `HealthCheck` rows older than 14 days; **Run checks now** on `/admin/status` does the same on demand. Then: refund failed video jobs, sweep batches (meter ended ones), replay the metering dead-letter file. | `{ok, checked, failed, skipped?, passive, videos, batches, metering, ms}` |
-| `/api/cron/billing` | `0 * * * *` | If Stripe is configured: auto-recharge sweep, postpaid settlement, reconcile `PENDING` payments older than 24 h. Then sweep batches. | `{ok, stripeConfigured, autoRecharge, postpaid, stale, batches, ms}` |
+| Job | Work | Activity-driven (default) | Timer (Settings > Monitoring) | Optional Cloud Scheduler route |
+|---|---|---|---|---|
+| `upkeep` | Provider health + uptime samples from the last 5 min of real calls (no upstream request), refund failed video jobs, sweep batches (meter ended ones), replay the metering dead-letter file, prune uptime history older than 35 days | every 5 min at most | `backgroundJobs` on: every `maintenanceIntervalMin` (5) | `/api/cron/health` |
+| `billing` | If Stripe is configured: auto-recharge sweep, postpaid settlement, reconcile `PENDING` payments older than 24 h | hourly at most | `backgroundJobs` on: hourly | `/api/cron/billing` |
+| `probes` | Uptime ping of every non-disabled key of every ACTIVE provider (a free model-list request): key status INVALID on bad auth, COOLDOWN on 429/402, ACTIVE again on success; ping history | never | `activeHealthChecks` on: every `healthCheckIntervalMin` (5) | `/api/cron/health` (only while `activeHealthChecks` is on) |
 
-Run one by hand:
+Each run is claimed atomically in the `JobRun` table, so instances, timers and Cloud Scheduler never run a job twice
+in its interval. `/admin/status` shows the mode and the last run of each job. **Run checks now** pings on demand.
+
+Timers only fire while an instance is running. For 24/7 monitoring of an idle deployment either keep one instance
+(`--min-instances=1`) and turn the timers on, or add the Cloud Scheduler jobs (they wake an instance; both routes
+take `Authorization: Bearer $CRON_SECRET`, GET or POST):
 
 ```bash
 curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://$DOMAIN/api/cron/health
-gcloud scheduler jobs run pp-billing-cron --location=$REGION
+curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://$DOMAIN/api/cron/billing
 ```
 
-If a cron is down, nothing breaks immediately. You lose: automatic key revival and provider health on `/status`,
-failed-video refunds (they also happen when the customer polls), batch metering (it also happens when the customer polls or
-downloads an ended batch; until then the batch hold keeps blocking the customer's funds), dead-letter replay (also runs at every
-instance start), and auto-recharge / postpaid charging. The gateway itself also triggers auto-recharge after each
-flush.
+While nothing runs (idle and timers off) you do not lose anything permanently: failed-video refunds and batch
+metering also happen when the customer polls, dead letters are replayed at every instance start, auto-recharge is
+also triggered after each metering flush, and everything else catches up on the next call. Expired COOLDOWN keys
+come back on their own; INVALID keys need a ping (Run checks now) or **Reset**.
 
 ## Metering dead letters
 
@@ -38,8 +46,8 @@ to `$METER_DEADLETTER_DIR/providerproxy-meter-deadletter.jsonl` (default: the OS
 | `METER_DEAD_LETTER_REPLAY_FAILED` / `METER_DEAD_LETTER_POISONED` | Replay failed / gave up after 10 attempts (moved to `providerproxy-meter-poison.jsonl`) |
 | `meter dead letter replayed` (INFO) | Replay result `{found, replayed, failed, kept}` |
 
-Replay runs automatically 3 s after start-up and on every health cron. It is idempotent: `skipDuplicates`, and
-rows marked `debited` do not touch balances again. Trigger it manually with the health cron.
+Replay runs automatically 3 s after start-up and with every upkeep run. It is idempotent: `skipDuplicates`, and
+rows marked `debited` do not touch balances again. Trigger it manually with `/api/cron/health`.
 
 **Cloud Run caveat:** the temp dir is in memory and local to the instance. If the instance is gone before a replay,
 the file is gone too. The `METER_DEAD_LETTER` / `METER_BUFFER_SPILLED` log lines are then the record. To recover
@@ -87,10 +95,10 @@ routes before anything reaches the client, and once failover is exhausted client
    - Disable the provider (Admin > Providers) to skip it entirely.
    - If the cause is our account (401/402/403 show up as 503 `no_available_provider` and as key status
      INVALID/COOLDOWN), top up or replace the upstream key.
-3. **Tell customers**: post an announcement (Admin > Settings). The public `/status` page updates from the health
-   cron.
+3. **Tell customers**: post an announcement (Admin > Settings). The public `/status` page updates from real
+   traffic.
 4. **Recover**: when the provider is back, COOLDOWN keys come back when their cooldown expires. INVALID keys come
-   back on the next successful health probe (**Run checks now**, or the cron when active probes are on), or when you click **Reset** on the key. Re-enable the routes and
+   back on the next successful ping (**Run checks now**, or timed uptime monitoring), or when you click **Reset** on the key. Re-enable the routes and
    providers.
 
 ## Incident checklist
@@ -105,7 +113,7 @@ routes before anything reaches the client, and once failover is exhausted client
 6. Recent deploy? Roll back:
    `gcloud run services update-traffic $SERVICE --region=$REGION --to-revisions=REVISION=100`.
    Migrations are forward-only, so a rollback must be compatible with the new schema.
-7. Afterwards: replay dead letters (health cron), check that balances match (`sum(RequestLog.price)` vs debits for
+7. Afterwards: replay dead letters (`/api/cron/health`), check that balances match (`sum(RequestLog.price)` vs debits for
    the affected window), and refund or credit customers if needed (Admin > Customers > Add credit > Refund).
 
 ## Monitoring

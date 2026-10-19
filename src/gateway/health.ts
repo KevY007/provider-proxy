@@ -288,21 +288,20 @@ export async function checkProvider(providerId: string): Promise<HealthResult[]>
   return results;
 }
 
-/** Cron entry: check all keys of all ACTIVE providers; prunes old HealthCheck rows. */
+/** Ping every key of every ACTIVE provider (timed uptime monitoring / Run checks now). */
 export async function runAllHealthChecks(): Promise<{ checked: number; failed: number }> {
   const providers = await db.provider.findMany({ where: { status: "ACTIVE" }, select: { id: true } });
   const all = await mapLimit(providers, 4, (p) => checkProvider(p.id).catch(() => [] as HealthResult[]));
   const flat = all.flat();
-  db.healthCheck.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 14 * 86_400_000) } } }).catch(() => undefined);
   return { checked: flat.length, failed: flat.filter((r) => !r.ok).length };
 }
 
 /**
- * Provider.healthStatus / lastLatencyMs from REAL traffic only (no upstream request is made): the last 15 minutes of
- * calls per active provider. A provider without calls keeps its previous status. Used by the cron when active health
- * probes are off (the default).
+ * Provider.healthStatus / lastLatencyMs from REAL traffic only (no upstream request is made): the last `windowMs` of
+ * calls per active provider. Each provider with calls also gets a `HealthCheck` sample (source "traffic") so the
+ * uptime history fills from real usage. A provider without calls keeps its status and gets no sample ("no data").
  */
-export async function refreshPassiveHealth(windowMs = 15 * 60_000): Promise<{ updated: number }> {
+export async function refreshPassiveHealth(windowMs = 5 * 60_000): Promise<{ updated: number }> {
   const since = new Date(Date.now() - windowMs);
   const rows = await db.$queryRaw<Array<{ providerId: string; total: number; bad: number; p50: number | null }>>`
     SELECT r."providerId" AS "providerId",
@@ -319,10 +318,28 @@ export async function refreshPassiveHealth(windowMs = 15 * 60_000): Promise<{ up
     if (!total) continue;
     const rate = Number(r.bad) / total;
     const status: HealthStatus = rate > 0.5 ? "DOWN" : rate > 0.2 ? "DEGRADED" : "OPERATIONAL";
+    await db.healthCheck
+      .create({
+        data: {
+          providerId: r.providerId,
+          source: "traffic",
+          ok: status !== "DOWN",
+          degraded: status === "DEGRADED",
+          latencyMs: r.p50 !== null ? Math.round(Number(r.p50)) : null,
+          error: Number(r.bad) ? `${Number(r.bad)} of ${total} calls failed upstream` : null,
+        },
+      })
+      .catch((err) => logger.warn("health: could not store traffic sample", { err }));
     await db.provider
       .update({ where: { id: r.providerId }, data: { healthStatus: status, lastCheckAt: new Date(), ...(r.p50 !== null ? { lastLatencyMs: Math.round(Number(r.p50)) } : {}) } })
       .then(() => updated++)
       .catch((err) => logger.warn("health: passive update failed", { providerId: r.providerId, err }));
   }
   return { updated };
+}
+
+/** Uptime history retention (the status page shows up to 30 days). */
+export async function pruneHealthChecks(days = 35): Promise<number> {
+  const r = await db.healthCheck.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - days * 86_400_000) } } });
+  return r.count;
 }

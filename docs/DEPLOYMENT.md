@@ -6,7 +6,7 @@ copy/paste `gcloud` commands are in **[deploy/README.md](../deploy/README.md)**;
 ```
 Client -> Cloud Run (one container: UI + gateway, --use-http2) -> Cloud SQL (Postgres 16, unix socket)
                                      |-> Memorystore Redis (optional, Serverless VPC connector)
-Cloud Scheduler -> POST /api/cron/health (*/5 * * * *), POST /api/cron/billing (0 * * * *)   [Bearer CRON_SECRET]
+(optional) Cloud Scheduler -> POST /api/cron/health, POST /api/cron/billing   [Bearer CRON_SECRET]
 Cloud Run Job (same image) -> prisma migrate deploy
 Secret Manager -> env vars          Stripe -> POST /api/stripe/webhook
 ```
@@ -60,8 +60,8 @@ openssl rand -hex 24      # CRON_SECRET
 |---|---|
 | `--use-http2` | **Required.** Cloud Run caps HTTP/1.1 request bodies at 32 MiB. Only end-to-end h2c lifts the cap, which large Files uploads, multipart and huge prompts need. |
 | `--timeout=3600` | Maximum request time (60 min) for long streams. No request can outlive it on Cloud Run. |
-| `--no-cpu-throttling` | CPU stays allocated after the response, so the metering buffer flushes and heartbeats keep flowing |
-| `--min-instances=1` | No cold starts on the API |
+| `--no-cpu-throttling` | CPU stays allocated after the response, so the metering buffer flushes and heartbeats keep flowing. Billing is per instance lifetime, and an idle instance is still shut down. |
+| `--min-instances=0` (default) | Scale to zero when nobody calls: no instance cost while idle. The first call after an idle period waits for a cold start (a few seconds). Use `--min-instances=1` for no cold starts, or for 24/7 timers (see below). |
 | `--concurrency=250` | Streams are I/O bound. Lower it if CPU saturates. |
 | `--execution-environment=gen2`, `--cpu=2 --memory=2Gi --cpu-boost` | Multipart and JSON bodies are spooled to `/tmp`, which is **in memory** on Cloud Run. Size memory for the uploads in flight at once. JSON bodies take about 3x their size while parsed. |
 | `--add-cloudsql-instances`, `--vpc-connector --vpc-egress=private-ranges-only` | DB socket; Redis (drop if no Redis) |
@@ -78,7 +78,31 @@ Upstream HTTP/2 is separate from `--use-http2` and is off by default. Enable it 
 `"http2": true` in the provider's Settings JSON, and only for providers known to handle h2 well, because one lost h2
 connection ends every stream on it.
 
-## Cron jobs (Cloud Scheduler)
+## Running cold (cost) and 24/7 monitoring
+
+The defaults keep an idle deployment idle:
+
+- **The app** does nothing without activity. No in-process timer runs, no provider is pinged, and background upkeep
+  happens only while calls or admin pages are served ([OPERATIONS.md](OPERATIONS.md#background-jobs-cold-by-default)).
+  With `--min-instances=0` Cloud Run then scales to zero, so the Cloud Run cost of an idle service is zero.
+- **What still costs money while idle** is the infrastructure that is always on whatever the app does: Cloud SQL
+  (choose the smallest tier you need, or a serverless Postgres that can scale to zero), Memorystore Redis if you use
+  it (optional; skip it for a single-instance deployment), a Serverless VPC connector if you use one (it keeps at least
+  2 small VMs running; Direct VPC egress `--network=default --subnet=default --vpc-egress=private-ranges-only` has no
+  idle cost), Secret Manager and Artifact Registry storage (cents).
+- **Do not create the Cloud Scheduler jobs** for a cold deployment: each run wakes an instance.
+
+For **24/7 uptime checks and timed jobs**, turn on **Settings > Monitoring > Uptime monitoring** and/or **Background
+jobs on a timer** (intervals default to 5 minutes). Timers run inside a running instance, so also do one of these:
+
+- keep an instance up: `gcloud run services update $SERVICE --region=$REGION --min-instances=1`, or
+- keep `--min-instances=0` and add the Cloud Scheduler jobs below. Each run wakes an instance, which then
+  stays up for up to about 15 minutes.
+
+## Cron jobs (Cloud Scheduler, optional)
+
+Only for 24/7 monitoring without a permanent instance (see above). The routes run the same jobs as the timers, and
+the uptime pings only when Uptime monitoring is on.
 
 ```bash
 CRON_SECRET_VALUE=$(gcloud secrets versions access latest --secret=CRON_SECRET)

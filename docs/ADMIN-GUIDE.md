@@ -75,10 +75,15 @@ key), test all, enable/disable selected, **Reset** (clear failures and cooldown)
 /api/admin/slots`). When every slot of every eligible route is busy, requests queue for up to `queueTimeoutMs` and
 then get 429 `no_capacity`.
 
-**Health.** `/admin/status` shows provider health (OPERATIONAL / DEGRADED / DOWN from the latest probe of each key,
-plus the error rate on real traffic over the last 10 min), key health and recent failed checks. **Run checks now**
-probes everything. The `/api/cron/health` job does the same every 5 minutes. The public `/status` page shows health
-by group without secrets.
+**Health and uptime.** `/admin/status` shows the **background mode** (activity-driven or timers) with the last run
+of each job, then **Uptime history** per provider: one bar per 30 min / 3 h / 12 h for 24 h / 7 d / 30 d, green
+(99%+ of calls and pings succeeded), amber (90-99%), red (below 90%), grey (no calls and no pings: never shown as
+"up"), with the uptime %, approximate downtime and last ping. **Ping and latency history** charts, per provider,
+the uptime-ping round trip next to the median latency of real calls. Below: provider health (OPERATIONAL / DEGRADED
+/ DOWN from real traffic, plus pings when they run), key health with the last real call and p50, and recent failed
+checks. **Run checks now** pings every key once. With **Uptime monitoring** on (Settings > Monitoring) the pings
+run every 5 minutes (adjustable) even when nobody calls. The public `/status` page shows 90-day availability per
+model family from real traffic, without provider names or secrets.
 
 ## Models and routes (`/admin/models`)
 
@@ -197,7 +202,8 @@ The list has search, balance, spend and CSV export. The detail page shows:
 |---|---|
 | Access | `signupEnabled` (true), `requireEmailVerification` (true), `defaultGroupSlug` ("standard") |
 | Billing | `trialCredit` ($0), `requireCardForTrial` (false), `minTopup` ($5), `maxTopup` ($1000), `minBalanceToCall` ($0; reject when balance + credit limit <= this), `lowBalanceEmail` (true), `autoRechargeMaxPerDay` (3) |
-| Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never), `autoPriceSyncHours` (6), `autoPriceSyncCalls` (100), `activeHealthChecks` (false: the health cron derives provider health and latency from real traffic only; on = it also sends a tiny probe to every key every run) |
+| Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never), `autoPriceSyncHours` (6), `autoPriceSyncCalls` (100) |
+| Monitoring and background work | All off by default, so an idle server does nothing. `activeHealthChecks` (false; **Uptime monitoring**: ping every upstream key with a free model-list request every `healthCheckIntervalMin` (5) minutes and record uptime + ping history even when nobody calls), `backgroundJobs` (false; run upkeep every `maintenanceIntervalMin` (5) minutes and billing hourly on a timer instead of only during activity). Timers need a running instance; see [OPERATIONS.md](OPERATIONS.md#background-jobs-cold-by-default). |
 | General | `siteName`, `supportEmail` |
 
 **Announcements** (on the settings page) appear in the portal's announcements bell and on the customer overview.

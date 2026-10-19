@@ -90,6 +90,11 @@ gcloud compute networks vpc-access connectors create pp-connector \
 
 `REDIS_URL=redis://$REDIS_HOST:6379`
 
+> Cost note: Memorystore and the connector run (and bill) around the clock, even when the service is idle. A
+> single-instance deployment can skip Redis entirely. With Redis, Direct VPC egress (`--network=default
+> --subnet=default --vpc-egress=private-ranges-only` on the service instead of `--vpc-connector`) avoids the
+> connector's always-on VMs.
+
 ## 5. Secrets (Secret Manager)
 
 ```bash
@@ -163,7 +168,9 @@ Flags that matter for a streaming gateway:
   A single request (stream or upload) can never live longer than this on Cloud Run.
 * `--concurrency=250` - requests per instance (streams are I/O bound; lower if you see CPU saturation). With
   `--use-http2` many streams share one connection, so concurrency is not limited by connections.
-* `--min-instances=1` - no cold starts on the API.
+* `--min-instances=0` - scale to zero while nobody calls: an idle service has no Cloud Run cost, and the app itself
+  runs no timer and pings nothing by default (docs/OPERATIONS.md, "Background jobs"). Use `1` to avoid cold starts
+  or to run the optional 24/7 monitoring timers (Settings > Monitoring).
 * `--no-cpu-throttling` - CPU stays allocated after the response so post-response metering completes and
   heartbeats keep flowing on silent streams.
 * `--execution-environment=gen2`.
@@ -180,7 +187,7 @@ gcloud run deploy $SERVICE \
   --execution-environment=gen2 \
   --use-http2 \
   --timeout=3600 --concurrency=250 \
-  --min-instances=1 --max-instances=20 \
+  --min-instances=0 --max-instances=20 \
   --no-cpu-throttling --cpu=2 --memory=2Gi --cpu-boost \
   --add-cloudsql-instances=$SQL_CONN \
   --vpc-connector=pp-connector --vpc-egress=private-ranges-only \
@@ -225,7 +232,12 @@ gcloud builds submit --config deploy/cloudbuild.yaml \
 Create a Cloud Build trigger on your main branch with the same substitutions for push-to-deploy.
 Steps: build image -> push -> update + run the migration job -> deploy the service revision.
 
-## 11. Cron (Cloud Scheduler) and Stripe webhook
+## 11. Cron (Cloud Scheduler, optional) and Stripe webhook
+
+The scheduler jobs are **optional**. Without them the background jobs run while the service handles calls and admin
+pages (throttled), so an idle deployment stays at zero instances. Create them only if you want upkeep, billing and
+uptime pings (when Settings > Monitoring > Uptime monitoring is on) to keep running while nobody uses the service.
+Each run wakes an instance.
 
 ```bash
 export CRON_SECRET_VALUE=$(gcloud secrets versions access latest --secret=CRON_SECRET)

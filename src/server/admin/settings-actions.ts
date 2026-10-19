@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { getSettings, setSettings, SETTING_DEFS, type SettingKey, type SettingValues } from "@/lib/settings";
 import { invalidateGatewayConfig } from "@/gateway/cache";
+import { armTimers } from "@/server/maintenance";
 import { ActionFail, adminAction, parseInput } from "./action";
 import { friendlySettingIssue, type IssueLike } from "./settings-calc";
 
@@ -42,6 +43,7 @@ export async function saveSettings(values: Record<string, unknown>) {
     const diff = Object.fromEntries(changed.map((k) => [k, { from: (current as Record<string, unknown>)[k], to: next[k] }]));
     await audit(admin.id, "settings.update", { type: "Setting", id: changed.join(",").slice(0, 100) }, { changed: diff }, ip);
     await invalidateGatewayConfig("settings");
+    armTimers(await getSettings()); // monitoring switches take effect now on this instance (others on their next activity / tick)
     return { data: { changed }, message: `Saved ${changed.length} setting${changed.length === 1 ? "" : "s"}` };
   });
 }
