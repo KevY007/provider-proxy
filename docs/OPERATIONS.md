@@ -128,7 +128,7 @@ Logs are JSON lines on stdout, one object per line, with `severity` (`DEBUG` / `
 | `gateway internal error`, `GATEWAY_ERROR`, `stream finalize failed` (ERROR) | Our bugs. Correlate by `requestId` (= `x-request-id` = `RequestLog.id`). |
 | `health check changed an upstream key state`, `upstream key marked INVALID` | Upstream account problems |
 | `METER_*`, `meter flush failed, will retry` | Metering durability (alert on these) |
-| `billing cron finished` / `billing cron failed`, `health cron failed`, `batch metering failed`, `video refund failed` | Cron health |
+| `background job failed`, `upkeep step failed: ...`, `billing cron failed`, `health cron failed`, `batch metering failed`, `video refund failed` | Background job health (`/admin/status` shows the last run of each job and its error) |
 | `auto-recharge disabled after repeated failures`, `postpaid settlement failed`, `payment amount differs from amount received` | Billing |
 | `redis error`, `redis slot acquire failed, using memory fallback` | Redis degraded (still serving, but per instance) |
 | `shutdown: draining` / `shutdown: exiting` (`activeRequests`, `forced`) | Deploys and scale-in. `forced: true` means streams were cut at the drain limit. |

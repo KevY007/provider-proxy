@@ -156,12 +156,12 @@ model name, provider `stripFields`, route `paramOverrides`, output cap). OpenAI 
 and uploaded again on that account. One long-lived credit hold (30 h TTL) covers the worst case at the batch price. Results are
 streamed through with models masked line by line. Each result is metered exactly once under a deterministic
 `RequestLog` id (`batchLogId`). Metering is triggered by a status poll or results download that sees the batch ended, and by `sweepBatches()` in
-both crons. Deleting the batch, or its output file, is refused with 409 until it is metered. If a result's model is
+every upkeep run. Deleting the batch, or its output file, is refused with 409 until it is metered. If a result's model is
 no longer configured, metering is postponed rather than recording it unpriced. The hold is kept until the batch is
 metered and then released.
 
 **Videos** (`video.ts`): the job is charged at creation (seconds x per-second price). The first status poll (or the
-health cron's `sweepVideoJobs()`) that sees `failed` refunds the charge exactly once as a `REFUND` ledger entry.
+upkeep's `sweepVideoJobs()`) that sees `failed` refunds the charge exactly once as a `REFUND` ledger entry.
 
 ## Caching and invalidation (`cache.ts`, `lib/settings.ts`, `lib/redis.ts`)
 

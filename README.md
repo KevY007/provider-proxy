@@ -39,19 +39,24 @@ The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 - Funds protection: credit holds are placed before any upstream call. When funds are short the gateway answers 402
   without contacting the upstream, and a stream stops when it reaches its hold.
 - Durable batched metering writer with a dead-letter file and replay.
+- Cold by default: an idle server runs no timers and contacts no provider, so Cloud Run scales to zero. Background
+  upkeep runs while calls are served; optional timed uptime pings and jobs (Settings > Monitoring) for 24/7 checks.
 
 **Billing**
 - Prepaid pay-as-you-go with Stripe top-ups (saved card or Checkout), auto-recharge, low-balance emails, postpaid
   customers with a credit limit, redeem codes, trial credit, refunds and chargebacks, and a full ledger.
-- Pricing rules per model: fixed, percent of official, or markup over cost. Pools (groups) and per-customer
-  multipliers, long-context multipliers, cache read/write prices, server-tool prices and Batch API discounts.
+- Pricing rules per model: fixed, percent of official, markup over cost, or percent of our cost, each with an optional
+  +/- adjustment. Route costs can follow the price a provider publishes through its API, refreshed during calls
+  (every N calls or X hours, never on a timer). Pools (groups) and per-customer multipliers, long-context
+  multipliers, cache read/write prices, server-tool prices and Batch API discounts.
 
 **Apps**
-- Admin console (`/admin`): overview, analytics, providers and keys with live slot usage, models and routes with a
-  guided "Add model" wizard, groups, customers (credits, limits, impersonation), API keys, request logs, billing,
-  status, settings and the audit log.
-- Customer portal (`/dashboard`): overview with savings, API keys, usage, logs, playground (chat and images), models
-  and pricing, billing and account settings with 2FA.
+- Admin console (`/admin`): overview, analytics, providers and keys with live slot usage plus **Test connection** and
+  **Fetch pricing**, models and routes with a guided "Add model" wizard, groups, customers (credits, limits,
+  impersonation), API keys, request logs, billing, **latency** (p50/p95, first token, per provider/key/model, history),
+  **status** (uptime/downtime bars, ping history, background mode), settings and the audit log.
+- Customer portal (`/dashboard`): overview with savings, API keys, usage (including their own latency), logs,
+  playground (chat and images), models and pricing (with per-model speed), billing and account settings with 2FA.
 - Public site: landing page, `/pricing`, `/status` and the customer API docs at **`/docs`**.
 
 ## Architecture
@@ -145,7 +150,7 @@ Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count 
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | unset | Optional. Without them billing shows "Stripe not configured" and only redeem codes and admin credits work. |
 | `SMTP_URL` | unset | `smtp://user:pass@host:587`. Unset: emails go to the console and the `EmailOutbox` table. |
 | `EMAIL_FROM` | `ProviderProxy <no-reply@example.com>` | Sender |
-| `CRON_SECRET` | unset | Bearer token for `/api/cron/*`. `/api/cron/billing` refuses to run without it. `/api/cron/health` runs without it only when `NODE_ENV=development`. |
+| `CRON_SECRET` | unset | Bearer token for the optional Cloud Scheduler routes `/api/cron/*` (not needed otherwise: background jobs run during calls). `/api/cron/billing` refuses to run without it. `/api/cron/health` runs without it only when `NODE_ENV=development`. |
 | `MOCK_UPSTREAM_URL` | `http://localhost:4010` | Where the dev seed points the "Mock Upstream" provider |
 | `TRUSTED_PROXY_HOPS` | `1` | Trusted reverse proxies in front of the app, used for client-IP detection (Cloud Run = 1, behind a Global LB = 2). `0` = nothing in front: the socket address is used and any client-sent `X-Forwarded-For` is ignored (`docker-compose.prod.yml` sets this). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
@@ -199,7 +204,7 @@ secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --b
 
 | Doc | For |
 |---|---|
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request pipeline, translation, stateful objects, caching, metering, crons |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request pipeline, translation, stateful objects, caching, metering, background jobs |
 | [docs/LOCAL-DEVELOPMENT.md](docs/LOCAL-DEVELOPMENT.md) | Bring-up, multiple dev servers, mock upstream markers, tests, Windows notes |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production on Google Cloud |
 | [docs/ADMIN-GUIDE.md](docs/ADMIN-GUIDE.md) | Running the admin console |
