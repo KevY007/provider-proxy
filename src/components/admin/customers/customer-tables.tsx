@@ -7,7 +7,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
 import { fmtDateTime, timeAgo } from "@/components/admin/format";
-import { ApiKeyActions } from "@/components/admin/keys/key-actions";
+import { ApiKeyActions, RevealKey } from "@/components/admin/keys/key-actions";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatNumber } from "@/lib/utils";
@@ -42,7 +42,10 @@ export function CustomerKeysTable({ keys }: { keys: CustomerDetail["keys"] }) {
                 {k.name} {k.isPlayground && <Badge variant="outline">playground</Badge>}
               </TableCell>
               <TableCell>
-                <code className="text-xs">{k.prefix}…</code>
+                <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                  <code className="text-xs">{k.prefix}…</code>
+                  {k.status !== "REVOKED" && !k.isPlayground && <RevealKey id={k.id} name={k.name} compact />}
+                </span>
               </TableCell>
               <TableCell>
                 <StatusBadge status={k.status} />

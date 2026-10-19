@@ -69,7 +69,8 @@ accepts the doubled `/v1/v1/...` prefix and Google's `/v1beta/openai/...` alias.
 ### Public, no key
 
 `GET /api/pricing[?group=slug]` returns the price list (official price vs your price per unit) for public models.
-It is CORS `*` and cached 60 s.
+It is CORS `*` and cached 60 s. The operator can make pricing private (Settings > Access); it then answers
+`401 pricing_private` and only `/v1/models` (with a key) shows prices.
 
 ## Model names
 
@@ -175,3 +176,15 @@ Each request records **your price** and the **official price** (what the same us
 price). Savings = official price - your price. The dashboard shows totals and savings over time, and the logs show
 Official / Charged / Saved per request. Both values are snapshots taken at request time, so later price changes never
 rewrite history. Details: [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md).
+
+**Prices from the API** (to keep your own price tables in sync; the in-app docs page `/docs/pricing-api` has examples):
+
+| Endpoint | Format |
+|---|---|
+| `GET /v1/models`, `GET /v1/models/{id}` | `pricing`: the OpenRouter convention (decimal strings, USD per token: `prompt`, `completion`, `input_cache_read`, `input_cache_write`, `request`, `image`), the de-facto standard other gateways and tools read. `x_pricing`: USD per 1M tokens, `yours` / `official` / `savings_pct`, per-call tool prices, and units for non-token models. Prices are your effective prices (pool and account multipliers applied). Also `context_length` and `top_provider.max_completion_tokens`. |
+| `GET /v1/model/info` | LiteLLM format (`input_cost_per_token`, `output_cost_per_token`, `cache_read_input_token_cost`, `max_input_tokens`, `max_output_tokens`, capabilities) for LiteLLM / Langfuse-style cost trackers. |
+| `GET /api/pricing` | Public list for websites; ProviderProxy-specific shape (see above). |
+
+**Limits are the provider's.** The gateway never truncates input by context length and passes an explicit
+`max_tokens` / `max_completion_tokens` / `max_output_tokens` through unchanged; see the funds clamp in
+PRICING-AND-BILLING.md for the one exception (insufficient balance).

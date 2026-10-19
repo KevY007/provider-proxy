@@ -45,7 +45,7 @@ probes and `curl` still use HTTP/1.1.
 | 11 | Cloud Scheduler + Stripe webhook | See below |
 | 12 | Custom domain | Domain mapping, or a Global external HTTPS LB with a serverless NEG (then `TRUSTED_PROXY_HOPS=2`; keep CDN off for `/v1/*`) |
 
-**Generate the secrets** (losing `ENCRYPTION_KEY` makes every stored upstream key and TOTP secret unreadable, so back
+**Generate the secrets** (losing `ENCRYPTION_KEY` makes every stored upstream key, TOTP secret and revealable customer API key copy unreadable, so back
 it up outside GCP as well):
 
 ```bash
@@ -67,7 +67,7 @@ openssl rand -hex 24      # CRON_SECRET
 | `--max-instances=1 --cpu=1 --memory=1Gi` (lean) | Without Redis, limits and funds holds are per instance, so one instance only. Scale-out: Redis, `--network=$SERVICE-vpc --subnet=$SERVICE-$REGION --vpc-egress=private-ranges-only`, `--max-instances=100 --concurrency=500 --cpu=2 --memory=2Gi`, the database URL on the transaction pooler with `DB_POOL_SIZE=2` (deploy/README.md steps 4 and 9). |
 | `--cpu-boost`, startup probe `initialDelaySeconds=0,periodSeconds=1` | Shorter cold starts: the instance takes traffic as soon as it is ready |
 | `--startup-probe` / `--liveness-probe` `httpGet.path=/api/healthz` | Only the DB gates readiness |
-| env `APP_URL=https://$DOMAIN`, `TRUSTED_PROXY_HOPS=1` (2 behind a Global LB), `DB_POOL_SIZE`, `ADMIN_EMAIL`, `EMAIL_FROM` | |
+| env `APP_URL=https://$DOMAIN`, `TRUSTED_PROXY_HOPS=1` (2 behind a Global LB), `DB_POOL_SIZE`, `ADMIN_EMAIL`, `EMAIL_FROM`, optionally `SEARCH_INDEXING=off` | `SEARCH_INDEXING=off` keeps a private deployment out of search engines: `robots.txt` disallows everything and pages carry `X-Robots-Tag: noindex` (API paths are untouched). Unset = normal indexing with the private areas disallowed. |
 
 Drain and shutdown: on SIGTERM the container stops accepting connections, sends GOAWAY / `Connection: close`, lets
 in-flight requests finish (up to `SHUTDOWN_DRAIN_SECONDS`), flushes the meter buffer and exits 143. Cloud Run
