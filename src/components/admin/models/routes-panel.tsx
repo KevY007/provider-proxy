@@ -21,6 +21,7 @@ import { createRoute, deleteRoute, duplicateRoute, toggleRoute, updateRoute } fr
 import { compactUnits, fmtPct, formatMargin, MODEL_PRICE_PAIRS, marginTone, pairMargin, routeMargins, rowUnits, summarizeRow, toNum, trafficShares } from "@/server/admin/models-calc";
 import type { RouteRow, WizardProvider } from "@/server/admin/models-queries";
 import { AddRouteWizard } from "./add-route-wizard";
+import { ToolPriceTable } from "./pricing-editor";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
@@ -44,6 +45,7 @@ export function RoutesPanel({
   modelId,
   publicSlug,
   sell,
+  sellTools = {},
   model,
   routes,
   providers,
@@ -54,6 +56,8 @@ export function RoutesPanel({
   publicSlug: string;
   /** Effective customer prices (derived when a pricing rule is active). */
   sell: SellValues;
+  /** Effective customer price per server tool (USD per unit). */
+  sellTools?: Record<string, number | null>;
   /** The model form (official prices + capabilities) for the Add route flow. */
   model: Record<string, unknown> & { capabilities: string[] };
   routes: RouteRow[];
@@ -232,6 +236,7 @@ export function RoutesPanel({
           publicSlug={publicSlug}
           route={editing === "new" ? null : editing}
           sell={sell}
+          sellTools={sellTools}
           providers={providers}
           groups={groups}
           onClose={() => setEditing(null)}
@@ -271,7 +276,9 @@ type RouteForm = {
   groupSlugs: string[];
   paramOverrides: string;
   maxOutputTokens: string;
-} & Record<string, string | boolean | string[]>;
+  toolCosts: Record<string, string>;
+  batchCostDiscountPct: string;
+} & Record<string, string | boolean | string[] | Record<string, string>>;
 
 const PRIMARY_SELL = new Set(["inputPrice", "outputPrice", "cachedInputPrice", "cacheWritePrice", "cacheWrite1hPrice"]);
 
@@ -280,6 +287,7 @@ function RouteDialog({
   publicSlug,
   route,
   sell,
+  sellTools,
   providers,
   groups,
   onClose,
@@ -288,6 +296,7 @@ function RouteDialog({
   publicSlug: string;
   route: RouteRow | null;
   sell: SellValues;
+  sellTools: Record<string, number | null>;
   providers: ProviderOption[];
   groups: GroupOption[];
   onClose: () => void;
@@ -304,11 +313,20 @@ function RouteDialog({
       groupSlugs: route?.groupSlugs ?? [],
       paramOverrides: route ? route.paramOverrides : "{}",
       maxOutputTokens: route?.maxOutputTokens ?? "",
+      toolCosts: route?.toolCosts ?? {},
+      batchCostDiscountPct: route?.batchCostDiscountPct ?? "50",
     };
     for (const p of MODEL_PRICE_PAIRS) base[p.cost] = route ? String((route as unknown as Record<string, string>)[p.cost] ?? "") : "";
     return base;
   });
   const set = (k: string, v: string | boolean | string[]) => setF((s) => ({ ...s, [k]: v }));
+  const setToolCost = (k: string, v: string) => setF((s) => ({ ...s, toolCosts: { ...s.toolCosts, [k]: v } }));
+  const removeToolCost = (k: string) =>
+    setF((s) => {
+      const toolCosts = { ...s.toolCosts };
+      delete toolCosts[k];
+      return { ...s, toolCosts };
+    });
   const costs = f as unknown as Record<string, string>;
   const [showAll, setShowAll] = useState(() => MODEL_PRICE_PAIRS.some((p) => !PRIMARY_SELL.has(p.sell) && (!!costs[p.cost] || (toNum(sell[p.sell]) ?? 0) > 0)));
   const margins = routeMargins(
@@ -443,6 +461,30 @@ function RouteDialog({
           {showAll ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
           {showAll ? "Hide" : "Show"} image, video (per second), audio, per-request and other costs
         </Button>
+      </section>
+
+      <section className="space-y-2">
+        <h3 className="text-sm font-medium">Server tools</h3>
+        <p className="text-xs text-muted-foreground">What this provider charges per server-tool use (USD per search / container hour / call), same keys as the model&apos;s tool prices.</p>
+        <ToolPriceTable
+          cols={[
+            { label: "Sell", values: sellTools },
+            { label: "Cost", values: f.toolCosts, onChange: setToolCost },
+          ]}
+          onRemove={removeToolCost}
+          errors={fieldErrors.toolCosts ? { Cost: fieldErrors.toolCosts } : {}}
+        />
+        <NumberField
+          className="max-w-xs"
+          label="Batch API cost discount"
+          suffix="%"
+          min={0}
+          value={f.batchCostDiscountPct}
+          onChange={(v) => set("batchCostDiscountPct", v)}
+          error={fieldErrors.batchCostDiscountPct}
+          placeholder="50"
+          description="What this provider takes off its token prices for Batch API results. Blank = 50."
+        />
       </section>
     </FormDialog>
   );

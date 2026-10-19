@@ -11,7 +11,7 @@ const EXPORT_CAP = 50_000;
 const COLUMNS = [
   "id", "createdAt", "userId", "email", "keyPrefix", "modelSlug", "upstreamModel", "providerName", "providerKeyLabel",
   "endpoint", "status", "httpStatus", "errorCode", "stream", "inputTokens", "outputTokens", "cachedTokens",
-  "price", "cost", "profit", "latencyMs", "queueMs",
+  "serverTools", "batchId", "price", "cost", "profit", "officialPrice", "latencyMs", "queueMs",
 ] as const;
 
 export async function GET(req: Request) {

@@ -1,8 +1,7 @@
 "use client";
 
-import { useMemo } from "react";
-import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { useId, useMemo, useState } from "react";
+import { AlertTriangle, ChevronDown, ChevronRight, Plus, X } from "lucide-react";
 import { MoneyText } from "@/components/common/money-text";
 import { GlossaryTip, PriceExplainer } from "@/components/common/savings-badge";
 import { SavingsBadge } from "@/components/common/savings-badge";
@@ -10,7 +9,20 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
-import { costTable, fmtPct, marginTone, MODEL_PRICE_PAIRS, officialTable, PRICING_MODE_LABELS, PRICING_MODES, sellTable, toNum, type PricingModeId } from "@/server/admin/models-calc";
+import {
+  costTable,
+  fmtPct,
+  marginTone,
+  MODEL_PRICE_PAIRS,
+  officialTable,
+  PRICING_MODE_LABELS,
+  PRICING_MODES,
+  sellTable,
+  TOOL_KEY_RE,
+  TOOL_KEY_SUGGESTIONS,
+  toNum,
+  type PricingModeId,
+} from "@/server/admin/models-calc";
 import { previewPricing, type PriceUnitKey } from "@/server/pricing/preview";
 
 export type PriceValues = Record<string, string>;
@@ -279,6 +291,140 @@ export function RuleSelector({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+export interface ToolPriceColumn {
+  label: React.ReactNode;
+  /** tool key -> USD per unit (string as typed, or a derived number) */
+  values: Record<string, string | number | null | undefined>;
+  /** Set to make the column editable. */
+  onChange?: (key: string, v: string) => void;
+}
+
+/**
+ * "Server tools" table: one row per tool price key (web_search_request, code_execution_hour, ...) and one column per price
+ * list (Official / Our cost / Customer price). Editable columns get inputs; new keys come from the suggestions or are typed.
+ */
+export function ToolPriceTable({ cols, onRemove, errors = {} }: { cols: ToolPriceColumn[]; onRemove?: (key: string) => void; errors?: Record<string, string> }) {
+  const listId = useId();
+  const [added, setAdded] = useState<string[]>([]);
+  const [draft, setDraft] = useState("");
+  const [draftError, setDraftError] = useState("");
+  const editable = cols.some((c) => c.onChange);
+  const keys = useMemo(() => [...new Set([...cols.flatMap((c) => Object.keys(c.values)), ...added])].sort(), [cols, added]);
+  const hint = (k: string) => TOOL_KEY_SUGGESTIONS.find((t) => t.key === k)?.hint ?? "USD per unit";
+
+  function add() {
+    const k = draft.trim();
+    if (!TOOL_KEY_RE.test(k)) return setDraftError("Letters, numbers, _ . : - only");
+    if (keys.includes(k)) return setDraftError("Already listed");
+    setAdded((a) => [...a, k]);
+    setDraft("");
+    setDraftError("");
+  }
+
+  return (
+    <div className="space-y-2">
+      {keys.length > 0 ? (
+        <div className="overflow-x-auto rounded-lg border">
+          <Table>
+            <TableHeader className="bg-muted/40">
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Tool</TableHead>
+                {cols.map((c, i) => (
+                  <TableHead key={i}>{c.label}</TableHead>
+                ))}
+                {editable && onRemove && <TableHead className="w-10" />}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {keys.map((k) => (
+                <TableRow key={k}>
+                  <TableCell>
+                    <span className="font-mono text-xs">{k}</span>
+                    <span className="block text-[10px] text-muted-foreground">{hint(k)}</span>
+                  </TableCell>
+                  {cols.map((c, i) => {
+                    const v = c.values[k];
+                    return (
+                      <TableCell key={i}>
+                        {c.onChange ? (
+                          <NumInput value={v === null || v === undefined ? "" : String(v)} onChange={(x) => c.onChange?.(k, x)} label={`${k} ${typeof c.label === "string" ? c.label : ""}`.trim()} />
+                        ) : toNum(v ?? null) !== null ? (
+                          <MoneyText value={toNum(v ?? null) as number} className="text-sm" />
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                    );
+                  })}
+                  {editable && onRemove && (
+                    <TableCell>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        aria-label={`Remove ${k}`}
+                        onClick={() => {
+                          setAdded((a) => a.filter((x) => x !== k));
+                          onRemove(k);
+                        }}
+                      >
+                        <X className="size-4" />
+                      </Button>
+                    </TableCell>
+                  )}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : (
+        <p className="text-xs text-muted-foreground">No server-tool prices. Tools without a price are free for the customer.</p>
+      )}
+      {editable && (
+        <div className="flex flex-wrap items-start gap-2">
+          <div>
+            <Input
+              list={listId}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setDraftError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  add();
+                }
+              }}
+              placeholder="tool key, e.g. web_search_request"
+              aria-label="New server tool key"
+              aria-invalid={!!draftError}
+              className="h-8 w-64 font-mono text-xs"
+            />
+            <datalist id={listId}>
+              {TOOL_KEY_SUGGESTIONS.filter((t) => !keys.includes(t.key)).map((t) => (
+                <option key={t.key} value={t.key}>
+                  {t.hint}
+                </option>
+              ))}
+            </datalist>
+            {draftError && <span className="block text-xs text-destructive">{draftError}</span>}
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={add} disabled={!draft.trim()}>
+            <Plus className="size-4" /> Add tool price
+          </Button>
+        </div>
+      )}
+      {Object.entries(errors).map(([k, e]) => (
+        <p key={k} className="text-xs text-destructive">
+          {k}: {e}
+        </p>
+      ))}
     </div>
   );
 }

@@ -53,8 +53,8 @@ export interface MigrationResult {
  *   - were never edited by an admin (no `model.*` AuditLog entry targets them)
  * are touched; everything else keeps its rule. Idempotent: a migrated model no longer matches.
  */
-export async function migrateSeededMarkupRules(opts: { dryRun?: boolean } = {}): Promise<MigrationResult> {
-  const candidates = await db.model.findMany({ where: { pricingMode: "MARKUP_OVER_COST", pricingValue: 30 }, select: { id: true, slug: true, ...Object.fromEntries(OFFICIAL_COLUMNS.map((c) => [c, true])) } });
+export async function migrateSeededMarkupRules(opts: { dryRun?: boolean; /** only consider these models (default: all) */ modelIds?: string[] } = {}): Promise<MigrationResult> {
+  const candidates = await db.model.findMany({ where: { pricingMode: "MARKUP_OVER_COST", pricingValue: 30, ...(opts.modelIds ? { id: { in: opts.modelIds } } : {}) }, select: { id: true, slug: true, ...Object.fromEntries(OFFICIAL_COLUMNS.map((c) => [c, true])) } });
   if (!candidates.length) return { migrated: [], kept: [] };
   const edited = new Set(
     (

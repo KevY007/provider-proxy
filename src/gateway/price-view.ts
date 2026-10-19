@@ -65,6 +65,8 @@ export interface PriceMatrix {
   yours: Partial<Record<PublicUnitKey, number>>;
   official: Partial<Record<PublicUnitKey, number>>;
   savings_pct: Partial<Record<PublicUnitKey, number>>;
+  /** Server tools (USD per unit: search / container hour / call), by price key. Empty when the model prices none. */
+  tools: Record<string, { yours: number; official?: number; savings_pct?: number }>;
 }
 
 /**
@@ -72,7 +74,16 @@ export interface PriceMatrix {
  * `official` / `savings_pct` entry. `savings_pct` is negative when we are above the official price (never hidden).
  */
 export function priceMatrix(sell: PriceTable, official: OptTable | null, multiplier: Decimal): PriceMatrix {
-  const out: PriceMatrix = { unit: {}, yours: {}, official: {}, savings_pct: {} };
+  const out: PriceMatrix = { unit: {}, yours: {}, official: {}, savings_pct: {}, tools: {} };
+  for (const k of Object.keys(sell.tools ?? {}).sort()) {
+    const mine = sell.tools![k].times(multiplier);
+    const off = official?.tools?.[k] ?? null;
+    out.tools[k] = { yours: plainNumber(mine)! };
+    if (off) {
+      out.tools[k].official = plainNumber(off)!;
+      if (off.gt(0)) out.tools[k].savings_pct = Number(off.minus(mine).div(off).times(100).toDecimalPlaces(2).toFixed());
+    }
+  }
   for (const u of PUBLIC_UNITS) {
     if (!relevant(u.key, sell, official)) continue;
     const f = FIELD_OF[u.key];

@@ -34,7 +34,14 @@ function modelView(m: ModelRec, g: GroupRec | null): Record<string, unknown> {
     context_length: m.contextWindow,
     max_output_tokens: m.maxOutput,
     retires_at: m.retiresAt ? new Date(m.retiresAt).toISOString() : null,
-    pricing: { unit: matrix.unit, yours: matrix.yours, official: matrix.official, savings_pct: matrix.savings_pct },
+    pricing: {
+      unit: matrix.unit,
+      yours: matrix.yours,
+      official: matrix.official,
+      savings_pct: matrix.savings_pct,
+      // server tools, USD per unit (search / container hour / call)
+      ...(Object.keys(matrix.tools).length ? { tools: matrix.tools } : {}),
+    },
   };
 }
 

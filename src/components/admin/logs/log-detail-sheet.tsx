@@ -10,6 +10,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { fmtDateTime } from "@/components/admin/format";
 import { JsonView, KV } from "@/components/admin/misc";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { formatToolUsage } from "@/lib/tool-usage";
 import { cn, formatNumber } from "@/lib/utils";
 import { getLogDetail } from "@/server/admin/logs-actions";
 import type { LogDetail } from "@/server/admin/logs-queries";
@@ -204,6 +205,14 @@ export function LogDetailSheet({ id, onClose }: { id: string | null; onClose: ()
                 <KV label="Audio seconds">{d.audioSeconds}</KV>
                 <KV label="Characters">{formatNumber(d.characters)}</KV>
                 <KV label="Usage estimated (tokenizer)">{d.usageEstimated ? "yes" : "no"}</KV>
+                <KV label="Server tools">{Object.keys(d.toolUsage).length ? <span className="font-mono text-xs">{formatToolUsage(d.toolUsage)}</span> : "-"}</KV>
+                {d.batchId && (
+                  <KV label="Batch">
+                    <span className="inline-flex items-center gap-1 break-all font-mono text-xs">
+                      {d.batchId} <CopyButton value={d.batchId} />
+                    </span>
+                  </KV>
+                )}
               </Section>
 
               <Section title="Timing">

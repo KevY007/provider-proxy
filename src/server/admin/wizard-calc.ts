@@ -2,7 +2,7 @@
  * Pure helpers for the guided "Add model" / "Add route" flow (no DB: safe in client code and tests).
  */
 import type { PriceTable } from "@/server/pricing/preview";
-import { MODEL_PRICE_PAIRS, toNum } from "./models-calc";
+import { MODEL_PRICE_PAIRS, previewToolPrices, toNum } from "./models-calc";
 
 /** "models/gemini-3.1-pro" -> "gemini-3.1-pro"; lowercase; only [a-z0-9._:/-]; no leading/trailing dashes. */
 export function slugifyModelId(id: string): string {
@@ -55,6 +55,30 @@ export function tableToFields(table: PriceTable | undefined | null, kind: FieldK
     if (field && v !== null && v !== undefined && Number.isFinite(v)) out[field] = String(v);
   }
   return out;
+}
+
+/** Catalog server-tool prices (`{ web_search_request: 0.01 }`) -> form strings; non-numbers dropped. */
+export function toolsToFields(tools: Record<string, number> | undefined | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(tools ?? {})) if (typeof v === "number" && Number.isFinite(v) && v >= 0) out[k] = String(v);
+  return out;
+}
+
+/**
+ * Server-tool fields for a new model from the catalog: official = list price, our cost = list price for direct providers
+ * (the maker's own API), customer price under the chosen rule (FIXED starts at the official price so tools are never free by accident).
+ */
+export function knownToolFields(
+  tools: Record<string, number> | undefined | null,
+  direct: boolean,
+  rule: { mode: string; value: string },
+): { officialToolPrices: Record<string, string>; toolCosts: Record<string, string>; toolPrices: Record<string, string> } {
+  const officialToolPrices = toolsToFields(tools);
+  const toolCosts = direct ? { ...officialToolPrices } : {};
+  const derived = previewToolPrices(rule.mode, rule.value, officialToolPrices, toolCosts, rule.mode === "FIXED" ? officialToolPrices : {});
+  const toolPrices: Record<string, string> = {};
+  for (const [k, v] of Object.entries(derived)) if (v !== null) toolPrices[k] = String(Number(v.toPrecision(10)));
+  return { officialToolPrices, toolCosts, toolPrices };
 }
 
 /** Cost mirrors the official price for direct providers (the maker's own API); blank otherwise. */

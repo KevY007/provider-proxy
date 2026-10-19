@@ -19,12 +19,12 @@ import { MultiSelectField, NumberField, SelectField, SwitchField, TagsField, Tex
 import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
 import { deleteModel, duplicateModel, updateModel } from "@/server/admin/models-actions";
-import { primaryEnabledRoute, MODEL_CAPABILITIES, MODEL_PRICE_PAIRS, MODEL_STATUSES } from "@/server/admin/models-calc";
+import { previewToolPrices, primaryEnabledRoute, MODEL_CAPABILITIES, MODEL_PRICE_PAIRS, MODEL_STATUSES } from "@/server/admin/models-calc";
 import type { ModelForm, RouteRow, WizardProvider } from "@/server/admin/models-queries";
 import type { PriceUnitKey } from "@/server/pricing/preview";
 import { formatCompact, formatPercent } from "@/lib/utils";
 import { ModelExplainer } from "./explainer";
-import { PriceExplainer, PriceGrid, RuleSelector, usePricingPreview } from "./pricing-editor";
+import { PriceExplainer, PriceGrid, RuleSelector, ToolPriceTable, usePricingPreview } from "./pricing-editor";
 import { RoutesPanel, type GroupOption, type ProviderOption } from "./routes-panel";
 
 type Usage = { requests: number; revenue: number; cost: number; profit: number; errorRate: number } | null;
@@ -79,16 +79,32 @@ export function ModelWorkspace({
     return rec;
   }, [f, preview]);
 
+  // Server tools: what customers pay per tool (derived from official / our cost when a rule is active).
+  const toolSell = useMemo(
+    () => previewToolPrices(f.pricingMode, f.pricingValue, f.officialToolPrices, costRoute?.toolCosts ?? {}, f.toolPrices),
+    [f.pricingMode, f.pricingValue, f.officialToolPrices, f.toolPrices, costRoute],
+  );
+  const setTool = (col: "toolPrices" | "officialToolPrices", key: string, v: string) => setF((s) => ({ ...s, [col]: { ...s[col], [key]: v } }));
+  const removeTool = (key: string) =>
+    setF((s) => {
+      const toolPrices = { ...s.toolPrices };
+      const officialToolPrices = { ...s.officialToolPrices };
+      delete toolPrices[key];
+      delete officialToolPrices[key];
+      return { ...s, toolPrices, officialToolPrices };
+    });
+  const toolErrors = Object.fromEntries(["officialToolPrices", "toolPrices"].filter((k) => fieldErrors[k]).map((k) => [k === "toolPrices" ? "Customer price" : "Official price", fieldErrors[k]]));
+
   // Rule-driven prices are recomputed server-side when official prices / route costs change: pull them in without losing other edits.
-  const sellSig = MODEL_PRICE_PAIRS.map((p) => (model as unknown as Record<string, string>)[p.sell]).join("|");
+  const sellSig = MODEL_PRICE_PAIRS.map((p) => (model as unknown as Record<string, string>)[p.sell]).join("|") + JSON.stringify(model.toolPrices);
   const [seenSig, setSeenSig] = useState(sellSig);
   if (seenSig !== sellSig) {
     setSeenSig(sellSig);
     if (model.pricingMode !== "FIXED") {
       const patch: Record<string, string> = {};
       for (const p of MODEL_PRICE_PAIRS) patch[p.sell] = (model as unknown as Record<string, string>)[p.sell];
-      setInitial((s) => ({ ...s, ...patch }));
-      setF((s) => (s.pricingMode === model.pricingMode ? { ...s, ...patch } : s));
+      setInitial((s) => ({ ...s, ...patch, toolPrices: model.toolPrices }));
+      setF((s) => (s.pricingMode === model.pricingMode ? { ...s, ...patch, toolPrices: model.toolPrices } : s));
     }
   }
 
@@ -210,6 +226,38 @@ export function ModelWorkspace({
 
           <Card>
             <CardHeader>
+              <CardTitle>Server tools</CardTitle>
+              <CardDescription>
+                Tools the provider runs for a request and bills per use (web search, code execution, file search), in USD per unit. Billed on top of tokens; the group/customer multiplier applies to the
+                customer price, never to our cost.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <ToolPriceTable
+                cols={[
+                  { label: "Official price", values: f.officialToolPrices, onChange: (k, v) => setTool("officialToolPrices", k, v) },
+                  { label: "Our cost", values: costRoute?.toolCosts ?? {} },
+                  f.pricingMode === "FIXED" ? { label: "Customer price", values: f.toolPrices, onChange: (k, v) => setTool("toolPrices", k, v) } : { label: "Customer price", values: toolSell },
+                ]}
+                onRemove={removeTool}
+                errors={toolErrors}
+              />
+              <NumberField
+                className="max-w-xs"
+                label="Batch API discount"
+                suffix="%"
+                min={0}
+                value={f.batchDiscountPct}
+                onChange={(v) => set("batchDiscountPct", v)}
+                error={fieldErrors.batchDiscountPct}
+                placeholder="50"
+                description="Taken off the token price of Batch API results (not tools or flat fees). Blank = 50, like the vendors."
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
               <CardTitle>More price settings</CardTitle>
               <CardDescription>Cache write (1h), long-context surcharge and the upstream retirement date.</CardDescription>
             </CardHeader>
@@ -234,7 +282,7 @@ export function ModelWorkspace({
       </div>
 
       <div className="mt-6">
-        <RoutesPanel modelId={model.id} publicSlug={f.slug || initial.slug} sell={effectiveSell} model={f} routes={routes} providers={providers} wizardProviders={wizardProviders} groups={groups} />
+        <RoutesPanel modelId={model.id} publicSlug={f.slug || initial.slug} sell={effectiveSell} sellTools={toolSell} model={f} routes={routes} providers={providers} wizardProviders={wizardProviders} groups={groups} />
       </div>
 
       {dirty && (
