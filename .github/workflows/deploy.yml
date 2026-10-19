@@ -50,10 +50,10 @@ jobs:
         run: |
           IMAGE="$REGION-docker.pkg.dev/$PROJECT/$SERVICE/$SERVICE:${SHA::12}"
           echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
-          gcloud builds submit . --project="$PROJECT" --region="$REGION" --tag="$IMAGE" \
+          gcloud builds submit . --project="$PROJECT" --region="$REGION" \
+            --config=deploy/cloudbuild-image.yaml --substitutions="_IMAGE=$IMAGE" \
             --service-account="${{ vars.GCP_BUILD_SA }}" \
-            --gcs-source-staging-dir="gs://${{ vars.GCP_BUILD_BUCKET }}/source" --gcs-log-dir="gs://${{ vars.GCP_BUILD_BUCKET }}/logs" \
-            --machine-type=e2-highcpu-8 --timeout=30m --suppress-logs
+            --gcs-source-staging-dir="gs://${{ vars.GCP_BUILD_BUCKET }}/source" --suppress-logs
 
       - name: Migrate the database
         run: |
