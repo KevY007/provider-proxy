@@ -67,7 +67,7 @@ function topLevelChanges(orig: JsonObject, next: JsonObject): Record<string, unk
 }
 
 /** Clamp / set the output-token cap for the upstream format. */
-function applyOutputClamp(obj: JsonObject, format: InboundFormat, op: Operation, limit: number, tokensParam: "max_tokens" | "max_completion_tokens"): void {
+export function applyOutputClamp(obj: JsonObject, format: InboundFormat, op: Operation, limit: number, tokensParam: "max_tokens" | "max_completion_tokens"): void {
   if (op === "messages_count_tokens" || op === "gemini_count_tokens") return;
   if (format === "anthropic_messages") {
     obj.max_tokens = typeof obj.max_tokens === "number" ? Math.min(obj.max_tokens, limit) : limit;
@@ -256,7 +256,8 @@ export function scrubText(text: string, c: ScrubContext): string {
   let t = text;
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   if (c.secret && c.secret.length >= 6) t = t.split(c.secret).join("[redacted]");
-  if (c.upstreamModel && c.upstreamModel !== c.publicModel) t = t.replace(new RegExp(esc(c.upstreamModel), "gi"), c.publicModel);
+  // (a dated / suffixed variant of the upstream model, e.g. "<model>-2024-08-06", is replaced as a whole)
+  if (c.upstreamModel && c.upstreamModel !== c.publicModel) t = t.replace(new RegExp(`${esc(c.upstreamModel)}(?:-[A-Za-z0-9.]+)*`, "gi"), c.publicModel);
   try {
     const host = new URL(c.baseUrl).host;
     if (host) t = t.replace(new RegExp(esc(host), "gi"), "upstream");
@@ -268,6 +269,9 @@ export function scrubText(text: string, c: ScrubContext): string {
     if (name && name.length >= 3) t = t.replace(new RegExp(`\\b${esc(name)}\\b`, "gi"), "the upstream provider");
   }
   t = t.replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g, "[redacted]");
+  // our upstream account identity: OpenAI organization / project ids, account / organization UUIDs (Anthropic)
+  t = t.replace(/\borg-[A-Za-z0-9]{8,}\b/g, "[redacted]").replace(/\bproj_[A-Za-z0-9]{8,}\b/g, "[redacted]");
+  t = t.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[redacted]");
   return t;
 }
 

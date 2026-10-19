@@ -173,6 +173,20 @@ export const emailTemplates = {
     };
   },
 
+  /** Sent to the OLD address when someone asks to move the account to a new one. */
+  async emailChangeNotice(p: { name?: string | null; newEmail: string }): Promise<TemplateResult> {
+    const { siteName } = await getSettings();
+    return {
+      subject: `Your ${siteName} email address is being changed`,
+      html: layout({
+        siteName,
+        title: "Email change requested",
+        body: `${hello(p.name)}<p>Someone signed in to your ${escapeHtml(siteName)} account asked to change its email address to <strong>${escapeHtml(p.newEmail)}</strong>. If this was you, nothing else is needed. If it was not, change your password right away and contact support.</p>`,
+        cta: { label: "Review account security", url: `${appUrl}/dashboard/settings` },
+      }),
+    };
+  },
+
   async lowBalance(p: { name?: string | null; balance: MoneyLike; topUpUrl?: string }): Promise<TemplateResult> {
     const { siteName } = await getSettings();
     return {

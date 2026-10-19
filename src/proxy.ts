@@ -32,7 +32,7 @@ export function proxy(request: NextRequest) {
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production" && (process.env.APP_URL ?? "").startsWith("https://"),
+    secure: process.env.NODE_ENV === "production" && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(process.env.APP_URL ?? ""),
     path: "/",
     maxAge: THIRTY_DAYS,
   });

@@ -27,6 +27,9 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const origCreateServer = http.createServer;
 
+const SOCKET_IP = process.env.TRUSTED_PROXY_HOPS?.trim() === "0";
+/** A new connection must send its first bytes within this time (protocol sniffing; idle sockets are slowloris). */
+const FIRST_BYTES_MS = 15_000;
 const KEEP_ALIVE_MS = Number.parseInt(process.env.KEEP_ALIVE_TIMEOUT ?? "", 10) > 0 ? Number.parseInt(process.env.KEEP_ALIVE_TIMEOUT, 10) : 620_000;
 const DRAIN_MS = (Number.parseInt(process.env.SHUTDOWN_DRAIN_SECONDS ?? "", 10) > 0 ? Number.parseInt(process.env.SHUTDOWN_DRAIN_SECONDS, 10) : 600) * 1000;
 const H2_WINDOW = Number.parseInt(process.env.H2_INITIAL_WINDOW_BYTES ?? "", 10) > 0 ? Number.parseInt(process.env.H2_INITIAL_WINDOW_BYTES, 10) : 1024 * 1024;
@@ -83,6 +86,8 @@ function replaySocket(socket, head) {
 function createDualServer(listener) {
   const wrapped = (req, res) => {
     active++;
+    // nothing in front of the app (TRUSTED_PROXY_HOPS=0): the socket address is the client, whatever the client sent
+    if (SOCKET_IP) req.headers["x-forwarded-for"] = req.socket?.remoteAddress ?? "unknown";
     res.once("close", () => active--);
     if (req.httpVersionMajor === 1) {
       if (draining && !res.headersSent) res.setHeader("connection", "close");
@@ -127,6 +132,7 @@ function createDualServer(listener) {
 
   const front = net.createServer({ pauseOnConnect: true, noDelay: true, keepAlive: true, keepAliveInitialDelay: 30_000 }, (socket) => {
     socket.on("error", () => undefined);
+    socket.setTimeout(FIRST_BYTES_MS, () => socket.destroy());
     const chunks = [];
     let have = 0;
     const onData = (buf) => {
@@ -134,6 +140,7 @@ function createDualServer(listener) {
       have += buf.length;
       if (have < 3) return; // "PRI" needs three bytes
       socket.off("data", onData);
+      socket.setTimeout(0);
       socket.pause();
       const head = Buffer.concat(chunks);
       if (head.toString("latin1", 0, 3) === "PRI") {

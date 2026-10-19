@@ -205,6 +205,9 @@ export async function verifyEmailToken(token: string): Promise<VerifyOutcome> {
       if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") return { ok: false, reason: "email_taken" };
       throw err;
     }
+    // the account moved: sessions and links issued for the old address end here
+    await revokeAllSessions(row.userId);
+    await db.verificationToken.deleteMany({ where: { userId: row.userId, usedAt: null, type: { in: ["PASSWORD_RESET", "EMAIL_CHANGE"] } } });
     await audit(row.userId, "auth.email_change", { type: "User", id: row.userId }, { to: newEmail });
     return { ok: true, kind: "email_changed", email: newEmail };
   }
@@ -253,9 +256,12 @@ export async function requestEmailChange(
   const rl = await rateLimit(`emailchange:${userId}`, { limit: 5, windowSec: 3600 });
   if (!rl.ok) return { ok: false, error: "Too many attempts. Try again later." };
   const taken = await db.user.findUnique({ where: { email: newEmail }, select: { id: true } });
-  if (taken) return { ok: false, error: "That email address is already in use" };
+  // (same answer as success: whether an address is registered is not disclosed; the confirmation would fail anyway)
+  if (taken) return { ok: true };
   const token = await createVerificationToken(userId, "EMAIL_CHANGE", VERIFY_TOKEN_TTL_MS, newEmail);
   await sendTemplate(newEmail, emailTemplates.emailChange({ name: user.name, newEmail, url: `${appUrl}/verify-email?token=${token}` }));
+  // the owner of the current address hears about it (a hijacked session cannot move the account silently)
+  await sendTemplate(user.email, emailTemplates.emailChangeNotice({ name: user.name, newEmail })).catch(() => undefined);
   return { ok: true };
 }
 
@@ -278,12 +284,14 @@ export async function loginUser(input: {
 }): Promise<LoginOutcome> {
   const email = normalizeEmail(input.email);
 
-  const [byIp, byPair] = await Promise.all([
+  const [byIp, byPair, byAccount] = await Promise.all([
     rateLimit(`login:ip:${input.ip}`, { limit: 40, windowSec: 600 }),
     rateLimit(`login:pair:${input.ip}:${email}`, { limit: 8, windowSec: 900 }),
+    // per account, whatever the source address (rotating IPs must not give unlimited guesses)
+    rateLimit(`login:email:${email}`, { limit: 30, windowSec: 3600 }),
   ]);
-  if (!byIp.ok || !byPair.ok) {
-    const wait = Math.max(byIp.retryAfterSec, byPair.retryAfterSec);
+  if (!byIp.ok || !byPair.ok || !byAccount.ok) {
+    const wait = Math.max(byIp.retryAfterSec, byPair.retryAfterSec, byAccount.retryAfterSec);
     return { kind: "error", code: "rate_limited", message: `Too many attempts. Try again in ${Math.max(1, Math.ceil(wait / 60))} min.` };
   }
 
@@ -358,6 +366,7 @@ export async function resetPasswordWithToken(token: string, newPassword: string,
   if (claimed.count === 0) return { ok: false };
   await db.user.update({ where: { id: row.userId }, data: { passwordHash: await hashPassword(newPassword) } });
   await revokeAllSessions(row.userId);
+  await db.verificationToken.deleteMany({ where: { userId: row.userId, usedAt: null, type: { in: ["PASSWORD_RESET", "EMAIL_CHANGE"] } } });
   await audit(row.userId, "auth.password_reset", { type: "User", id: row.userId }, {}, ip);
   return { ok: true };
 }
@@ -376,6 +385,7 @@ export async function changePassword(
   if (!user || !(await verifyPassword(user.passwordHash, currentPassword))) return { ok: false, error: "Current password is incorrect" };
   await db.user.update({ where: { id: userId }, data: { passwordHash: await hashPassword(newPassword) } });
   await revokeOtherSessions(userId, currentSessionId);
+  await db.verificationToken.deleteMany({ where: { userId, usedAt: null, type: { in: ["PASSWORD_RESET", "EMAIL_CHANGE"] } } });
   await audit(userId, "auth.password_change", { type: "User", id: userId }, {}, ip);
   return { ok: true };
 }

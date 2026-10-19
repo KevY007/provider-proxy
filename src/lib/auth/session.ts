@@ -9,13 +9,20 @@ import { AuthError, type AuthSession } from "./types";
 /** Cookie holding the raw session token; the DB stores only sha256(token) as Session.id. */
 export const SESSION_COOKIE = "pp_session";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Impersonation sessions end one hour after they started (absolute, never rolled). */
+export const IMPERSONATION_TTL_MS = 60 * 60 * 1000;
 const REFRESH_AFTER_MS = 24 * 60 * 60 * 1000; // rolling: extend DB expiry at most once a day
+
+/** Secure cookies in production, except for a plain-http local APP_URL (`next start` on localhost). */
+export function secureCookies(): boolean {
+  return isProd && !/^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(appUrl);
+}
 
 export function sessionCookieOptions(maxAgeMs = SESSION_TTL_MS) {
   return {
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: isProd && appUrl.startsWith("https://"),
+    secure: secureCookies(),
     path: "/",
     maxAge: Math.floor(maxAgeMs / 1000),
   };
@@ -39,7 +46,7 @@ export async function createSession(userId: string, opts: CreateSessionOptions =
     data: {
       id,
       userId,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+      expiresAt: new Date(Date.now() + (opts.impersonatorId ? IMPERSONATION_TTL_MS : SESSION_TTL_MS)),
       ip: opts.ip ?? null,
       userAgent: opts.userAgent?.slice(0, 300) ?? null,
       twoFactorPassed: opts.twoFactorPassed ?? true,
@@ -75,7 +82,7 @@ const readSession = cache(async () => {
     db.session.delete({ where: { id } }).catch(() => undefined);
     return null;
   }
-  if (row.expiresAt.getTime() - now < SESSION_TTL_MS - REFRESH_AFTER_MS) {
+  if (!row.impersonatorId && row.expiresAt.getTime() - now < SESSION_TTL_MS - REFRESH_AFTER_MS) {
     db.session
       .update({ where: { id }, data: { expiresAt: new Date(now + SESSION_TTL_MS) } })
       .catch(() => undefined);
@@ -92,9 +99,17 @@ export async function getSession(): Promise<AuthSession | null> {
   if (!row) return null;
   const { user, ...session } = row;
   if (user.status !== "ACTIVE") return null;
-  if (user.totpEnabled && !session.twoFactorPassed) return null;
+  // a half-open (pre-2FA) session never becomes a full one, not even when 2FA is switched off later
+  if (!session.twoFactorPassed) return null;
+  if (session.impersonatorId && !(await impersonatorValid(session.impersonatorId))) return null;
   return { session, user, impersonatorId: session.impersonatorId };
 }
+
+/** An impersonation session lives only while the staff member behind it is still ACTIVE staff. */
+const impersonatorValid = cache(async (id: string): Promise<boolean> => {
+  const u = await db.user.findUnique({ where: { id }, select: { status: true, role: true } });
+  return !!u && u.status === "ACTIVE" && u.role !== "CUSTOMER";
+});
 
 /** The half-open session of a user who passed the password step and must now enter a TOTP code. */
 export async function getPendingTwoFactorSession(): Promise<AuthSession | null> {
@@ -196,10 +211,12 @@ export async function revokeOtherSessions(userId: string, exceptSessionId?: stri
   const res = await db.session.deleteMany({
     where: { userId, ...(exceptSessionId ? { id: { not: exceptSessionId } } : {}) },
   });
-  return res.count;
+  // ... and the impersonation sessions this user opened as staff
+  const imp = await db.session.deleteMany({ where: { impersonatorId: userId, ...(exceptSessionId ? { id: { not: exceptSessionId } } : {}) } });
+  return res.count + imp.count;
 }
 
 /** Revoke every session of a user (suspension, password reset). */
 export async function revokeAllSessions(userId: string): Promise<number> {
-  return (await db.session.deleteMany({ where: { userId } })).count;
+  return (await db.session.deleteMany({ where: { OR: [{ userId }, { impersonatorId: userId }] } })).count;
 }

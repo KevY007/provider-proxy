@@ -20,6 +20,15 @@ const headersObject = jsonObjectText.superRefine((v, ctx) => {
   }
 });
 
+/** A base URL `new URL()` accepts (an unparseable one would make every upstream error quote the full URL, query key included). */
+function validUrl(v: string): boolean {
+  try {
+    return /^https?:$/.test(new URL(v).protocol);
+  } catch {
+    return false;
+  }
+}
+
 const providerSchema = z.object({
   name: z.string().trim().min(1, "Required").max(80),
   slug: slugSchema.optional().or(z.literal("")),
@@ -28,7 +37,7 @@ const providerSchema = z.object({
     .string()
     .trim()
     .min(1, "Required")
-    .refine((v) => /^https?:\/\/\S+$/i.test(v), "Must be an http(s) URL"),
+    .refine((v) => /^https?:\/\/\S+$/i.test(v) && validUrl(v), "Must be an http(s) URL"),
   authStyle: z.enum(AUTH_STYLES),
   formats: z.array(z.string()).min(1, "Select at least one format").refine((a) => a.every((f) => ALL_FORMATS.includes(f)), "Unknown format"),
   tags: z.array(z.string().trim().min(1).max(40)).max(30).default([]),

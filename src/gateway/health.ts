@@ -1,3 +1,4 @@
+import { describeNetworkError } from "./util";
 import type { HealthStatus } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
@@ -110,8 +111,7 @@ async function runProbe(adapter: AdapterProvider, probe: Probe, secret: string, 
   } catch (err) {
     if (err instanceof UpstreamTimeoutError) return { status: 0, latencyMs: Date.now() - t0, text: `timeout after ${timeoutMs}ms`, retryAfterSec: undefined };
     if (err instanceof ClientAbortError) return { status: 0, latencyMs: Date.now() - t0, text: "aborted", retryAfterSec: undefined };
-    const cause = (err as { cause?: { code?: string } }).cause;
-    return { status: 0, latencyMs: Date.now() - t0, text: `${err instanceof Error ? err.message : String(err)}${cause?.code ? ` (${cause.code})` : ""}`, retryAfterSec: undefined };
+    return { status: 0, latencyMs: Date.now() - t0, text: describeNetworkError(err), retryAfterSec: undefined };
   }
 }
 

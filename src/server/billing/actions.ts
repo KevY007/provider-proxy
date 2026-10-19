@@ -29,7 +29,8 @@ import { createTopup, getTopupLimits, syncCheckoutSession, syncPaymentIntent, va
  */
 async function run<T>(name: string, fn: (user: { id: string }) => Promise<{ data?: T; message?: string } | void>): Promise<ActionResult<T>> {
   try {
-    const { user } = await requireUserForAction();
+    const { user, impersonatorId } = await requireUserForAction();
+    if (impersonatorId) return { ok: false, error: "Billing actions are disabled while impersonating." };
     const out = await fn(user);
     return { ok: true, data: out?.data, message: out?.message };
   } catch (err) {

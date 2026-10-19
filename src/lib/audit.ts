@@ -6,8 +6,22 @@ export interface AuditTarget {
   id?: string | null;
 }
 
+/** The staff member behind the current (impersonation) session, if any. Outside a request (cron, scripts): null. */
+async function currentImpersonator(): Promise<string | null> {
+  try {
+    const { cookies } = await import("next/headers");
+    const token = (await cookies()).get("pp_session")?.value;
+    if (!token) return null;
+    const { sha256 } = await import("./crypto");
+    const s = await db.session.findUnique({ where: { id: sha256(token) }, select: { impersonatorId: true } });
+    return s?.impersonatorId ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Write an AuditLog row. Never throws (audit failure must not break the action).
+ * Write an AuditLog row (with `data.impersonatorId` when staff acts through an impersonation session). Never throws (audit failure must not break the action).
  *
  *   await audit(admin.id, "provider.update", { type: "Provider", id }, { changed: ["baseUrl"] }, ip)
  *
@@ -21,13 +35,14 @@ export async function audit(
   ip?: string | null,
 ): Promise<void> {
   try {
+    const impersonatorId = await currentImpersonator();
     await db.auditLog.create({
       data: {
         actorId: actorId ?? null,
         action,
         targetType: target?.type ?? null,
         targetId: target?.id ?? null,
-        data: (data ?? {}) as never,
+        data: (impersonatorId ? { ...data, impersonatorId } : (data ?? {})) as never,
         ip: ip ?? null,
       },
     });

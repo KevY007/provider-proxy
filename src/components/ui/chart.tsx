@@ -101,7 +101,10 @@ ${colorConfig
     const color =
       itemConfig.theme?.[theme as keyof typeof itemConfig.theme] ??
       itemConfig.color
-    return color ? `  --color-${key}: ${color};` : null
+    // keys / colours can come from data (API key names ...): only CSS-identifier / colour characters reach the <style> text
+    const safeKey = key.replace(/[^A-Za-z0-9_-]/g, "_")
+    const safeColor = color?.replace(/[^A-Za-z0-9#%(),.\s-]/g, "")
+    return safeColor ? `  --color-${safeKey}: ${safeColor};` : null
   })
   .join("\n")}
 }

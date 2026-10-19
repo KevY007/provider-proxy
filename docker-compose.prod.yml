@@ -9,7 +9,7 @@ services:
     working_dir: /prisma-cli
     command: ["node", "node_modules/prisma/build/index.js", "migrate", "deploy"]
     environment:
-      DATABASE_URL: postgresql://proxy:${POSTGRES_PASSWORD:-proxy}@postgres:5432/proxy
+      DATABASE_URL: postgresql://proxy:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/proxy
     depends_on:
       postgres:
         condition: service_healthy
@@ -25,8 +25,11 @@ services:
     environment:
       NODE_ENV: production
       PORT: "3000"
+      # the app port is published directly (no proxy in front): take the client IP from the socket, never from
+      # client-sent X-Forwarded-For. Put a TLS proxy in front and set the number of proxies instead when you have one.
+      TRUSTED_PROXY_HOPS: "0"
       HOSTNAME: 0.0.0.0
-      DATABASE_URL: postgresql://proxy:${POSTGRES_PASSWORD:-proxy}@postgres:5432/proxy
+      DATABASE_URL: postgresql://proxy:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/proxy
       REDIS_URL: redis://redis:6379
     depends_on:
       migrate:
@@ -39,7 +42,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: proxy
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-proxy}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: proxy
     volumes:
       - pgdata:/var/lib/postgresql/data
