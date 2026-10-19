@@ -1,7 +1,7 @@
 # ProviderProxy — Handoff & Continuation Guide
 
 **Read this first.** It is written for a new agent or cloud session picking the project up cold. Originally written at `780d14a`;
-**§5-§6 updated 2026-10-19** after Steps A, B, D and E were completed in a cloud session on branch `claude/task-49gbi5`
+**§5-§6 updated 2026-10-19** (deployment, scale-out and the final feature PRs added to §5) after Steps A, B, D and E were completed in a cloud session on branch `claude/task-49gbi5`
 (same history as `feat/initial-build` plus the new commits - fast-forward `feat/initial-build` to it, or open the PR from it).
 
 ---------------------------------------------------------------------------------------------------------------------------------
@@ -98,13 +98,19 @@ Running several dev servers from one checkout: `NEXT_DIST_DIR=.next-<name> pnpm 
 | Responsive QA (every page at 390 / 820 / 1440 px on the production build) + lean GCP profile and cost table | ✅ `docs/DEPLOYMENT.md` "Profiles and cost" |
 | 6 Security audit | ✅ `docs/SECURITY-AUDIT.md` (fixes + `tests/security/audit-regressions.test.ts`; open items listed there) |
 | 5 Full docs + `.github` | ✅ README, `docs/*` guides, CI, templates, CODEOWNERS, dependabot, LICENSE, SECURITY/CONTRIBUTING |
+| Production deployment (Cloud Run + Supabase schema + Memorystore) with continuous deployment from `main` via a Cloud Build trigger | ✅ `deploy/README.md` steps 3-10, `deploy/supabase-setup.sql`; verified live: smoke suites, 400 concurrent streams across many instances with exact billing, 14-minute streaming generations |
+| Admin user management (create with invite + starting credit, edit, delete/anonymise), signup switch | ✅ `src/server/admin/customers-actions.ts` (PR #13) |
+| Public visibility switches (pricing, model list, status page), `SEARCH_INDEXING=off`, orange/ink theme + brand mark | ✅ `src/server/customer/visibility.ts`, `src/lib/indexing.ts` (PR #13) |
+| Scale-out profile: Redis (shared limits/holds), transaction pooler, up to 100 instances | ✅ `deploy/README.md` steps 4 and 9 (PR #14) |
+| 1:1 output limits (explicit `max_tokens` passed through), admin API key reveal (audited), Pricing API docs, full-width logs | ✅ PR #15 |
 
-Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 784 passed / 1 skipped,
-`pnpm build` OK, `pnpm e2e:live` 36/36 against the production build, CI green on `main`.
+Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 795 passed / 1 skipped,
+`pnpm build` OK, CI green on `main`; live smoke suites against the production deployment 19/19.
 
-**State:** everything is done and merged into `main` (PR #1, PR #9) and ready to deploy (`deploy/README.md`, lean
-profile). Not verified here: the real GCP deployment (no GCP access from the build sessions), live Stripe payments and
-email (not configured). Owner follow-ups: rotate the temporary live keys; set up 2FA on the admin account (required
+**State:** everything is done, merged into `main` (PR #1 - #15) and running in production: every push to `main`
+deploys automatically (build, migrate, roll out, smoke test). Verified live: all API formats, streaming, images,
+translations, email delivery, signups, user management, visibility switches, concurrency limits shared across
+instances, and billing at official prices to the last digit. Not exercised: live Stripe payments (not configured). Owner follow-ups: rotate the temporary live keys; set up 2FA on the admin account (required
 in production); re-run live scenario H (Claude Code CLI) on a workstation; the only open audit item is D2 (`braces` transitive dev dependency, no fixed
 version published - see `docs/SECURITY-AUDIT.md`). Step list below is historical.
 

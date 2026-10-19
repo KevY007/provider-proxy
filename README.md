@@ -52,12 +52,16 @@ The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 
 **Apps**
 - Admin console (`/admin`): overview, analytics, providers and keys with live slot usage plus **Test connection** and
-  **Fetch pricing**, models and routes with a guided "Add model" wizard, groups, customers (credits, limits,
-  impersonation), API keys, request logs, billing, **latency** (p50/p95, first token, per provider/key/model, history),
-  **status** (uptime/downtime bars, ping history, background mode), settings and the audit log.
+  **Fetch pricing**, models and routes with a guided "Add model" wizard, groups, customers (create with invite and
+  starting credit, edit, delete, credits, limits, impersonation), API keys (enable/disable/revoke, audited **Reveal**),
+  request logs, billing, **latency** (p50/p95, first token, per provider/key/model, history),
+  **status** (uptime/downtime bars, ping history, background mode), settings (including the signup switch and whether
+  visitors may see pricing, the model list and the status page) and the audit log.
 - Customer portal (`/dashboard`): overview with savings, API keys, usage (including their own latency), logs,
   playground (chat and images), models and pricing (with per-model speed), billing and account settings with 2FA.
-- Public site: landing page, `/pricing`, `/status` and the customer API docs at **`/docs`**.
+- Public site: landing page, `/pricing`, `/status` and the customer API docs at **`/docs`** (including a Pricing API
+  guide). Prices are also machine-readable: `GET /v1/models` (OpenRouter-style `pricing`), `GET /v1/model/info`
+  (LiteLLM) and the public `GET /api/pricing`.
 
 ## Architecture
 
@@ -147,7 +151,7 @@ Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count 
 | `REDIS_URL` | unset | Optional. Shared slots, holds, rate limits, balance cache and config invalidation. Without it these are in-memory and per instance. |
 | `APP_URL` | `http://localhost:3000` | Public base URL (links in emails, Stripe redirects) |
 | `SESSION_SECRET` | dev fallback | 32+ chars. Required in production. |
-| `ENCRYPTION_KEY` | dev fallback | 32 bytes, base64. AES-256-GCM key for upstream provider secrets and TOTP secrets. Required in production. **Back it up.** |
+| `ENCRYPTION_KEY` | dev fallback | 32 bytes, base64. AES-256-GCM key for upstream provider secrets, TOTP secrets and the stored copy of customer API keys (admin Reveal). Required in production. **Back it up.** |
 | `ADMIN_EMAIL` / `ADMIN_PASSWORD` | `admin@example.com` / `change-me-now-please` (dev) | First admin, created by the seed if missing |
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | unset | Optional. Without them billing shows "Stripe not configured" and only redeem codes and admin credits work. |
 | `SMTP_URL` | unset | `smtp://user:pass@host:587`. Unset: emails go to the console and the `EmailOutbox` table. |
@@ -156,6 +160,7 @@ Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count 
 | `MOCK_UPSTREAM_URL` | `http://localhost:4010` | Where the dev seed points the "Mock Upstream" provider |
 | `TRUSTED_PROXY_HOPS` | `1` | Trusted reverse proxies in front of the app, used for client-IP detection (Cloud Run = 1, behind a Global LB = 2). `0` = nothing in front: the socket address is used and any client-sent `X-Forwarded-For` is ignored (`docker-compose.prod.yml` sets this). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
+| `SEARCH_INDEXING` | unset (indexed) | `off` keeps the deployment out of search engines: `robots.txt` disallows everything and pages carry `X-Robots-Tag: noindex` (API paths untouched) |
 
 Container and runtime knobs (not in `.env.example`):
 
