@@ -296,3 +296,33 @@ export async function runAllHealthChecks(): Promise<{ checked: number; failed: n
   db.healthCheck.deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 14 * 86_400_000) } } }).catch(() => undefined);
   return { checked: flat.length, failed: flat.filter((r) => !r.ok).length };
 }
+
+/**
+ * Provider.healthStatus / lastLatencyMs from REAL traffic only (no upstream request is made): the last 15 minutes of
+ * calls per active provider. A provider without calls keeps its previous status. Used by the cron when active health
+ * probes are off (the default).
+ */
+export async function refreshPassiveHealth(windowMs = 15 * 60_000): Promise<{ updated: number }> {
+  const since = new Date(Date.now() - windowMs);
+  const rows = await db.$queryRaw<Array<{ providerId: string; total: number; bad: number; p50: number | null }>>`
+    SELECT r."providerId" AS "providerId",
+      count(*)::float8 AS total,
+      (count(*) FILTER (WHERE r."status" = 'UPSTREAM_ERROR'))::float8 AS bad,
+      percentile_cont(0.5) WITHIN GROUP (ORDER BY r."latencyMs") FILTER (WHERE r."status" = 'SUCCESS' AND r."latencyMs" > 0) AS p50
+    FROM "RequestLog" r
+    JOIN "Provider" p ON p."id" = r."providerId" AND p."status" = 'ACTIVE'
+    WHERE r."createdAt" >= ${since} AND r."batchId" IS NULL AND r."status" IN ('SUCCESS', 'UPSTREAM_ERROR')
+    GROUP BY 1`;
+  let updated = 0;
+  for (const r of rows) {
+    const total = Number(r.total);
+    if (!total) continue;
+    const rate = Number(r.bad) / total;
+    const status: HealthStatus = rate > 0.5 ? "DOWN" : rate > 0.2 ? "DEGRADED" : "OPERATIONAL";
+    await db.provider
+      .update({ where: { id: r.providerId }, data: { healthStatus: status, lastCheckAt: new Date(), ...(r.p50 !== null ? { lastLatencyMs: Math.round(Number(r.p50)) } : {}) } })
+      .then(() => updated++)
+      .catch((err) => logger.warn("health: passive update failed", { providerId: r.providerId, err }));
+  }
+  return { updated };
+}

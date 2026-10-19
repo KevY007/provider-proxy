@@ -9,7 +9,7 @@ Both are Cloud Scheduler HTTP jobs with `Authorization: Bearer $CRON_SECRET`. GE
 
 | Job | Schedule | Work | Response |
 |---|---|---|---|
-| `/api/cron/health` | `*/5 * * * *` | Probe every non-disabled key of every ACTIVE provider. This updates key status (INVALID on bad auth, COOLDOWN on 429/402, ACTIVE again on success) and provider health, and prunes `HealthCheck` rows older than 14 days. Then: refund failed video jobs, sweep batches (meter ended ones), replay the metering dead-letter file. | `{ok, checked, failed, videos, batches, metering, ms}` |
+| `/api/cron/health` | `*/5 * * * *` | Provider health and latency from **real traffic** of the last 15 minutes (no upstream request; a provider without calls keeps its status). Only when the `activeHealthChecks` setting is on (default off) does it also probe every non-disabled key of every ACTIVE provider (key status INVALID on bad auth, COOLDOWN on 429/402, ACTIVE again on success) and prune `HealthCheck` rows older than 14 days; **Run checks now** on `/admin/status` does the same on demand. Then: refund failed video jobs, sweep batches (meter ended ones), replay the metering dead-letter file. | `{ok, checked, failed, skipped?, passive, videos, batches, metering, ms}` |
 | `/api/cron/billing` | `0 * * * *` | If Stripe is configured: auto-recharge sweep, postpaid settlement, reconcile `PENDING` payments older than 24 h. Then sweep batches. | `{ok, stripeConfigured, autoRecharge, postpaid, stale, batches, ms}` |
 
 Run one by hand:
@@ -90,7 +90,7 @@ routes before anything reaches the client, and once failover is exhausted client
 3. **Tell customers**: post an announcement (Admin > Settings). The public `/status` page updates from the health
    cron.
 4. **Recover**: when the provider is back, COOLDOWN keys come back when their cooldown expires. INVALID keys come
-   back on the next successful health probe, or when you click **Reset** on the key. Re-enable the routes and
+   back on the next successful health probe (**Run checks now**, or the cron when active probes are on), or when you click **Reset** on the key. Re-enable the routes and
    providers.
 
 ## Incident checklist

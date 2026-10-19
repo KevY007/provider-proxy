@@ -104,6 +104,10 @@ stream chunks show the public slug).
 | Fixed | You type every price |
 | % of official | official x value / 100. **Default for models with an official price: 100 = match official.** |
 | Markup over cost | primary route cost x (1 + value / 100). The primary route is the highest-priority enabled route. Default +30% for models without an official price. |
+| % of our cost | primary route cost x value / 100 (50 = half of what we pay) |
+
+Every derived rule also takes an **Adjustment** (+/- USD per unit, applied after the %, never below 0): e.g. "match
+the provider's price minus $0.05".
 
 With a derived rule, customer prices are recomputed whenever official prices, the rule, or the primary route's cost,
 priority or enabled flag change. Units without a basis keep their typed value. Price units: input, output, cached
@@ -125,6 +129,7 @@ selected models for bulk changes.
 | Param overrides (JSON) | Deep-merged into the upstream body, e.g. `{"reasoning_effort":"low"}`. `null` deletes a field. |
 | Max output tokens (clamp) | Caps the output limit sent upstream |
 | Costs | Same units as the prices, plus server-tool costs and **Batch API cost discount** (default 50) |
+| Auto-update cost from the provider | The costs follow the provider's published prices. Refreshed only during real calls on the route (every `autoPriceSyncHours` hours or `autoPriceSyncCalls` calls, whichever first; no timers), or with **Sync now**. Optional "provider's model id" when its price list names the model differently. Shows the last sync time and status. |
 
 The "What customers see vs what runs" card shows the mapping and the margin per route. Other actions: duplicate
 model (creates a HIDDEN copy with its routes), duplicate route, **Import** / **Export** JSON (models with routes by
@@ -176,6 +181,13 @@ The list has search, balance, spend and CSV export. The detail page shows:
   attempt, the admin-only internal error, and request/response bodies when `logBodies` is on.
 - **`/admin/analytics`**: revenue, cost and profit by model, provider, customer and group. Error breakdown by code,
   latency percentiles, token volume, range picker and CSV export.
+- **`/admin/latency`**: p50 / p95 total latency, time to first token and queue wait per provider, provider key and
+  model, the latest call per row ("last ping") and a latency history chart, with range / granularity / model /
+  provider filters. Every number comes from real customer calls (`RequestLog`); the proxy never pings upstreams on a
+  timer, so a provider nobody calls has no recent numbers. `/admin/status` shows the same per provider and key (last
+  real call, p50 and first token over 24 h). Customers see their own latency (p50 / p95 / first token, history, per
+  model) under **Usage**, and per-model speed over the last 24 h (platform-wide, no provider names) under
+  **Models & Pricing**.
 - **`/admin/billing`**: payments, ledger and redeem codes (generate, disable, delete).
 - **`/admin/audit`**: who changed what, when and from where.
 
@@ -185,7 +197,7 @@ The list has search, balance, spend and CSV export. The detail page shows:
 |---|---|
 | Access | `signupEnabled` (true), `requireEmailVerification` (true), `defaultGroupSlug` ("standard") |
 | Billing | `trialCredit` ($0), `requireCardForTrial` (false), `minTopup` ($5), `maxTopup` ($1000), `minBalanceToCall` ($0; reject when balance + credit limit <= this), `lowBalanceEmail` (true), `autoRechargeMaxPerDay` (3) |
-| Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never) |
+| Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never), `autoPriceSyncHours` (6), `autoPriceSyncCalls` (100), `activeHealthChecks` (false: the health cron derives provider health and latency from real traffic only; on = it also sends a tiny probe to every key every run) |
 | General | `siteName`, `supportEmail` |
 
 **Announcements** (on the settings page) appear in the portal's announcements bell and on the customer overview.

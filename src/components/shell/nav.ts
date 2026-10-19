@@ -14,6 +14,7 @@ import {
   Server,
   Settings,
   ShieldCheck,
+  Timer,
   Users,
   type LucideIcon,
 } from "lucide-react";
@@ -88,6 +89,7 @@ export const adminNav: NavGroup[] = [
     label: "System",
     items: [
       { title: "Status", href: "/admin/status", icon: Activity },
+      { title: "Latency", href: "/admin/latency", icon: Timer },
       { title: "Settings", href: "/admin/settings", icon: Settings },
       { title: "Audit Log", href: "/admin/audit", icon: ShieldCheck },
     ],
