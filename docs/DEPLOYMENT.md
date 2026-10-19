@@ -4,7 +4,7 @@ This page summarises the production setup and explains why each piece is configu
 copy/paste `gcloud` commands are in **[deploy/README.md](../deploy/README.md)**; the section numbers below match it.
 
 ```
-Client -> Cloud Run (one container: UI + gateway, --use-http2) -> Cloud SQL (Postgres 16, unix socket)
+Client -> Cloud Run (one container: UI + gateway, --use-http2) -> Supabase Postgres (IPv4 pooler, TLS verify-full)
                                      |-> Memorystore Redis (optional, Serverless VPC connector)
 (optional) Cloud Scheduler -> POST /api/cron/health, POST /api/cron/billing   [Bearer CRON_SECRET]
 Cloud Run Job (same image) -> prisma migrate deploy
@@ -32,15 +32,15 @@ probes and `curl` still use HTTP/1.1.
 
 | # | Step | Notes |
 |---|---|---|
-| 1 | Enable APIs | run, cloudbuild, artifactregistry, sqladmin, secretmanager (+ cloudscheduler, redis, compute only if you use them) |
+| 1 | Enable APIs | run, cloudbuild, artifactregistry, secretmanager (+ cloudscheduler, redis, compute only if you use them) |
 | 2 | Artifact Registry repo | Docker format |
-| 3 | Cloud SQL Postgres 16 | Database `proxy`, user `proxy`. `DATABASE_URL=postgresql://proxy:PASS@localhost/proxy?host=/cloudsql/PROJECT:REGION:INSTANCE` (URL-encode the password). Keep `max-instances x DB_POOL_SIZE` under the instance's connection limit. Lean: `db-g1-small` (Enterprise edition) with daily backups + point-in-time recovery. Use a dedicated-core tier and `--availability-type=regional` for HA when traffic grows. |
+| 3 | Supabase database | A dedicated Supabase project (recommended) or a `?schema=` in an existing one. `DATABASE_URL` = IPv4 pooler (transaction mode, port 6543; session mode 5432 with `?schema=`), `DIRECT_URL` = session pooler for migrations, `DATABASE_CA_CERT` = Supabase CA. Details in deploy/README.md step 3. |
 | 4 | Memorystore Redis (scale-out only) | Required with more than one instance (reached through Direct VPC egress, no connector). The lean profile runs one instance without it. Without it, slots, holds, rate limits, sticky Responses and cache invalidation are per instance (invalidation then waits for the 30 s TTL). |
 | 5 | Secret Manager | `DATABASE_URL`, `SESSION_SECRET`, `ENCRYPTION_KEY`, `CRON_SECRET`, `ADMIN_PASSWORD`, optionally `REDIS_URL`, `STRIPE_*` and `SMTP_URL` |
-| 6 | Service account | `roles/cloudsql.client`, `roles/secretmanager.secretAccessor`. Cloud Build needs `run.admin` and `iam.serviceAccountUser` on it. |
+| 6 | Service account | `roles/secretmanager.secretAccessor` on each secret. Cloud Build needs `run.admin` and `iam.serviceAccountUser` on it. |
 | 7 | Build | `gcloud builds submit --tag $IMAGE .` |
 | 8 | Migration job | Cloud Run Job on the same image: `sh -c "cd /prisma-cli && node node_modules/prisma/build/index.js migrate deploy"` (`deploy/migrate.sh` does the same). Run it before every deploy that contains migrations. |
-| 9 | Cloud Run service | Flags below. Seed once from a workstation through the Cloud SQL Auth Proxy with `NODE_ENV=production pnpm db:seed`. |
+| 9 | Cloud Run service | Flags below. Seed once with the `$SERVICE-seed` Cloud Run Job (`node seed.mjs`, bundled in the image). |
 | 10 | CI/CD (optional) | `deploy/cloudbuild.yaml`: build, push, update + execute the migration job, deploy with `--use-http2 --timeout=3600 --no-cpu-throttling` |
 | 11 | Cloud Scheduler + Stripe webhook | See below |
 | 12 | Custom domain | Domain mapping, or a Global external HTTPS LB with a serverless NEG (then `TRUSTED_PROXY_HOPS=2`; keep CDN off for `/v1/*`) |
@@ -64,7 +64,6 @@ openssl rand -hex 24      # CRON_SECRET
 | `--min-instances=0` (default) | Scale to zero when nobody calls: no instance cost while idle. The first call after an idle period waits for a cold start (a few seconds). Use `--min-instances=1` for no cold starts, or for 24/7 timers (see below). |
 | `--concurrency=250` | Streams are I/O bound. Lower it if CPU saturates. |
 | `--execution-environment=gen2`, `--cpu=2 --memory=2Gi --cpu-boost` | Multipart and JSON bodies are spooled to `/tmp`, which is **in memory** on Cloud Run. Size memory for the uploads in flight at once. JSON bodies take about 3x their size while parsed. |
-| `--add-cloudsql-instances` | DB socket |
 | `--max-instances=1 --cpu=1 --memory=1Gi` (lean) | Without Redis, limits and funds holds are per instance, so one instance only. Scale-out: Redis, `--network=default --subnet=default --vpc-egress=private-ranges-only`, more instances, `--cpu=2 --memory=2Gi`. |
 | `--cpu-boost`, startup probe `initialDelaySeconds=0,periodSeconds=1` | Shorter cold starts: the instance takes traffic as soon as it is ready |
 | `--startup-probe` / `--liveness-probe` `httpGet.path=/api/healthz` | Only the DB gates readiness |
@@ -89,14 +88,16 @@ region before you rely on them.
 |---|---|---|
 | Cloud Run | 0 while idle (scales to zero). While an instance is up: 1 vCPU + 1 GiB, about $0.07 per hour (instance-based billing because of `--no-cpu-throttling`). An instance stays up for up to about 15 minutes after the last request. | 2 vCPU + 2 GiB per instance, about $0.14 per hour each |
 | Cloud Run with `--min-instances=1` | about $53 per month for 1 vCPU + 1 GiB, always warm | per instance kept warm |
-| Cloud SQL | `db-g1-small` about $26/month + 10 GB SSD about $2 + backups | `db-custom-1-3840` about $50/month, or more; regional HA doubles it |
+| Region | Cloud Run `us-west1` (Oregon) next to Supabase `us-west-2` (Oregon): about 1-2 ms per query | same |
+| Supabase (database) | Dedicated project on your Pro plan: Micro compute about $10/month (8 GB disk and daily backups included). Or a `?schema=` inside an existing project: $0 extra. | A larger compute size (Small about $15/month, Medium about $60/month); point-in-time recovery is an add-on |
 | Memorystore Redis | none | basic 1 GB about $36/month |
 | VPC | none | Direct VPC egress: no idle cost (a Serverless VPC connector would add about $12/month) |
 | Cloud Scheduler | none (optional) | optional, 3 jobs free per billing account |
 | Secret Manager, Artifact Registry | cents | cents |
 
-So an idle lean deployment costs roughly what its database costs (about $30 per month). Everything else is
-paid only while calls are served.
+So an idle lean deployment costs roughly what its database costs: about $10 per month for a dedicated Supabase
+project, or nothing extra inside an existing one. Everything else is paid only while calls are served. (The Pro plan's
+$25/month organization fee is already paid by your existing project.)
 
 ### Cold starts
 
@@ -117,11 +118,10 @@ The defaults keep an idle deployment idle:
 - **The app** does nothing without activity. No in-process timer runs, no provider is pinged, and background upkeep
   happens only while calls or admin pages are served ([OPERATIONS.md](OPERATIONS.md#background-jobs-cold-by-default)).
   With `--min-instances=0` Cloud Run then scales to zero, so the Cloud Run cost of an idle service is zero.
-- **What still costs money while idle** is the infrastructure that is always on whatever the app does: Cloud SQL
-  (choose the smallest tier you need, or a serverless Postgres that can scale to zero), Memorystore Redis if you use
-  it (optional; skip it for a single-instance deployment), a Serverless VPC connector if you use one (it keeps at least
-  2 small VMs running; Direct VPC egress `--network=default --subnet=default --vpc-egress=private-ranges-only` has no
-  idle cost), Secret Manager and Artifact Registry storage (cents).
+- **What still costs money while idle** is the infrastructure that is always on whatever the app does: the Supabase
+  project's compute (or nothing extra with a schema in an existing project), Memorystore Redis if you use it
+  (optional; skip it for a single-instance deployment), and Secret Manager and Artifact Registry storage (cents).
+  Direct VPC egress (scale-out profile) has no idle cost.
 - **Do not create the Cloud Scheduler jobs** for a cold deployment: each run wakes an instance.
 
 For **24/7 uptime checks and timed jobs**, turn on **Settings > Monitoring > Uptime monitoring** and/or **Background

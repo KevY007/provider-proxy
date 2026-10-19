@@ -8,7 +8,8 @@ export default defineConfig({
     seed: "tsx prisma/seed.ts",
   },
   datasource: {
-    // `prisma generate` must work without a database (Docker build, CI), so fall back to a placeholder.
-    url: process.env.DATABASE_URL ?? "postgresql://proxy:proxy@localhost:5433/proxy",
+    // Migrations need a session (not transaction-pooled) connection: DIRECT_URL when set (Supabase: the direct or
+    // session-pooler URL), else DATABASE_URL. `prisma generate` must work without a database (Docker build, CI).
+    url: process.env.DIRECT_URL || process.env.DATABASE_URL || "postgresql://proxy:proxy@localhost:5433/proxy",
   },
 });

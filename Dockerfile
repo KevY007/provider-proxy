@@ -22,7 +22,7 @@ FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # (defence in depth: no env file may end up in the standalone output, whatever the build context contained)
-RUN rm -f .env .env.* && pnpm exec prisma generate && pnpm build
+RUN rm -f .env .env.* && pnpm exec prisma generate && pnpm build && pnpm build:seed
 
 # ---- 3. migration toolkit: prisma CLI + schema + migrations in an isolated dir -----------
 FROM base AS migrator
@@ -52,6 +52,9 @@ COPY --from=build --chown=nextjs:nodejs /app/public ./public
 # server.mjs wraps Next's generated server.js: HTTP/1.1 + cleartext HTTP/2 (h2c) on ONE port, no HTTP/1 request timeout,
 # 620 s keep-alive, graceful SIGTERM drain (see the header of server.mjs and deploy/README.md).
 COPY --from=build --chown=nextjs:nodejs /app/server.mjs ./server.mjs
+# One-file seed (first admin, settings, pools, provider presets, model catalog): `node seed.mjs`, e.g. as a Cloud Run
+# Job on this image (deploy/README.md step 9). Idempotent.
+COPY --from=build --chown=nextjs:nodejs /app/dist/seed.mjs ./seed.mjs
 COPY --from=migrator --chown=nextjs:nodejs /prisma-cli /prisma-cli
 # KEEP_ALIVE_TIMEOUT must exceed Google's 600 s load-balancer idle timeout; SHUTDOWN_DRAIN_SECONDS bounds the SIGTERM drain
 ENV KEEP_ALIVE_TIMEOUT=620000

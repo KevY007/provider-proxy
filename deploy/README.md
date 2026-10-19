@@ -3,7 +3,7 @@
 Target architecture (see `docs/PLAN.md` section 10):
 
 ```
-Client -> Cloud Run (one container: UI + gateway, scales to zero) -> Cloud SQL (Postgres 16)
+Client -> Cloud Run (one container: UI + gateway, scales to zero) -> Supabase Postgres (pooler, TLS)
                                    |-> Memorystore Redis (scale-out profile only, Direct VPC egress)
 (optional) Cloud Scheduler -> POST /api/cron/billing, /api/cron/health
 Cloud Run Job (same image) -> prisma migrate deploy
@@ -11,7 +11,7 @@ Secret Manager -> env vars
 ```
 
 **Two profiles.** Start with **lean**: one Cloud Run instance at most, no Redis, no VPC, scales to zero. The
-only always-on cost is Cloud SQL. Move to **scale-out** (Redis + several instances) when one instance is no longer
+only always-on cost is the database (Supabase). Move to **scale-out** (Redis + several instances) when one instance is no longer
 enough. Steps marked *(scale-out)* are skipped in the lean profile. Costs: [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md#profiles-and-cost).
 
 Everything below is copy/paste `gcloud`. Replace the variables in step 0. Run from a Cloud Shell or any
@@ -24,10 +24,9 @@ machine with `gcloud` authenticated (`gcloud auth login`).
 
 ```bash
 export PROJECT_ID=my-project
-export REGION=us-central1
+export REGION=us-west1                    # next to Supabase us-west-2 (Oregon)
 export REPO=providerproxy                 # Artifact Registry repo
 export SERVICE=providerproxy              # Cloud Run service
-export SQL_INSTANCE=providerproxy-db
 export SA=providerproxy-run               # runtime service account name
 export DOMAIN=api.example.com             # your public hostname
 export IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$REPO/$SERVICE:latest
@@ -40,7 +39,7 @@ gcloud config set project $PROJECT_ID
 ```bash
 gcloud services enable \
   run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
-  sqladmin.googleapis.com secretmanager.googleapis.com cloudscheduler.googleapis.com \
+  secretmanager.googleapis.com cloudscheduler.googleapis.com \
   redis.googleapis.com compute.googleapis.com     # redis + compute: scale-out profile only
 ```
 
@@ -51,35 +50,35 @@ gcloud artifacts repositories create $REPO --repository-format=docker --location
   --description="ProviderProxy images"
 ```
 
-## 3. Cloud SQL (Postgres 16)
+## 3. Database: Supabase (Postgres)
 
-```bash
-gcloud sql instances create $SQL_INSTANCE \
-  --database-version=POSTGRES_16 --region=$REGION \
-  --edition=ENTERPRISE --tier=db-g1-small \
-  --storage-type=SSD --storage-size=10GB --storage-auto-increase \
-  --availability-type=zonal \
-  --backup-start-time=03:00 --enable-point-in-time-recovery --retained-backups-count=14
-# lean: db-g1-small (shared core, 1.7 GB). Scale-out / heavier traffic: --tier=db-custom-1-3840 or db-custom-2-7680,
-# and --availability-type=regional for automatic failover. Change later with `gcloud sql instances patch`.
+The app needs a plain Postgres database; it does not use Supabase Auth, Storage or the Data API. Two ways:
 
-gcloud sql databases create proxy --instance=$SQL_INSTANCE
-export DB_PASSWORD=$(openssl rand -base64 24 | tr -d '/+=')
-gcloud sql users create proxy --instance=$SQL_INSTANCE --password="$DB_PASSWORD"
+- **Recommended: a dedicated Supabase project** (Supabase dashboard > New project, in the same organization, region
+  `us-west-2` next to the Cloud Run region `us-west1`). Fully isolated from your main app: its own compute,
+  connections and backups, so neither can slow down or break the other. Cost: the project's compute (Micro, about
+  $10/month on the Pro plan).
+- **No extra cost: a dedicated schema inside an existing project** (e.g. `providerproxy`). Add `?schema=providerproxy`
+  to both URLs below; every table goes into that schema and nothing touches `public`. It shares compute and
+  connection limits with the other app, and it must use the **session** pooler (port 5432) at runtime.
 
-export SQL_CONN=$PROJECT_ID:$REGION:$SQL_INSTANCE
-```
+Connection strings come from the project's **Connect** dialog (Supabase dashboard). Cloud Run has no IPv6 egress and
+the direct host `db.<ref>.supabase.co` is IPv6-only, so use the **pooler** host (IPv4):
 
-Connection string used by Cloud Run (unix socket through the Cloud SQL connector; URL-encode special
-characters in the password):
+| Variable | Value | Used by |
+|---|---|---|
+| `DATABASE_URL` | Transaction pooler: `postgresql://postgres.<ref>:<PASSWORD>@aws-0-us-west-2.pooler.supabase.com:6543/postgres` (dedicated project). With `?schema=`: the session pooler, port `5432`. | the app, the seed job |
+| `DIRECT_URL` | Session pooler: same host, port `5432` (+ `?schema=...` if used) | the migration job (`prisma migrate deploy` needs a session connection) |
+| `DATABASE_CA_CERT` | Supabase's CA: Database settings > SSL Configuration > **Download certificate** (`prod-supabase.cer`, its content) | the app, the seed job |
 
-```
-postgresql://proxy:DB_PASSWORD@localhost/proxy?host=/cloudsql/PROJECT_ID:REGION:SQL_INSTANCE
-```
+URL-encode special characters in the password, and copy the exact pooler host (`aws-0-...` or `aws-1-...`) from the
+dashboard. The app verifies the server certificate and host name against `DATABASE_CA_CERT` (verify-full); without it
+`pg` would check the certificate against the public CAs and refuse Supabase's. Turn on **Enforce SSL** in Database
+settings.
 
-Pool size per instance is `DB_POOL_SIZE` (default 20). Keep `max-instances x DB_POOL_SIZE` (plus a few for the
-migration job and your own tools) below the Cloud SQL connection limit: about 50 on `db-g1-small` (the lean
-profile uses 1 instance x 20), about 100 on `db-custom-1-3840`, about 400 on `db-custom-2-7680`.
+Pool size per instance is `DB_POOL_SIZE`: keep `max-instances x DB_POOL_SIZE` under the project's pooler limits
+(pool size in Database settings > Connection pooling; max pooler clients per compute size). The lean profile uses
+1 instance x 10, which fits the smallest compute. Backups: the Pro plan takes daily backups (kept 7 days); point-in-time recovery is a paid add-on.
 
 ## 4. Memorystore Redis (scale-out profile only)
 
@@ -106,7 +105,9 @@ no VMs that bill while the service is idle.
 ```bash
 mk() { printf %s "$2" | gcloud secrets create "$1" --data-file=- --replication-policy=automatic; }
 
-mk DATABASE_URL    "postgresql://proxy:${DB_PASSWORD}@localhost/proxy?host=/cloudsql/${SQL_CONN}"
+mk DATABASE_URL    "postgresql://postgres.<ref>:<PASSWORD>@aws-0-us-west-2.pooler.supabase.com:6543/postgres"   # step 3
+mk DIRECT_URL      "postgresql://postgres.<ref>:<PASSWORD>@aws-0-us-west-2.pooler.supabase.com:5432/postgres"   # step 3
+gcloud secrets create DATABASE_CA_CERT --data-file=prod-supabase.cer --replication-policy=automatic     # Supabase CA (step 3)
 mk SESSION_SECRET  "$(openssl rand -base64 48 | tr -d '\n')"
 mk ENCRYPTION_KEY  "$(openssl rand -base64 32)"        # 32 bytes base64 - BACK THIS UP, losing it makes stored upstream keys unreadable
 mk CRON_SECRET     "$(openssl rand -hex 24)"
@@ -116,7 +117,7 @@ mk REDIS_URL       "redis://$REDIS_HOST:6379"       # scale-out profile only
 mk STRIPE_SECRET_KEY      "sk_live_..."
 mk STRIPE_PUBLISHABLE_KEY "pk_live_..."
 mk STRIPE_WEBHOOK_SECRET  "whsec_..."                  # created in step 11
-mk SMTP_URL        "smtp://user:pass@smtp.example.com:587"
+mk SMTP_URL        "smtps://resend:re_YOUR_RESEND_API_KEY@smtp.resend.com:465"   # Resend SMTP (any SMTP works)
 ```
 
 ## 6. Service account and IAM
@@ -125,10 +126,9 @@ mk SMTP_URL        "smtp://user:pass@smtp.example.com:587"
 gcloud iam service-accounts create $SA --display-name="ProviderProxy runtime"
 export SA_EMAIL=$SA@$PROJECT_ID.iam.gserviceaccount.com
 
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$SA_EMAIL --role=roles/cloudsql.client
-# secrets: grant access per secret (least privilege; the runtime never needs e.g. ADMIN_PASSWORD)
+# secrets: grant access per secret (ADMIN_PASSWORD is read only by the seed job; the service itself never maps it)
 # (skip the names you did not create, e.g. REDIS_URL in the lean profile)
-for s in DATABASE_URL SESSION_SECRET ENCRYPTION_KEY CRON_SECRET REDIS_URL STRIPE_SECRET_KEY STRIPE_PUBLISHABLE_KEY STRIPE_WEBHOOK_SECRET SMTP_URL; do
+for s in DATABASE_URL DIRECT_URL DATABASE_CA_CERT SESSION_SECRET ENCRYPTION_KEY ADMIN_PASSWORD CRON_SECRET REDIS_URL STRIPE_SECRET_KEY STRIPE_PUBLISHABLE_KEY STRIPE_WEBHOOK_SECRET SMTP_URL; do
   gcloud secrets add-iam-policy-binding $s --member=serviceAccount:$SA_EMAIL --role=roles/secretmanager.secretAccessor
 done
 
@@ -152,8 +152,7 @@ gcloud builds submit --tag $IMAGE .          # uses the root Dockerfile
 ```bash
 gcloud run jobs create $SERVICE-migrate \
   --image=$IMAGE --region=$REGION --service-account=$SA_EMAIL \
-  --set-cloudsql-instances=$SQL_CONN \
-  --set-secrets=DATABASE_URL=DATABASE_URL:latest \
+  --set-secrets=DIRECT_URL=DIRECT_URL:latest \
   --command=sh --args="-c,cd /prisma-cli && node node_modules/prisma/build/index.js migrate deploy" \
   --max-retries=0 --task-timeout=600
 
@@ -204,9 +203,8 @@ gcloud run deploy $SERVICE \
   --timeout=3600 --concurrency=250 \
   --min-instances=0 --max-instances=1 \
   --no-cpu-throttling --cpu=1 --memory=1Gi --cpu-boost \
-  --add-cloudsql-instances=$SQL_CONN \
-  --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=20,TRUSTED_PROXY_HOPS=1" \
-  --set-secrets="DATABASE_URL=DATABASE_URL:latest,SESSION_SECRET=SESSION_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,CRON_SECRET=CRON_SECRET:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_PUBLISHABLE_KEY=STRIPE_PUBLISHABLE_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,SMTP_URL=SMTP_URL:latest" \
+  --set-env-vars="APP_URL=https://$DOMAIN,ADMIN_EMAIL=you@example.com,EMAIL_FROM=ProviderProxy <no-reply@$DOMAIN>,DB_POOL_SIZE=10,TRUSTED_PROXY_HOPS=1" \
+  --set-secrets="DATABASE_URL=DATABASE_URL:latest,DATABASE_CA_CERT=DATABASE_CA_CERT:latest,SESSION_SECRET=SESSION_SECRET:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,CRON_SECRET=CRON_SECRET:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_PUBLISHABLE_KEY=STRIPE_PUBLISHABLE_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,SMTP_URL=SMTP_URL:latest" \
   --startup-probe=httpGet.path=/api/healthz,initialDelaySeconds=0,periodSeconds=1,timeoutSeconds=1,failureThreshold=60 \
   --liveness-probe=httpGet.path=/api/healthz,periodSeconds=30
 ```
@@ -217,7 +215,7 @@ Scale-out profile (after step 4): change these flags and add the Redis secret:
   --max-instances=20 --cpu=2 --memory=2Gi \
   --network=default --subnet=default --vpc-egress=private-ranges-only \
   --set-secrets="...,REDIS_URL=REDIS_URL:latest" \
-  --set-env-vars="...,DB_POOL_SIZE=15"        # keep max-instances x DB_POOL_SIZE under the DB limit
+  --set-env-vars="...,DB_POOL_SIZE=10"        # keep max-instances x DB_POOL_SIZE under the pooler limits (step 3)
 ```
 
 Always on, no cold starts (e.g. while the service fronts your main app around the clock):
@@ -235,17 +233,22 @@ Drop the Stripe/SMTP secrets you did not create (the app treats them as optional
 
 ### Seed the first admin + defaults (once)
 
-Seeding is a dev dependency (`tsx`) and is run from your workstation through the Cloud SQL Auth Proxy:
+The image contains a one-file seed (`seed.mjs`): settings, the pools, the first admin (`ADMIN_EMAIL` +
+`ADMIN_PASSWORD`), the provider presets (disabled, without keys) and the model catalog. It is idempotent. Run it as a
+Cloud Run Job on the same image (no workstation or database tunnel needed):
 
 ```bash
-cloud-sql-proxy $SQL_CONN --port 5434 &
-DATABASE_URL="postgresql://proxy:$DB_PASSWORD@localhost:5434/proxy" \
-ENCRYPTION_KEY="<same as the secret>" ADMIN_EMAIL=you@example.com ADMIN_PASSWORD='...' \
-NODE_ENV=production pnpm db:seed
+gcloud run jobs create $SERVICE-seed \
+  --image=$IMAGE --region=$REGION --service-account=$SA_EMAIL \
+  --command=node --args=seed.mjs \
+  --set-env-vars="NODE_ENV=production,ADMIN_EMAIL=you@example.com" \
+  --set-secrets="DATABASE_URL=DATABASE_URL:latest,DATABASE_CA_CERT=DATABASE_CA_CERT:latest,ENCRYPTION_KEY=ENCRYPTION_KEY:latest,ADMIN_PASSWORD=ADMIN_PASSWORD:latest" \
+  --max-retries=0 --task-timeout=300
+gcloud run jobs execute $SERVICE-seed --region=$REGION --wait
 ```
 
-In production the seed skips the Mock Upstream provider and the demo customer. Providers are created
-disabled and without keys: add upstream keys in **Admin > Providers**, then enable them.
+Then log in as the admin, set up 2FA (required for staff in production), add upstream keys in **Admin > Providers**
+and enable the providers you use.
 
 ## 10. CI/CD with Cloud Build (optional)
 
