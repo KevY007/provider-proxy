@@ -2,6 +2,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { getSlotSnapshot } from "@/gateway/slots";
 import { getProviderWindowStats } from "@/server/analytics/queries";
+import { getLatencyBreakdown, type LatencyRow } from "@/server/analytics/latency";
 import { availabilityPct } from "./status-utils";
 import { iso, num } from "./serialize";
 
@@ -17,6 +18,11 @@ export interface StatusProviderRow {
   checks24h: number;
   req24h: number;
   err24h: number;
+  /** Real-traffic latency over 24 h (no timer pings). */
+  p50Ms24h: number | null;
+  ttftP50Ms24h: number | null;
+  lastCallMs: number | null;
+  lastCallAt: string | null;
 }
 
 export interface StatusKeyRow {
@@ -35,6 +41,9 @@ export interface StatusKeyRow {
   lastCheckAt: string | null;
   lastCheckOk: boolean | null;
   lastLatencyMs: number | null;
+  p50Ms24h: number | null;
+  lastCallMs: number | null;
+  lastCallAt: string | null;
 }
 
 export interface RecentFailure {
@@ -53,7 +62,8 @@ export async function getStatusData() {
   const d1 = new Date(now - 24 * H);
   const d7 = new Date(now - 7 * 24 * H);
 
-  const [providers, keys, agg, latest, failures, stats, slots] = await Promise.all([
+  const noRows: LatencyRow[] = [];
+  const [providers, keys, agg, latest, failures, stats, slots, pLat, kLat] = await Promise.all([
     db.provider.findMany({
       orderBy: [{ status: "asc" }, { name: "asc" }],
       select: { id: true, name: true, status: true, healthStatus: true, lastCheckAt: true, lastLatencyMs: true },
@@ -90,7 +100,11 @@ export async function getStatusData() {
     }),
     getProviderWindowStats(d1).catch(() => new Map()),
     getSlotSnapshot().catch(() => ({ providerKeys: [], providers: [], customers: [], queued: 0, at: new Date().toISOString() })),
+    getLatencyBreakdown("provider", { from: d1, to: new Date(now) }, 1000).catch(() => noRows),
+    getLatencyBreakdown("providerKey", { from: d1, to: new Date(now) }, 5000).catch(() => noRows),
   ]);
+  const pLatBy = new Map(pLat.map((r) => [r.key, r]));
+  const kLatBy = new Map(kLat.map((r) => [r.key, r]));
 
   const pAgg = new Map<string, { n1: number; ok1: number; n7: number; ok7: number }>();
   const kAgg = new Map<string, { n1: number; ok1: number; n7: number; ok7: number }>();
@@ -111,6 +125,8 @@ export async function getStatusData() {
       id: p.id, name: p.name, status: p.status, healthStatus: p.healthStatus, lastCheckAt: iso(p.lastCheckAt), lastLatencyMs: p.lastLatencyMs,
       avail24h: a ? availabilityPct(a.ok1, a.n1) : null, avail7d: a ? availabilityPct(a.ok7, a.n7) : null, checks24h: a?.n1 ?? 0,
       req24h: s?.requests ?? 0, err24h: s?.errors ?? 0,
+      p50Ms24h: pLatBy.get(p.id)?.p50Ms ?? null, ttftP50Ms24h: pLatBy.get(p.id)?.ttftP50Ms ?? null,
+      lastCallMs: pLatBy.get(p.id)?.lastMs ?? null, lastCallAt: pLatBy.get(p.id)?.lastAt ?? null,
     };
   });
 
@@ -124,6 +140,7 @@ export async function getStatusData() {
       checks24h: a?.n1 ?? 0, fails24h: a ? a.n1 - a.ok1 : 0,
       lastCheckAt: l ? new Date(l.createdAt as Date).toISOString() : null, lastCheckOk: l ? Boolean(l.ok) : null,
       lastLatencyMs: l && l.latencyMs != null ? num(l.latencyMs) : null,
+      p50Ms24h: kLatBy.get(k.id)?.p50Ms ?? null, lastCallMs: kLatBy.get(k.id)?.lastMs ?? null, lastCallAt: kLatBy.get(k.id)?.lastAt ?? null,
     };
   });
 

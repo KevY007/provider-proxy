@@ -11,7 +11,7 @@ import { useAction } from "@/components/admin/use-action";
 import { runChecksNow } from "@/server/admin/status-actions";
 import { availabilityTone } from "@/server/admin/status-utils";
 import type { RecentFailure, StatusKeyRow, StatusProviderRow } from "@/server/admin/status-queries";
-import { formatNumber, truncate } from "@/lib/utils";
+import { formatDuration, formatNumber, truncate } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 
 export function RunChecksButton() {
@@ -35,6 +35,16 @@ function Avail({ pct, samples }: { pct: number | null; samples?: number }) {
 
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
 
+/** Latest real call's latency (+ when), the "ping" taken from customer traffic. */
+function LastCall({ ms, at }: { ms: number | null; at: string | null }) {
+  if (ms === null) return <span className="text-xs text-muted-foreground">no calls 24h</span>;
+  return (
+    <span className="tabular-nums" title={at ?? ""} suppressHydrationWarning>
+      {formatDuration(ms)} <span className="text-xs text-muted-foreground">{at ? new Date(at).toLocaleTimeString() : ""}</span>
+    </span>
+  );
+}
+
 const providerCols: ColumnDef<StatusProviderRow>[] = [
   {
     accessorKey: "name",
@@ -49,7 +59,13 @@ const providerCols: ColumnDef<StatusProviderRow>[] = [
   { accessorKey: "healthStatus", header: "Health", cell: ({ row }) => <StatusBadge status={row.original.healthStatus} /> },
   { accessorKey: "avail24h", header: "Availability 24h", cell: ({ row }) => <Avail pct={row.original.avail24h} samples={row.original.checks24h} /> },
   { accessorKey: "avail7d", header: "Availability 7d", cell: ({ row }) => <Avail pct={row.original.avail7d} /> },
-  { accessorKey: "lastLatencyMs", header: "Latency", cell: ({ row }) => (row.original.lastLatencyMs != null ? `${row.original.lastLatencyMs}ms` : "-") },
+  { accessorKey: "lastCallMs", header: "Last real call", cell: ({ row }) => <LastCall ms={row.original.lastCallMs} at={row.original.lastCallAt} /> },
+  {
+    accessorKey: "p50Ms24h",
+    header: "p50 / first token 24h",
+    cell: ({ row }) => <span className="tabular-nums">{formatDuration(row.original.p50Ms24h)} / {formatDuration(row.original.ttftP50Ms24h)}</span>,
+  },
+  { accessorKey: "lastLatencyMs", header: "Check latency", cell: ({ row }) => (row.original.lastLatencyMs != null ? `${row.original.lastLatencyMs}ms` : "-") },
   {
     id: "traffic",
     header: "Traffic errors 24h",
@@ -89,6 +105,8 @@ const keyCols: ColumnDef<StatusKeyRow>[] = [
         </span>
       ),
   },
+  { accessorKey: "lastCallMs", header: "Last real call", cell: ({ row }) => <LastCall ms={row.original.lastCallMs} at={row.original.lastCallAt} /> },
+  { accessorKey: "p50Ms24h", header: "p50 24h", cell: ({ row }) => <span className="tabular-nums">{formatDuration(row.original.p50Ms24h)}</span> },
   { accessorKey: "avail24h", header: "Avail 24h", cell: ({ row }) => <Avail pct={row.original.avail24h} samples={row.original.checks24h} /> },
   { accessorKey: "avail7d", header: "Avail 7d", cell: ({ row }) => <Avail pct={row.original.avail7d} /> },
   { accessorKey: "fails24h", header: "Failed 24h", cell: ({ row }) => <span className={cn("tabular-nums", row.original.fails24h ? "text-red-500" : "text-muted-foreground")}>{row.original.fails24h}</span> },
@@ -113,7 +131,7 @@ export function StatusTables({ providers, keys, failures }: { providers: StatusP
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Provider health</CardTitle>
-          <CardDescription>Availability = successful health checks / all checks. Traffic errors come from real requests.</CardDescription>
+          <CardDescription>Latency and traffic errors come from real customer calls (nothing is pinged on a timer). Availability = successful health checks / all checks; checks run only when you press Run checks now, or on the cron when Active health probes is enabled in Settings.</CardDescription>
         </CardHeader>
         <CardContent>
           <DataTable columns={providerCols} data={providers} pageSize={15} hideColumnToggle exportFilename="provider-health" emptyTitle="No providers" />

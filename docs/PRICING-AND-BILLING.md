@@ -25,6 +25,22 @@ Use exactly these labels. Never say "upstream/downstream" price.
 | `FIXED` | Typed by the admin |
 | `PERCENT_OF_OFFICIAL` | official x `pricingValue` / 100 |
 | `MARKUP_OVER_COST` | primary route cost x (1 + `pricingValue` / 100). The primary route is the highest-priority enabled route (ties: higher weight, then oldest). |
+| `PERCENT_OF_COST` | primary route cost x `pricingValue` / 100 (e.g. 50 = half of what the provider charges us; the preview warns when that is a loss) |
+
+**Adjustment** (`Model.pricingAdjust`, optional, any derived rule): a signed USD amount added to every per-unit price
+*after* the % / markup, e.g. `-0.05` = "5 cents less per 1M tokens / per image". A price never goes below 0.
+Server-tool prices are not adjusted.
+
+**Auto-updated cost** (`ModelRoute.autoCostSync`): the route's cost follows the price the provider publishes through
+its own API (OpenRouter, LiteLLM `/model/info`, another ProviderProxy's `x_pricing`, ... - see "Fetch pricing" in the
+admin guide). Combined with a cost-based rule this gives "the provider's price minus 5 cents" or "50% of the
+provider's price" that stays correct when the provider changes its prices. There are **no timers**: a refresh only
+happens during a real call on that route, when the last refresh is older than `autoPriceSyncHours` (default 6) or
+`autoPriceSyncCalls` (default 100) calls happened since - whichever comes first - or when an admin clicks **Sync
+now**. A route nobody calls never asks the provider. Refreshes of one route are at least a minute apart across all
+instances, provider price lists are cached 5 minutes, every change is audited (`route.auto_cost_sync`) and customer
+prices are re-derived immediately. `autoCostSourceModel` names the model in the provider's list when it differs
+from the upstream model. Status per route: `ok`, `unchanged`, `not published`, `provider unreachable`.
 
 **Default policy** (`src/server/pricing/default-policy.ts`, used by the seed, `pnpm setup:live` and the Add-model
 wizard): a model with an official price uses **match official** (`PERCENT_OF_OFFICIAL` 100, server-tool prices
