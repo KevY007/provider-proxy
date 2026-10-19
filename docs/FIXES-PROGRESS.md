@@ -1,6 +1,7 @@
 # Gateway fixes + Batch API - progress / resume notes
 
-Paused on the owner's request (2026-10-17). Nothing is committed. The tree is in a compiling, green state:
+Paused on the owner's request (2026-10-17). Committed + pushed as checkpoint `780d14a` (see `docs/HANDOFF.md` for the overall
+resume plan). The tree was in a compiling, green state:
 `pnpm tsc --noEmit` clean, `pnpm lint` 0 errors (3 old warnings in scripts), `pnpm vitest run` = 55 files passed / 682 tests passed / 1 skipped,
 `pnpm build` NOT re-run since the changes (run it before finishing). Migration `20261017103545_tools_and_batches` is created, APPLIED to the
 dev DB and the Prisma client is generated. **Live spend so far: $0** (no live runs were started; `pnpm setup:live` only lists models, which is free).

@@ -11,6 +11,9 @@ Redis (optional) - Stripe. Deployed as one container on Google Cloud Run.
 
 The authoritative design/contract is **[docs/PLAN.md](docs/PLAN.md)**.
 
+> **Continuing development?** Start with **[docs/HANDOFF.md](docs/HANDOFF.md)** — current status, owner decisions, bring-up steps and
+> exactly where to resume.
+
 ## Local setup
 
 Requires Node 24, pnpm 11, Docker.
