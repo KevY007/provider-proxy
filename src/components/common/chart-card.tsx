@@ -116,6 +116,7 @@ export function AreaChart({ data, xKey, series, height = 260, valueFormatter, xF
         <XAxis dataKey={xKey} tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} tickFormatter={xFormatter} />
         <YAxis tickLine={false} axisLine={false} width={56} tickFormatter={valueFormatter} />
         <Tooltip
+          isAnimationActive={false}
           content={<ChartTooltipContent indicator="line" formatter={valueFormatter ? (v) => <span className="tabular-nums">{valueFormatter(Number(v))}</span> : undefined} />}
         />
         {series.length > 1 && <Legend />}
@@ -164,6 +165,7 @@ export function BarChart({
           </>
         )}
         <Tooltip
+          isAnimationActive={false}
           cursor={{ fillOpacity: 0.08 }}
           content={<ChartTooltipContent formatter={valueFormatter ? (v) => <span className="tabular-nums">{valueFormatter(Number(v))}</span> : undefined} />}
         />
@@ -206,7 +208,7 @@ export function DonutChart({
     <div className={cn("relative w-full", className)} style={{ height }}>
       <ChartContainer config={config} className="!aspect-auto h-full w-full">
         <RPieChart>
-          <Tooltip content={<ChartTooltipContent hideLabel formatter={valueFormatter ? (v) => <span className="tabular-nums">{valueFormatter(Number(v))}</span> : undefined} />} />
+          <Tooltip isAnimationActive={false} content={<ChartTooltipContent hideLabel formatter={valueFormatter ? (v) => <span className="tabular-nums">{valueFormatter(Number(v))}</span> : undefined} />} />
           <Pie data={data} dataKey="value" nameKey="name" innerRadius="58%" outerRadius="85%" paddingAngle={2} stroke="none">
             {data.map((d, i) => (
               <Cell key={d.name} fill={d.color ?? chartColor(i)} />

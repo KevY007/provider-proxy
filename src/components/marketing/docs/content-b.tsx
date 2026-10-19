@@ -304,6 +304,8 @@ export function billing() {
       <H2>Spend controls</H2>
       <P>Set a lifetime <strong>spend limit per key</strong> and a monthly spend limit for your account to cap exposure. Reaching a limit returns <C>402 spend_limit_reached</C>.</P>
       <P>See your spend by model, key and endpoint on the Usage page, and every request in Logs.</P>
+      <H2>Prices from the API</H2>
+      <P>Current prices are machine-readable: see <Link className={A} href="/docs/pricing-api">Pricing API</Link> to keep your own cost tables in sync automatically.</P>
     </>
   );
 }
@@ -395,3 +397,139 @@ export const pythonClient = (ctx: DocCtx) =>
 
 export const nodeClient = (ctx: DocCtx) =>
   clientPage(ctx, "node", <P>Use the official OpenAI Node SDK (also works in Bun, Deno and edge runtimes).</P>);
+
+export function pricingApi(ctx: DocCtx) {
+  const KEY = "$API_KEY";
+  return (
+    <>
+      <P>
+        Every price is available from the API, so you can keep your own price tables, cost estimates and budgets in sync automatically instead of copying numbers from the Pricing page.
+        Prices are in US dollars and change only when the catalog changes; polling every few minutes is plenty.
+      </P>
+      <Table
+        head={["Endpoint", "Auth", "Use it for"]}
+        rows={[
+          [<C key="a">GET /v1/models</C>, "API key", "The models your key can use, with your effective prices (pool and account multipliers applied) next to the official list price."],
+          [<C key="b">GET /v1/models/{"{id}"}</C>, "API key", "The same fields for one model."],
+          [<C key="c">GET /v1/model/info</C>, "API key", "LiteLLM-compatible cost per token, for LiteLLM, Langfuse and other cost trackers."],
+          [<C key="d">GET /api/pricing</C>, "none", "The public price list (default pool, or ?group=<pool>). Cached for 60 s, CORS enabled. May be switched off by the operator."],
+        ]}
+      />
+      <H2>Your prices: GET /v1/models</H2>
+      <CodeBlock lang="bash" code={`curl ${ctx.base}/models -H "Authorization: Bearer ${KEY}"`} />
+      <P>
+        Each model carries two price blocks. <C>pricing</C> uses the OpenRouter convention (decimal strings, US dollars per single token), so tools that read OpenRouter catalogs work unchanged.{" "}
+        <C>x_pricing</C> gives US dollars per million tokens, your price next to the official one, the saving, and per-call tool prices.
+      </P>
+      <CodeBlock
+        lang="json"
+        title={`GET /v1/models/${ctx.m.chat} (abridged)`}
+        code={`{
+  "id": "${ctx.m.chat}",
+  "object": "model",
+  "context_length": 1000000,
+  "pricing": {
+    "prompt": "0.00001",          // USD per input token
+    "completion": "0.00005",      // USD per output token (reasoning included)
+    "input_cache_read": "0.000001",
+    "input_cache_write": "0",
+    "request": "0",
+    "image": "0"
+  },
+  "top_provider": { "context_length": 1000000, "max_completion_tokens": 128000 },
+  "x_pricing": {
+    "unit": "usd_per_1m",
+    "currency": "USD",
+    "yours":    { "input": 10, "output": 50, "cached_input": 1 },
+    "official": { "input": 10, "output": 50, "cached_input": 1 },
+    "savings_pct": { "input": 0, "output": 0, "cached_input": 0 },
+    "units": { "input": "usd_per_1m_tokens", "output": "usd_per_1m_tokens", "cached_input": "usd_per_1m_tokens" },
+    "tools": { "web_search_call": { "yours": 0.01, "official": 0.01, "savings_pct": 0 } }
+  }
+}`}
+      />
+      <Callout kind="info">
+        <C>yours</C> is exactly what you are charged: your key&apos;s pool multiplier and any account multiplier are already applied. Image, audio and video models use other units
+        (<C>usd_per_image</C>, <C>usd_per_second</C>, <C>usd_per_minute</C>, ...), named in <C>x_pricing.units</C>.
+      </Callout>
+      <H2>LiteLLM format: GET /v1/model/info</H2>
+      <CodeBlock lang="bash" code={`curl ${ctx.base}/model/info -H "Authorization: Bearer ${KEY}"`} />
+      <CodeBlock
+        lang="json"
+        code={`{ "data": [ {
+  "model_name": "${ctx.m.chat}",
+  "model_info": {
+    "input_cost_per_token": 1e-05,
+    "output_cost_per_token": 5e-05,
+    "cache_read_input_token_cost": 1e-06,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 128000,
+    "mode": "chat",
+    "supports_function_calling": true,
+    "supports_vision": true,
+    "supports_reasoning": true
+  }
+} ] }`}
+      />
+      <H2>Public price list: GET /api/pricing</H2>
+      <CodeBlock lang="bash" code={`curl ${ctx.appUrl}/api/pricing
+curl "${ctx.appUrl}/api/pricing?group=pro"   # a public pool`} />
+      <P>
+        No key needed, CORS <C>*</C>, cached for 60 seconds. The document lists the public pools (<C>groups</C>), the units, and per model the <C>yours</C> / <C>official</C> /{" "}
+        <C>savings_pct</C> prices (US dollars per million tokens for text models). If the operator has made pricing private, it answers <C>401 pricing_private</C>; use{" "}
+        <C>/v1/models</C> with your key instead.
+      </P>
+      <H2>Keeping prices in sync</H2>
+      <CodeTabs
+        tabs={[
+          {
+            id: "node",
+            label: "Node.js",
+            lang: "ts",
+            code: `// refresh every 10 minutes; cost of one request from the usage in its response
+const prices = new Map<string, { input: number; output: number; cached: number }>();
+
+async function refreshPrices() {
+  const res = await fetch("${ctx.base}/models", { headers: { Authorization: \`Bearer \${process.env.API_KEY}\` } });
+  for (const m of (await res.json()).data) {
+    const y = m.x_pricing?.yours ?? {};
+    prices.set(m.id, { input: y.input ?? 0, output: y.output ?? 0, cached: y.cached_input ?? y.input ?? 0 });
+  }
+}
+await refreshPrices();
+setInterval(refreshPrices, 10 * 60_000);
+
+function costUsd(model: string, usage: { prompt_tokens: number; completion_tokens: number; prompt_tokens_details?: { cached_tokens?: number } }) {
+  const p = prices.get(model)!;
+  const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
+  return ((usage.prompt_tokens - cached) * p.input + cached * p.cached + usage.completion_tokens * p.output) / 1_000_000;
+}`,
+          },
+          {
+            id: "python",
+            label: "Python",
+            lang: "python",
+            code: `import os, requests
+
+def load_prices():
+    r = requests.get("${ctx.base}/models", headers={"Authorization": f"Bearer {os.environ['API_KEY']}"}, timeout=30)
+    return {m["id"]: m["x_pricing"]["yours"] for m in r.json()["data"] if "x_pricing" in m}
+
+prices = load_prices()   # call again every few minutes
+
+def cost_usd(model, usage):
+    p = prices[model]
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+    return ((usage["prompt_tokens"] - cached) * p["input"]
+            + cached * p.get("cached_input", p["input"])
+            + usage["completion_tokens"] * p["output"]) / 1_000_000`,
+          },
+        ]}
+      />
+      <P>
+        The exact amount charged for every request (including tools, images and any surcharge) is shown in your <Link className={A} href="/dashboard/logs">Logs</Link> and in the usage export;
+        the formula is explained under <Link className={A} href="/docs/billing">Billing</Link>.
+      </P>
+    </>
+  );
+}

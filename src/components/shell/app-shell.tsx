@@ -65,6 +65,8 @@ export function AppShell({
   const groups: NavGroup[] = navForRole(variant === "admin" ? adminNav : customerNav, user.role);
   const current = findNavItem(groups, pathname);
   const section = variant === "admin" ? "Admin" : siteName;
+  // wide data tables (request logs) use the whole width instead of the reading-width column
+  const fullWidth = /^\/(admin|dashboard)\/logs(\/|$)/.test(pathname);
 
   return (
     <SidebarProvider defaultOpen={defaultOpen}>
@@ -136,7 +138,7 @@ export function AppShell({
         </header>
         {/* SidebarInset already renders the page's <main> landmark; don't nest another */}
         <div className="flex-1 p-4 md:p-6 lg:p-8">
-          <div className="mx-auto w-full max-w-7xl">{children}</div>
+          <div className={cn("mx-auto w-full", fullWidth ? "max-w-none" : "max-w-7xl")}>{children}</div>
         </div>
       </SidebarInset>
     </SidebarProvider>

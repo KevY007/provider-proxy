@@ -134,15 +134,15 @@ describe.skipIf(!dbOk)("funds protection", () => {
     expect(await upstreamCalls("oa1")).toBe(before);
   });
 
-  it("an explicit limit above the model's declared maximum is cut down to it (the hold only covers the maximum)", async () => {
+  it("an explicit limit above the model's declared maximum is passed through unchanged (1:1; the hold covers the maximum)", async () => {
     const u = await h.makeUser("cl5", { balance: "10" });
     const k = await h.makeKey("cl5", u.id);
     await invalidateGatewayConfig("all");
     const res = await chat(k.key, M.gpt.slug, "too many tokens", { max_tokens: 20_000 });
     expect(res.status).toBe(200);
     await res.text();
-    expect((await mockLast("/v1/chat/completions")).body.max_tokens).toBe(16_000);
-    expect((await h.logOf(res)).internalError).toContain("cut to the model maximum 16000");
+    expect((await mockLast("/v1/chat/completions")).body.max_tokens).toBe(20_000);
+    expect((await h.logOf(res)).internalError).toContain("above the catalog maximum 16000; passed through unchanged");
     const within = await chat(k.key, M.gpt.slug, "within", { max_tokens: 500 });
     await within.text();
     expect((await mockLast("/v1/chat/completions")).body.max_tokens).toBe(500);
@@ -202,7 +202,7 @@ describe.skipIf(!dbOk)("funds protection", () => {
     const blocks = sseBlocks(await res.text());
     const words = blocks.filter((b) => b.data.startsWith("{") && JSON.parse(b.data).choices?.[0]?.delta?.content?.includes("word")).length;
     expect(words).toBeGreaterThan(8000);
-    expect(words).toBeLessThan(20000); // 16384 reserved tokens ~ 5 chars per word / 4 chars per token estimate
+    expect(words).toBeLessThan(25000); // 1.5 x 16384 reserved tokens ~ 5 chars per word / 4 chars per token estimate
     expect(blocks.some((b) => b.data.includes("insufficient_balance"))).toBe(true);
     expect((await h.logOf(res)).errorCode).toBe("insufficient_balance");
   });
