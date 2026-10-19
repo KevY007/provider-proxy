@@ -15,10 +15,10 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "mock:upstream": "tsx scripts/mock-upstream.ts",
-    "e2e": "tsx scripts/e2e.ts",
+    "e2e": "vitest run tests/gateway",
     "setup:live": "tsx scripts/setup-live-providers.ts",
     "e2e:live": "tsx scripts/e2e-live.ts",
-    "loadtest": "tsx scripts/loadtest.ts",
+    "loadtest": "vitest run tests/gateway/load.test.ts",
     "chaos": "tsx scripts/chaos.ts",
     "postinstall": "prisma generate"
   },

@@ -1,6 +1,6 @@
 /**
  * In-process load/soak check of the gateway core. Opt-in (it hammers the dev database):
- *   GW_LOAD=1 [GW_LOAD_N=1000] pnpm vitest run tests/gateway/load.test.ts
+ *   pnpm loadtest            (or: GW_LOAD=1 [GW_LOAD_N=1000] pnpm vitest run tests/gateway/load.test.ts)
  * Proves: no upstream key ever exceeds its slot limit under 1000 concurrent streams, excess requests queue and
  * complete, every request is metered exactly once, and the balance debit equals the sum of the logged prices.
  */
@@ -18,7 +18,10 @@ const N = Number(process.env.GW_LOAD_N ?? 1000);
 const sfx = String(Math.floor(Math.random() * 1e8)).padStart(8, "0");
 const key = `sk-pp-gwl${sfx}`.padEnd(46, "0");
 
-describe.skipIf(!process.env.GW_LOAD)("gateway load", () => {
+// `pnpm loadtest` opts in without an env var (pnpm scripts run in cmd.exe on Windows, where `GW_LOAD=1 cmd` does not work)
+const enabled = !!process.env.GW_LOAD || process.env.npm_lifecycle_event === "loadtest";
+
+describe.skipIf(!enabled)("gateway load", () => {
   let mock: Awaited<ReturnType<typeof startMockUpstream>>;
   let base = "";
   const created = { user: "", provider: "", model: "", group: "", keys: [] as string[] };
