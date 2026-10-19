@@ -93,15 +93,19 @@ Running several dev servers from one checkout: `NEXT_DIST_DIR=.next-<name> pnpm 
 | Step C: live re-verification | ✅ e2e:live 36/36; workload A-G, I-K pass (L content-quality only; H needs a workstation) - see `docs/LIVE-WORKLOAD-REPORT.md` |
 | Provider "Test connection" / "Fetch pricing", provider-published prices prefill Our cost | ✅ `src/gateway/remote-pricing.ts` |
 | Auto-updated costs (lazy, during calls only), "% of our cost" + +/- adjustment | ✅ `src/server/pricing/auto-sync.ts` |
-| Latency from real calls (admin `/admin/latency`, status page, customer Usage + Models); health cron probes opt-in | ✅ `src/server/analytics/latency.ts` |
+| Latency from real calls (admin `/admin/latency`, status page, customer Usage + Models) | ✅ `src/server/analytics/latency.ts` |
+| Cold by default: activity-driven upkeep/billing, optional timed uptime pings + jobs (Settings > Monitoring), uptime/ping history | ✅ `src/server/maintenance.ts`, `src/server/admin/uptime-queries.ts` (PR #9) |
+| Responsive QA (every page at 390 / 820 / 1440 px on the production build) + lean GCP profile and cost table | ✅ `docs/DEPLOYMENT.md` "Profiles and cost" |
 | 6 Security audit | ✅ `docs/SECURITY-AUDIT.md` (fixes + `tests/security/audit-regressions.test.ts`; open items listed there) |
 | 5 Full docs + `.github` | ✅ README, `docs/*` guides, CI, templates, CODEOWNERS, dependabot, LICENSE, SECURITY/CONTRIBUTING |
 
-Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 777 passed / 1 skipped,
-`pnpm build` OK.
+Last verified gates (2026-10-19, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 784 passed / 1 skipped,
+`pnpm build` OK, `pnpm e2e:live` 36/36 against the production build, CI green on `main`.
 
-**State:** everything is done and merged into `main` (PR #1). Owner follow-ups: rotate the temporary live keys; re-run live
-scenario H (Claude Code CLI) on a workstation; the only open audit item is D2 (`braces` transitive dev dependency, no fixed
+**State:** everything is done and merged into `main` (PR #1, PR #9) and ready to deploy (`deploy/README.md`, lean
+profile). Not verified here: the real GCP deployment (no GCP access from the build sessions), live Stripe payments and
+email (not configured). Owner follow-ups: rotate the temporary live keys; set up 2FA on the admin account (required
+in production); re-run live scenario H (Claude Code CLI) on a workstation; the only open audit item is D2 (`braces` transitive dev dependency, no fixed
 version published - see `docs/SECURITY-AUDIT.md`). Step list below is historical.
 
 ## 6. Exactly where to resume (historical - all steps done)

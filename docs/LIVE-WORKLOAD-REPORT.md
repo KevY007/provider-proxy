@@ -106,7 +106,7 @@ Route cost = official list price and sell price = cost x 1.30, so `officialPrice
 
 ## Fix verification (status 2026-10-19, live)
 
-All fixes for the bugs above are implemented, verified against the mock upstream (`pnpm test`: 777 passed / 1 skipped)
+All fixes for the bugs above are implemented, verified against the mock upstream (`pnpm test`: 784 passed / 1 skipped at the final state)
 and **re-verified live** with the owner's temporary keys (`LIVE_*` in the gitignored `.env`; to be rotated by the owner).
 
 - `pnpm e2e:live`: **36 / 36 pass** (OpenAI, Anthropic, fal.ai, Replicate, Chat->Claude translation, failover, error
