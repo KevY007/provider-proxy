@@ -8,7 +8,7 @@ import { inboundBody } from "./bodyin";
 import { logOutcome, releaseAll, withCommon, type Ctx } from "./context";
 import { GatewayError } from "./errors";
 import { execute, finishLog, type AttemptResult, type Fail, type Rec } from "./execute";
-import { providerRoute } from "./files";
+import { collectFileRefs, providerRoute } from "./files";
 import { forwardUpstreamHeaders } from "./headers";
 import { releaseHold, restoreHold, type HoldRef } from "./holds";
 import { recordKeySuccess } from "./keyhealth";
@@ -224,7 +224,7 @@ function pickProvider(ctx: Ctx, models: ModelRec[], format: InboundFormat, onlyP
     let rs = orderRoutes(eligibleRoutes(snap, m, ctx.group, format)).filter((r) => r.plan.mode === "native");
     if (onlyProvider) rs = rs.filter((r) => r.route.providerId === onlyProvider);
     if (!rs.length) {
-      const why = onlyProvider ? "with the account that stores the input file" : "through the Batch API";
+      const why = onlyProvider ? "with the upstream account that stores the referenced files" : "through the Batch API";
       throw new GatewayError("unsupported_endpoint", `The model '${m.slug}' is not available ${why}.`, { param: "model", internal: `no ${format} route for ${m.slug}${onlyProvider ? ` on provider ${onlyProvider}` : ""}` });
     }
     perModel.set(m.id, rs);
@@ -263,6 +263,28 @@ function baseMeta(ctx: Ctx, fmt: InboundFormat, models: BatchModel[], lines: Lin
   };
 }
 
+/**
+ * Files referenced inside the batch's requests (`file_id`, Gemini `fileUri`): like in a normal request they must belong to
+ * the caller (anybody else's id answers 404) and pin the batch to the upstream account that stores them.
+ */
+async function batchFilePin(ctx: Ctx, bodies: JsonObject[]): Promise<{ providerId: string; providerKeyId: string } | null> {
+  const ids = new Set<string>();
+  for (const b of bodies) for (const id of collectFileRefs(b)) ids.add(id);
+  if (!ids.size) return null;
+  const rows = await db.upstreamObject.findMany({ where: { kind: "file", upstreamId: { in: [...ids] } } });
+  const userId = ctx.auth!.user.id;
+  const mine = rows.filter((r) => r.userId === userId);
+  for (const r of rows) {
+    if (r.userId !== userId && !mine.some((m) => m.upstreamId === r.upstreamId)) {
+      const message = fmtOf(ctx) === "anthropic_batches" ? `File not found: ${r.upstreamId}` : `No such File object: ${r.upstreamId}`;
+      throw new GatewayError("not_found", message, { param: "file_id", internal: `batch references file '${r.upstreamId}' of another customer` });
+    }
+  }
+  const accounts = new Set(mine.map((r) => `${r.providerId}|${r.providerKeyId}`));
+  if (accounts.size > 1) throw invalid("The files referenced by this batch are stored on different upstream accounts and cannot be used in one batch. Upload them again together.", `batch file references span ${accounts.size} upstream accounts`);
+  return mine[0] ? { providerId: mine[0].providerId, providerKeyId: mine[0].providerKeyId } : null;
+}
+
 /** Run the create call; the hold is released when it does not result in a batch. */
 async function forwardCreate(ctx: Ctx, routes: RoutePlan[], pinKeyId: string | null): Promise<Response> {
   try {
@@ -293,7 +315,8 @@ async function createAnthropic(ctx: Ctx): Promise<Response> {
     lines.push({ customId: r.custom_id, model });
   }
   const list = [...models.values()];
-  const { routes } = pickProvider(ctx, list, "anthropic_batches");
+  const pin = await batchFilePin(ctx, requests.map((r) => r.params as JsonObject));
+  const { routes } = pickProvider(ctx, list, "anthropic_batches", pin?.providerId);
   let amount = ZERO;
   for (let i = 0; i < requests.length; i++) {
     const params = requests[i].params as JsonObject;
@@ -307,7 +330,7 @@ async function createAnthropic(ctx: Ctx): Promise<Response> {
   ctx.model = list[0];
   ctx.files = { streamed: false, buffered: Buffer.from(JSON.stringify(body)) };
   const route = routes.get(list[0].id)!;
-  return forwardCreate(ctx, [{ route, plan: { mode: "native", upstream: "anthropic_batches" } }], null);
+  return forwardCreate(ctx, [{ route, plan: { mode: "native", upstream: "anthropic_batches" } }], pin?.providerKeyId ?? null);
 }
 
 // ------------------------------------------------------------------ direct upstream calls (outside the request loop)
@@ -385,6 +408,10 @@ async function createOpenAI(ctx: Ctx): Promise<Response> {
   }
   if (!parsed.length) throw invalid("The input file contains no requests.");
   const list = [...models.values()];
+  const pin = await batchFilePin(ctx, parsed.map((p) => p.obj.body as JsonObject));
+  if (pin && pin.providerKeyId !== file.providerKeyId) {
+    throw invalid("The files referenced by the batch requests are stored on a different upstream account than the input file. Upload them again together.", "batch line file references are on another upstream key than the input file");
+  }
   const { providerId, routes } = pickProvider(ctx, list, "openai_batches", file.providerId);
   let amount = ZERO;
   let changed = false;
