@@ -3,6 +3,7 @@ import { env } from "@/lib/env";
 import { safeEqual } from "@/lib/crypto";
 import { logger } from "@/lib/logger";
 import { runBillingCron } from "@/server/billing/cron";
+import { sweepBatches } from "@/gateway/batches";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -10,7 +11,7 @@ export const maxDuration = 300;
 
 /**
  * Billing cron (Cloud Scheduler hourly): auto-recharge sweep, postpaid settlement, stale PENDING payment
- * reconciliation. Auth: `Authorization: Bearer $CRON_SECRET`. GET and POST are equivalent.
+ * reconciliation, and the Batch API sweep (meter ended batches; also run by the health cron). Auth: `Authorization: Bearer $CRON_SECRET`. GET and POST are equivalent.
  */
 async function handle(req: Request) {
   if (!env.CRON_SECRET) {
@@ -24,8 +25,12 @@ async function handle(req: Request) {
   const started = Date.now();
   try {
     const summary = await runBillingCron();
-    logger.info("billing cron finished", { ms: Date.now() - started, ...summary });
-    return NextResponse.json({ ok: true, ms: Date.now() - started, ...summary });
+    const batches = await sweepBatches().catch((err) => {
+      logger.warn("batch sweep failed", { err });
+      return { polled: 0, metered: 0, failed: 0 };
+    });
+    logger.info("billing cron finished", { ms: Date.now() - started, ...summary, batches });
+    return NextResponse.json({ ok: true, ms: Date.now() - started, ...summary, batches });
   } catch (err) {
     logger.error("billing cron failed", { err });
     return NextResponse.json({ ok: false, error: "billing cron failed" }, { status: 500 });

@@ -51,6 +51,7 @@ export const DOC_SECTIONS: DocSection[] = [
       { slug: "streaming", title: "Streaming", description: "Server-sent events across all formats." },
       { slug: "tools", title: "Tools & function calling", description: "Let models call your functions." },
       { slug: "images", title: "Image generation", description: "Generate images and track their cost." },
+      { slug: "batches", title: "Batches", description: "Anthropic Message Batches and the OpenAI Batch API at 50% off." },
       { slug: "rate-limits", title: "Rate limits & concurrency", description: "429s, retry-after and concurrency slots." },
       { slug: "billing", title: "Billing & pay-as-you-go", description: "Balance, pools, multipliers and limits." },
       { slug: "errors", title: "Error codes", description: "Every error code, its HTTP status and fix." },

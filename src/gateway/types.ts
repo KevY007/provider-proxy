@@ -54,7 +54,14 @@ export type Operation =
   | "gfiles_delete"
   // OpenAI code-interpreter container files (created by a Responses request): /v1/containers/{id}/files/{file}[/content]
   | "containers_file_get"
-  | "containers_file_content";
+  | "containers_file_content"
+  // Batch APIs: Anthropic /v1/messages/batches (+results, cancel, delete), OpenAI /v1/batches (+cancel)
+  | "batches_create"
+  | "batches_list"
+  | "batches_get"
+  | "batches_cancel"
+  | "batches_results"
+  | "batches_delete";
 
 /** Operations served by the generic raw passthrough (no model, streamed body, stateful objects). */
 export const RAW_OPS: ReadonlySet<Operation> = new Set<Operation>([
@@ -73,6 +80,12 @@ export const RAW_OPS: ReadonlySet<Operation> = new Set<Operation>([
   "gfiles_delete",
   "containers_file_get",
   "containers_file_content",
+  "batches_create",
+  "batches_list",
+  "batches_get",
+  "batches_cancel",
+  "batches_results",
+  "batches_delete",
 ]);
 
 export interface ParsedPath {
@@ -99,7 +112,7 @@ export interface ParsedPath {
   multipart: boolean;
   /** Generic raw passthrough op (Files APIs): no model, the body is streamed untouched. */
   raw?: boolean;
-  /** Files APIs: the id the customer used (file id / upload id / Gemini `files/xyz`). */
+  /** Files / Batch APIs: the id the customer used (file id / upload id / Gemini `files/xyz` / batch id). */
   objectId?: string;
 }
 

@@ -8,6 +8,7 @@ import { corsHeaders, failWith, logOutcome, newCtx, releaseAll, withCommon, type
 import { execute } from "./execute";
 import { GatewayError, toGatewayError } from "./errors";
 import { inboundBody, requestEncodings } from "./bodyin";
+import { handleBatch } from "./batches";
 import { fileRefPins, handleRaw } from "./files";
 import { scanTopLevel } from "./jsonscan";
 import { checkRpm, checkTpm } from "./limits";
@@ -92,7 +93,7 @@ async function run(ctx: Ctx): Promise<Response> {
     return withCommon(ctx, new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
   }
 
-  if (path.raw) return handleRaw(ctx);
+  if (path.raw) return path.op.startsWith("batches_") ? handleBatch(ctx) : handleRaw(ctx);
   if (path.op.startsWith("responses_")) return dispatchResponsesLookup(ctx);
   if (path.op.startsWith("videos_") && path.op !== "videos_create") return dispatchVideoLookup(ctx);
 

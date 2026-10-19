@@ -323,6 +323,43 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
   throw insufficient(ctx, { ...l, explicit: explicit !== null, affordTokens: l.affordTokens });
 }
 
+// ---------------------------------------------------------------- Batch API
+/** Batches end within 24 hours upstream; the hold outlives that (the sweep re-places it while the batch is open). */
+export const BATCH_HOLD_TTL_MS = 30 * 60 * 60_000;
+
+/**
+ * Reserve the worst-case price of a whole batch (all its requests at the batch price) as ONE long-lived hold
+ * `batch:<requestId>` (throws 402 `insufficient_balance` / `spend_limit_reached` like `reserveFunds`). The hold is
+ * released once every result of the batch was metered (or the batch is gone), so the customer cannot start more
+ * work than they can pay for while the batch runs.
+ */
+export async function reserveBatchHold(ctx: Ctx, amount: Decimal): Promise<HoldRef | null> {
+  const snap = ctx.snap!;
+  const { user, key } = ctx.auth!;
+  const id = `batch:${ctx.requestId}`;
+  const minBalance = new Decimal(snap.settings.minBalanceToCall);
+  const monthlyRemaining = user.monthlySpendLimit ? user.monthlySpendLimit.minus(await userMonthlySpend(user.id)) : null;
+  const keyRemaining = key.spendLimit ? key.spendLimit.minus(key.spent).minus(ctx.auth!.spentDelta) : null;
+  let base = await getBalance(user.id, { balance: user.balance, at: ctx.auth!.loadedAt });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const r = await reserveHold({ id, userId: user.id, keyId: key.id, amount, base, headroomExtra: user.creditLimit.minus(minBalance), monthlyRemaining, keyRemaining, ttlMs: BATCH_HOLD_TTL_MS });
+    if (r.ok) return amount.gt(0) ? { id, userId: user.id, keyId: key.id, backend: r.backend, createdAt: Date.now() } : null;
+    const internal = `batch hold=${amount.toFixed(6)} available=${r.available.toFixed(6)} reason=${r.reason}`;
+    if (r.reason === "balance" && attempt === 0) {
+      const fresh = await refreshBalanceNow(user.id);
+      const known = r.sharedBalance ?? base;
+      if (!fresh.equals(base) || fresh.gt(known)) {
+        if (fresh.gt(known)) await forceSharedBalance(user.id, fresh);
+        base = fresh;
+        continue;
+      }
+    }
+    const available = r.reason === "monthly" ? (r.monthlyAvailable ?? ZERO) : r.reason === "key" ? (r.keyAvailable ?? ZERO) : r.available;
+    throw insufficient(ctx, { reason: r.reason ?? "balance", amount, available, affordTokens: null, explicit: false, internal });
+  }
+  throw new GatewayError("insufficient_balance");
+}
+
 // ---------------------------------------------------------------- settle / release
 /** Settle the hold with the actual price (called once per request from `logOutcome`). */
 export function settleFunds(ctx: Ctx, price: Decimal): void {

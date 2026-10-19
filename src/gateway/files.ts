@@ -7,6 +7,7 @@ import type { ConfigSnapshot, GroupRec, ModelRec, ProviderRec, RouteRec } from "
 import { inboundBody, requestEncodings } from "./bodyin";
 import { logOutcome, withCommon, type Ctx } from "./context";
 import { GatewayError } from "./errors";
+import { handleBatchOk, maskedJsonl, type BatchMeta } from "./batches";
 import { execute, handleBinary, type AttemptResult, type Fail, type Rec } from "./execute";
 import type { GeneratedFile } from "./generated-files";
 import { forwardUpstreamHeaders } from "./headers";
@@ -65,6 +66,11 @@ function notFound(ctx: Ctx, what: "file" | "upload", id: string): GatewayError {
 }
 
 // ------------------------------------------------------------------ routes
+/** A zero-priced stand-in route on provider `p` (calls that are not model requests: files, batch management). */
+export function providerRoute(p: ProviderRec): RouteRec {
+  return zeroRoute(p);
+}
+
 function zeroRoute(p: ProviderRec): RouteRec {
   return {
     id: `files:${p.id}`,
@@ -307,6 +313,12 @@ export async function handleFilesOk(ctx: Ctx, cand: Candidate, h: UpstreamHandle
   const op = path.op;
   const fmt = cand.plan.upstream;
   const settings = ctx.snap!.settings;
+  if (op.startsWith("batches_")) return handleBatchOk(ctx, cand, h, t0, rec, fail);
+  if (op === "files_content" && ctx.files?.row && typeof metaOf(ctx.files.row).batchOutputOf === "string") {
+    // output / error file of an OpenAI batch: the upstream model is masked on every line
+    const batch = await db.upstreamObject.findFirst({ where: { kind: "batch", upstreamId: metaOf(ctx.files.row).batchOutputOf as string, providerId: ctx.files.row.providerId } });
+    if (batch) return maskedJsonl(ctx, cand, h, t0, rec, batch.meta as unknown as BatchMeta, batch);
+  }
   if (op === "files_content" || op === "containers_file_content") return handleBinary(ctx, cand, h, t0, rec, true);
 
   const timer = setTimeout(() => h.abort(), cand.route.provider.timeoutMs);

@@ -89,6 +89,52 @@ export function parsePath(pathname: string, method: string, headers?: Headers): 
     throw methodNotAllowed(m, "GET, DELETE");
   }
 
+  // ---------------- Batch APIs (PLAN 5c): Anthropic Message Batches + OpenAI Batch ----------------
+  if (p === "/v1/messages/batches" || p.startsWith("/v1/messages/batches/")) {
+    const b = (op: Operation, endpoint: string, objectId?: string): ParsedPath =>
+      raw({ endpoint, format: "anthropic_batches", op, errorFormat: "anthropic", capability: op === "batches_create" ? "chat" : null, ...(objectId ? { objectId } : {}) });
+    if (p === "/v1/messages/batches") {
+      if (m === "POST") return b("batches_create", "/v1/messages/batches");
+      if (m === "GET") return b("batches_list", "/v1/messages/batches");
+      throw methodNotAllowed(m, "GET, POST");
+    }
+    const parts = p.slice("/v1/messages/batches/".length).split("/");
+    const id = decode(parts[0] ?? "");
+    if (!id || parts.length > 2) throw new GatewayError("not_found");
+    if (parts.length === 1) {
+      if (m === "GET") return b("batches_get", "/v1/messages/batches/{id}", id);
+      if (m === "DELETE") return b("batches_delete", "/v1/messages/batches/{id}", id);
+      throw methodNotAllowed(m, "GET, DELETE");
+    }
+    if (parts[1] === "results") {
+      if (m !== "GET") throw methodNotAllowed(m, "GET");
+      return b("batches_results", "/v1/messages/batches/{id}/results", id);
+    }
+    if (parts[1] === "cancel") {
+      if (m !== "POST") throw methodNotAllowed(m, "POST");
+      return b("batches_cancel", "/v1/messages/batches/{id}/cancel", id);
+    }
+    throw new GatewayError("not_found");
+  }
+  if (p === "/v1/batches" || p.startsWith("/v1/batches/")) {
+    const b = (op: Operation, endpoint: string, objectId?: string): ParsedPath => raw({ endpoint, format: "openai_batches", op, ...(objectId ? { objectId } : {}) });
+    if (p === "/v1/batches") {
+      if (m === "POST") return b("batches_create", "/v1/batches");
+      if (m === "GET") return b("batches_list", "/v1/batches");
+      throw methodNotAllowed(m, "GET, POST");
+    }
+    const parts = p.slice("/v1/batches/".length).split("/");
+    const id = decode(parts[0] ?? "");
+    if (!id || parts.length > 2) throw new GatewayError("not_found");
+    if (parts.length === 1) {
+      if (m !== "GET") throw methodNotAllowed(m, "GET");
+      return b("batches_get", "/v1/batches/{id}", id);
+    }
+    if (parts[1] !== "cancel") throw new GatewayError("not_found");
+    if (m !== "POST") throw methodNotAllowed(m, "POST");
+    return b("batches_cancel", "/v1/batches/{id}/cancel", id);
+  }
+
   // OpenAI + Anthropic: /v1/files (the Anthropic Files API is told apart by its anthropic-version header)
   if (p === "/v1/files" || p.startsWith("/v1/files/")) {
     const anthropic = !!headers?.get("anthropic-version");

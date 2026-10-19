@@ -618,7 +618,7 @@ function knownLength(h: UpstreamHandle): number | undefined {
 }
 
 /** RequestLog for a finished non-SSE body stream (binary downloads). */
-function finishLog(ctx: Ctx, cand: Candidate, info: FinishInfo, usage: Usage, what: string): void {
+export function finishLog(ctx: Ctx, cand: Candidate, info: FinishInfo, usage: Usage, what: string): void {
   const base = { usage, ttftMs: info.firstOutputMs };
   switch (info.reason) {
     case "completed":
