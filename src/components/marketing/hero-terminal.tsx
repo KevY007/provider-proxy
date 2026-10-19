@@ -81,7 +81,7 @@ export function HeroTerminal({ baseUrl, model }: { baseUrl: string; model: strin
 
   const done = typed >= command.length;
   return (
-    <div className="overflow-hidden rounded-xl border border-white/10 bg-[oklch(0.12_0.025_258)] text-left shadow-2xl shadow-primary/10 ring-1 ring-primary/10">
+    <div className="overflow-hidden rounded-xl border border-white/10 bg-[oklch(0.12_0.006_55)] text-left shadow-2xl shadow-primary/10 ring-1 ring-primary/10">
       <div className="flex items-center gap-2 border-b border-white/10 px-4 py-2.5">
         <span className="size-3 rounded-full bg-red-400/80" />
         <span className="size-3 rounded-full bg-amber-400/80" />
@@ -98,7 +98,7 @@ export function HeroTerminal({ baseUrl, model }: { baseUrl: string; model: strin
       </div>
       <div className="min-h-[21rem] overflow-x-auto p-4 font-mono text-[12.5px] leading-relaxed text-white/90 sm:text-[13px]">
         <pre className="whitespace-pre-wrap break-words">
-          <span className="text-emerald-400">$ </span>
+          <span className="text-primary">$ </span>
           {command.slice(0, typed)}
           {!done && <span className="ml-px inline-block h-4 w-2 translate-y-0.5 animate-pulse bg-white/80" />}
         </pre>

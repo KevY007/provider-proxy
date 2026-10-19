@@ -1,21 +1,23 @@
 import Link from "next/link";
-import { Zap } from "lucide-react";
+import { BrandMark } from "@/components/common/brand-mark";
 import { SiteHeader } from "@/components/marketing/site-header";
 import { getSession } from "@/lib/auth/session";
 import { getSetting } from "@/lib/settings";
+import { publicVisibility } from "@/server/customer/visibility";
 
 export default async function MarketingLayout({ children }: { children: React.ReactNode }) {
-  const [siteName, supportEmail, session] = await Promise.all([
+  const [siteName, supportEmail, session, vis] = await Promise.all([
     getSetting("siteName"),
     getSetting("supportEmail"),
     getSession().catch(() => null),
+    publicVisibility(),
   ]);
   const cols: Array<{ title: string; links: Array<{ href: string; label: string }> }> = [
     {
       title: "Product",
       links: [
-        { href: "/pricing", label: "Pricing" },
-        { href: "/status", label: "Status" },
+        ...(vis.pricing ? [{ href: "/pricing", label: "Pricing" }] : []),
+        ...(vis.status ? [{ href: "/status", label: "Status" }] : []),
         { href: "/signup", label: "Get started" },
       ],
     },
@@ -39,14 +41,14 @@ export default async function MarketingLayout({ children }: { children: React.Re
   ];
   return (
     <div className="flex min-h-screen flex-col">
-      <SiteHeader siteName={siteName} loggedIn={!!session} />
+      <SiteHeader siteName={siteName} loggedIn={!!session} showPricing={vis.pricing} showStatus={vis.status} />
       <main className="flex-1">{children}</main>
       <footer className="border-t bg-card/30">
         <div className="mx-auto grid w-full max-w-6xl gap-8 px-4 py-12 sm:grid-cols-2 lg:grid-cols-4">
           <div className="space-y-3">
             <Link href="/" className="flex items-center gap-2 font-semibold">
               <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground">
-                <Zap className="size-4" />
+                <BrandMark />
               </span>
               {siteName}
             </Link>

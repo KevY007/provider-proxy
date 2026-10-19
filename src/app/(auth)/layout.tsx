@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Zap } from "lucide-react";
+import { BrandMark } from "@/components/common/brand-mark";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
 import { getSetting } from "@/lib/settings";
 
@@ -18,7 +18,7 @@ export default async function AuthLayout({ children }: { children: React.ReactNo
       </div>
       <Link href="/" className="mb-8 flex items-center gap-2 text-lg font-semibold">
         <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Zap className="size-5" />
+          <BrandMark className="size-5" />
         </span>
         {siteName}
       </Link>

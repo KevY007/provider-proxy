@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, Zap } from "lucide-react";
+import { Menu } from "lucide-react";
+import { BrandMark } from "@/components/common/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { ThemeToggle } from "@/components/shell/theme-toggle";
@@ -15,7 +16,18 @@ const NAV = [
 ];
 
 /** Sticky public header with desktop nav and a mobile sheet menu. */
-export function SiteHeader({ siteName, loggedIn }: { siteName: string; loggedIn: boolean }) {
+export function SiteHeader({
+  siteName,
+  loggedIn,
+  showPricing = true,
+  showStatus = true,
+}: {
+  siteName: string;
+  loggedIn: boolean;
+  showPricing?: boolean;
+  showStatus?: boolean;
+}) {
+  const nav = NAV.filter((n) => (n.href !== "/pricing" || showPricing) && (n.href !== "/status" || showStatus));
   const pathname = usePathname();
   const active = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   return (
@@ -23,12 +35,12 @@ export function SiteHeader({ siteName, loggedIn }: { siteName: string; loggedIn:
       <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4">
         <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
           <span className="flex size-7 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm shadow-primary/30">
-            <Zap className="size-4" />
+            <BrandMark />
           </span>
           {siteName}
         </Link>
         <nav className="hidden items-center gap-1 text-sm md:flex" aria-label="Main">
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <Link
               key={n.href}
               href={n.href}
@@ -68,7 +80,7 @@ export function SiteHeader({ siteName, loggedIn }: { siteName: string; loggedIn:
                 <SheetTitle>{siteName}</SheetTitle>
               </SheetHeader>
               <div className="flex flex-col gap-1 px-4">
-                {NAV.map((n) => (
+                {nav.map((n) => (
                   <SheetClose asChild key={n.href}>
                     <Link href={n.href} className={cn("rounded-md px-3 py-2 text-sm hover:bg-muted", active(n.href) && "bg-muted font-medium")}>
                       {n.label}
