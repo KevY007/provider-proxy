@@ -79,18 +79,18 @@ describe.skipIf(!dbOk)("latency from real traffic", () => {
     expect(after).toEqual(before);
   });
 
-  it("health cron: no probes while Active health probes is off", async () => {
+  it("health cron: no pings while uptime monitoring is off (traffic samples are fine)", async () => {
     const { env } = await import("@/lib/env");
     if (!env.CRON_SECRET) return; // CI and .env both set it
     const { GET } = await import("@/app/api/cron/health/route");
     await setSetting("activeHealthChecks", false);
-    const checks = await db.healthCheck.count({ where: { providerId } });
+    const checks = await db.healthCheck.count({ where: { providerId, source: "probe" } });
     const res = await GET(new Request("http://x/api/cron/health", { headers: { authorization: `Bearer ${env.CRON_SECRET}` } }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as { checked: number; skipped?: string };
     expect(body.checked).toBe(0);
     expect(body.skipped).toMatch(/off/);
-    expect(await db.healthCheck.count({ where: { providerId } })).toBe(checks);
+    expect(await db.healthCheck.count({ where: { providerId, source: "probe" } })).toBe(checks);
   });
 
   it("uptime history: calls and pings fill buckets; idle periods are 'no data', never 'up'", async () => {
