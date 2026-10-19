@@ -63,7 +63,7 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
         <EmptyState title="No requests found" description="Nothing matches these filters in the selected date range. Widen the range or clear filters." />
       ) : (
         <div className={cn("overflow-x-auto rounded-lg border transition-opacity", pending && "opacity-60")}>
-          <Table>
+          <Table className="[&_td]:px-1.5 [&_th]:px-1.5">
             <TableHeader className="bg-muted/40">
               <TableRow>
                 <TableHead>Time (UTC)</TableHead>
@@ -77,8 +77,7 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
                 <TableHead className="text-right">Price</TableHead>
                 <TableHead className="text-right">Cost</TableHead>
                 <TableHead className="text-right">Profit</TableHead>
-                <TableHead className="text-right">Latency</TableHead>
-                <TableHead className="text-right">Queue</TableHead>
+                <TableHead className="text-right" title="Total latency; time spent queued for a free slot below it">Latency</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -93,7 +92,7 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
                   </TableCell>
                   <TableCell>
                     {r.userId ? (
-                      <Link href={`/admin/customers/${r.userId}`} className="text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
+                      <Link href={`/admin/customers/${r.userId}`} title={r.email ?? undefined} className="block max-w-[10rem] truncate text-primary hover:underline" onClick={(e) => e.stopPropagation()}>
                         {r.email}
                       </Link>
                     ) : (
@@ -103,22 +102,28 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
                   <TableCell>{r.keyPrefix ? <code className="text-xs">{r.keyPrefix}…</code> : "-"}</TableCell>
                   <TableCell className="font-mono text-xs">
                     {r.modelSlug ?? "-"}
-                    {r.upstreamModel && r.upstreamModel !== r.modelSlug && <span className="text-muted-foreground"> → {r.upstreamModel}</span>}
+                    {r.upstreamModel && r.upstreamModel !== r.modelSlug && (
+                      <span title={r.upstreamModel} className="block max-w-[15rem] truncate text-muted-foreground">
+                        → {r.upstreamModel}
+                      </span>
+                    )}
                   </TableCell>
-                  <TableCell className="text-xs">
+                  <TableCell className="whitespace-nowrap text-xs">
                     {r.providerName ?? "-"}
-                    {r.providerKeyLabel && <span className="text-muted-foreground"> / {r.providerKeyLabel}</span>}
+                    {r.providerKeyLabel && <span className="block text-muted-foreground">{r.providerKeyLabel}</span>}
                   </TableCell>
                   <TableCell className="font-mono text-xs">
-                    {r.endpoint}
-                    {r.stream && <Zap className="ml-1 inline size-3 text-amber-500" aria-label="streaming" />}
+                    <span className="flex max-w-[11rem] items-center" title={r.endpoint}>
+                      <span className="truncate">{r.endpoint}</span>
+                      {r.stream && <Zap className="ml-1 inline size-3 shrink-0 text-amber-500" aria-label="streaming" />}
+                    </span>
                   </TableCell>
                   <TableCell className="whitespace-nowrap">
                     {(() => {
                       const st = logStatusInfo(r.status, r.httpStatus);
                       return <StatusBadge status={r.status} label={st.label} tone={st.tone} />;
                     })()}
-                    <span className="ml-2 text-xs text-muted-foreground" title={r.errorCode ? "Open the row for an explanation" : undefined}>
+                    <span className="mt-0.5 block text-xs text-muted-foreground" title={r.errorCode ? "Open the row for an explanation" : undefined}>
                       {r.httpStatus}
                       {r.errorCode ? ` ${r.errorCode}` : ""}
                     </span>
@@ -135,8 +140,10 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
                   <TableCell className="text-right">
                     <MoneyText value={r.profit} colorize />
                   </TableCell>
-                  <TableCell className="text-right tabular-nums">{r.latencyMs}ms</TableCell>
-                  <TableCell className="text-right tabular-nums text-muted-foreground">{r.queueMs ? `${r.queueMs}ms` : "-"}</TableCell>
+                  <TableCell className="whitespace-nowrap text-right tabular-nums">
+                    {r.latencyMs}ms
+                    {r.queueMs ? <span className="block text-xs text-muted-foreground">queued {r.queueMs}ms</span> : null}
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>
