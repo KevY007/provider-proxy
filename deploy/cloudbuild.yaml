@@ -1,0 +1,65 @@
+# Cloud Build: build image -> push to Artifact Registry -> run migrations -> deploy Cloud Run.
+#
+#   gcloud builds submit --config deploy/cloudbuild.yaml \
+#     --substitutions=_REGION=us-central1,_REPO=providerproxy,_SERVICE=providerproxy,\
+# _SQL_INSTANCE=PROJECT:us-central1:providerproxy-db,_SA=providerproxy-run@PROJECT.iam.gserviceaccount.com
+#
+# Prerequisites (one-time) are in deploy/README.md: secrets, Cloud SQL, migration job, service account.
+substitutions:
+  _REGION: us-central1
+  _REPO: providerproxy
+  _SERVICE: providerproxy
+  _MIGRATE_JOB: providerproxy-migrate
+  _SQL_INSTANCE: ""
+  _SA: ""
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - -t
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - .
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ["push", "--all-tags", "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}"]
+
+  # Point the migration job at the new image and run it (fails the build if a migration fails).
+  - id: migrate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        gcloud run jobs update ${_MIGRATE_JOB} --region ${_REGION} \
+          --image ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+        gcloud run jobs execute ${_MIGRATE_JOB} --region ${_REGION} --wait
+
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      # Connection fidelity (docs/PLAN.md 9d / 5c): end-to-end HTTP/2 (h2c; lifts Cloud Run's 32 MB HTTP/1 request cap so
+      # uploads of any size work), the 60-minute maximum request time for long streams, CPU kept after the response so the
+      # metering buffer is flushed. These flags are also applied on every later deploy.
+      - --use-http2
+      - --timeout=3600
+      - --no-cpu-throttling
+
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest

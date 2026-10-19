@@ -1,0 +1,670 @@
+// ProviderProxy data model. Authoritative spec: docs/PLAN.md §4 + §9b.
+// Money is Decimal(24,12) in USD. Prices are USD per 1M units unless noted.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ----------------------------------------------------------------------------
+// Enums
+// ----------------------------------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  SUPPORT
+  ADMIN
+}
+
+enum UserStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+}
+
+enum BillingMode {
+  PREPAID
+  POSTPAID
+}
+
+enum TokenType {
+  EMAIL_VERIFY
+  PASSWORD_RESET
+  EMAIL_CHANGE
+}
+
+enum KeyStatus {
+  ACTIVE
+  DISABLED
+  REVOKED
+}
+
+enum ProviderStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum ProviderKeyStatus {
+  ACTIVE
+  DISABLED
+  COOLDOWN
+  INVALID
+  EXHAUSTED
+}
+
+enum AuthStyle {
+  BEARER
+  X_API_KEY
+  X_GOOG_API_KEY
+  AZURE_API_KEY
+  QUERY_KEY
+}
+
+enum HealthStatus {
+  UNKNOWN
+  OPERATIONAL
+  DEGRADED
+  DOWN
+}
+
+enum ModelStatus {
+  ACTIVE
+  HIDDEN
+  DISABLED
+}
+
+// §9c how a model's customer (sell) prices are derived
+enum PricingMode {
+  FIXED // admin types every customer price
+  PERCENT_OF_OFFICIAL // customer price = official price × pricingValue / 100
+  MARKUP_OVER_COST // customer price = primary route cost × (1 + pricingValue / 100)
+  PERCENT_OF_COST // customer price = primary route cost × pricingValue / 100 (e.g. 50 = half the provider's price)
+}
+
+enum RequestStatus {
+  SUCCESS
+  CLIENT_ERROR
+  UPSTREAM_ERROR
+  GATEWAY_ERROR
+  CANCELLED
+}
+
+enum LedgerType {
+  TOPUP
+  AUTO_RECHARGE
+  TRIAL_CREDIT
+  REDEEM
+  ADJUSTMENT
+  REFUND
+  CHARGEBACK
+  POSTPAID_SETTLEMENT
+  USAGE_CORRECTION
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+  DISPUTED
+  CANCELED
+}
+
+// ----------------------------------------------------------------------------
+// Users & auth
+// ----------------------------------------------------------------------------
+
+model User {
+  id                     String      @id @default(cuid())
+  email                  String      @unique
+  name                   String?
+  passwordHash           String
+  role                   Role        @default(CUSTOMER)
+  status                 UserStatus  @default(PENDING_VERIFICATION)
+  emailVerifiedAt        DateTime?
+  totpSecret             String? // encrypted
+  totpEnabled            Boolean     @default(false)
+  groupId                String?
+  group                  Group?      @relation(fields: [groupId], references: [id])
+  priceMultiplier        Decimal?    @db.Decimal(10, 4) // per-customer override on top of group
+  balance                Decimal     @default(0) @db.Decimal(24, 12)
+  creditLimit            Decimal     @default(0) @db.Decimal(24, 12) // how far below 0 they may go (postpaid)
+  billingMode            BillingMode @default(PREPAID)
+  monthlySpendLimit      Decimal?    @db.Decimal(24, 12)
+  stripeCustomerId       String?     @unique
+  defaultPaymentMethodId String?
+  autoRechargeEnabled    Boolean     @default(false)
+  autoRechargeThreshold  Decimal     @default(5) @db.Decimal(24, 12)
+  autoRechargeAmount     Decimal     @default(20) @db.Decimal(24, 12)
+  lowBalanceAlertAt      Decimal?    @db.Decimal(24, 12)
+  trialGrantedAt         DateTime?
+  // fingerprint of the card a card-gated trial was granted for (one trial per card, across accounts)
+  trialCardFingerprint   String?
+  // 2FA recovery codes: sha256 hashes, each usable once (removed when used)
+  totpRecoveryCodes      String[]  @default([])
+  signupIp               String?
+  lastLoginAt            DateTime?
+  maxConcurrency         Int? // §9b customer-side concurrent request slots
+  createdAt              DateTime    @default(now())
+  updatedAt              DateTime    @updatedAt
+
+  sessions   Session[]
+  tokens     VerificationToken[]
+  apiKeys    ApiKey[]
+  requests   RequestLog[]
+  ledger     LedgerEntry[]       @relation("LedgerUser")
+  payments   Payment[]
+  redeemUses RedeemCodeUse[]
+  videoJobs  VideoJob[]
+  upstreamObjects UpstreamObject[]
+
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
+  @@index([trialCardFingerprint])
+}
+
+model Session {
+  id              String   @id // sha256 of the cookie token
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt       DateTime
+  ip              String?
+  userAgent       String?
+  twoFactorPassed Boolean  @default(false)
+  impersonatorId  String?
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model VerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      TokenType
+  tokenHash String    @unique
+  newEmail  String?
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, type])
+}
+
+model ApiKey {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  prefix         String // first 12 chars shown in UI, e.g. "sk-pp-AbCd12"
+  keyHash        String    @unique // sha256(fullKey)
+  status         KeyStatus @default(ACTIVE)
+  groupId        String? // key-level group (pool) override; falls back to user.group then default group
+  group          Group?    @relation(fields: [groupId], references: [id])
+  allowedModels  String[]  @default([]) // empty = all models the group allows
+  ipAllowlist    String[]  @default([]) // CIDR or exact IPs, empty = any
+  rpmLimit       Int?
+  tpmLimit       Int?
+  maxConcurrency Int? // §9b
+  spendLimit     Decimal?  @db.Decimal(24, 12) // lifetime cap for this key
+  spent          Decimal   @default(0) @db.Decimal(24, 12)
+  expiresAt      DateTime?
+  lastUsedAt     DateTime?
+  isPlayground   Boolean   @default(false) // auto-created hidden key used by the dashboard playground
+  createdAt      DateTime  @default(now())
+
+  requests RequestLog[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Group {
+  // = "pool" / pricing tier
+  id              String   @id @default(cuid())
+  name            String
+  slug            String   @unique
+  description     String?
+  priceMultiplier Decimal  @default(1) @db.Decimal(10, 4) // applied to model sell prices
+  providerTags    String[] @default([]) // if non-empty, only routes whose provider has ANY of these tags are used
+  allowedModels   String[] @default([]) // model slugs; empty = all public models
+  isDefault       Boolean  @default(false)
+  isPublic        Boolean  @default(true) // customers may pick it for their keys
+  rpmLimit        Int?
+  maxConcurrency  Int? // §9b
+  sortOrder       Int      @default(0)
+
+  users   User[]
+  apiKeys ApiKey[]
+}
+
+// ----------------------------------------------------------------------------
+// Providers, models, routing
+// ----------------------------------------------------------------------------
+
+model Provider {
+  id             String         @id @default(cuid())
+  name           String
+  slug           String         @unique
+  preset         String // "openai" | "anthropic" | "google" | "xai" | "groq" | "deepseek" | "openrouter" | "mistral" | "together" | "fireworks" | "azure" | "codex-everywhere" | "custom"
+  baseUrl        String // e.g. https://api.openai.com/v1
+  authStyle      AuthStyle      @default(BEARER)
+  formats        String[] // natively accepted EndpointFormat values (see PLAN §5)
+  tags           String[]       @default([])
+  extraHeaders   Json           @default("{}")
+  settings       Json           @default("{}") // { anthropicVersion, azureApiVersion, stripFields:[], forceStreamUsage:true, geminiBaseUrl, anthropicBaseUrl ... }
+  status         ProviderStatus @default(ACTIVE)
+  timeoutMs      Int            @default(600000)
+  priority       Int            @default(0)
+  maxConcurrency Int? // §9b cap across all of the provider's keys
+  healthStatus   HealthStatus   @default(UNKNOWN)
+  lastCheckAt    DateTime?
+  lastLatencyMs  Int?
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  keys     ProviderKey[]
+  routes   ModelRoute[]
+  requests RequestLog[]
+  checks   HealthCheck[]
+}
+
+model ProviderKey {
+  // an upstream credential / account
+  id                  String            @id @default(cuid())
+  providerId          String
+  provider            Provider          @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  label               String
+  secretEncrypted     String // AES-256-GCM via lib/crypto
+  secretHint          String // last 4 chars for display
+  status              ProviderKeyStatus @default(ACTIVE)
+  weight              Int               @default(1)
+  priority            Int               @default(0) // higher = tried first
+  rpmLimit            Int?
+  tpmLimit            Int?
+  maxConcurrency      Int? // §9b slots per key (null = settings.defaultKeyConcurrency)
+  dailyBudget         Decimal?          @db.Decimal(24, 12) // stop using after this cost/day
+  cooldownUntil       DateTime?
+  consecutiveFailures Int               @default(0)
+  lastError           String?
+  lastUsedAt          DateTime?
+  totalRequests       Int               @default(0)
+  totalCost           Decimal           @default(0) @db.Decimal(24, 12)
+  extra               Json              @default("{}") // org id, project id, azure deployment map, ...
+  createdAt           DateTime          @default(now())
+
+  requests RequestLog[]
+  checks   HealthCheck[]
+
+  @@index([providerId, status])
+}
+
+model Model {
+  // public catalog entry (what customers put in "model")
+  id                String      @id @default(cuid())
+  slug              String      @unique // "gpt-6-astra", "claude-opus-5-5", "gemini-3.1-pro", "gpt-image-2"
+  aliases           String[]    @default([])
+  displayName       String
+  vendor            String // "openai" | "anthropic" | "google" | "xai" | ...
+  description       String?
+  capabilities      String[] // "chat","responses","completions","embeddings","images","audio_speech","audio_transcription","moderation","vision","tools","reasoning"
+  contextWindow     Int?
+  maxOutput         Int?
+  status            ModelStatus @default(ACTIVE)
+  sortOrder         Int         @default(0)
+  maskUpstreamModel Boolean     @default(true) // §9b rewrite `model` in responses to the public slug
+
+  // SELL prices (what customers pay, before group/user multipliers). USD per 1M units unless noted.
+  inputPrice            Decimal  @default(0) @db.Decimal(24, 12)
+  outputPrice           Decimal  @default(0) @db.Decimal(24, 12)
+  cachedInputPrice      Decimal? @db.Decimal(24, 12) // null => inputPrice
+  cacheWritePrice       Decimal? @db.Decimal(24, 12) // null => inputPrice (5m)
+  cacheWrite1hPrice     Decimal? @db.Decimal(24, 12)
+  imagePrice            Decimal? @db.Decimal(24, 12) // USD per generated image (flat); if null bill image tokens
+  requestPrice          Decimal? @db.Decimal(24, 12) // USD flat per request (added)
+  audioInputPrice       Decimal? @db.Decimal(24, 12) // per 1M audio tokens
+  audioOutputPrice      Decimal? @db.Decimal(24, 12)
+  perMinutePrice        Decimal? @db.Decimal(24, 12) // transcription USD/minute
+  perMillionChars       Decimal? @db.Decimal(24, 12) // TTS USD per 1M input chars
+  perSecondPrice        Decimal? @db.Decimal(24, 12) // video: USD per generated second
+  longContextThreshold  Int? // input tokens above which multiplier applies
+  longContextMultiplier Decimal? @db.Decimal(10, 4)
+
+  // server-tool SELL prices (USD per unit, keys: web_search_request, code_execution_hour, web_search_call, file_search_call ...) + their official list prices
+  toolPrices         Json     @default("{}")
+  officialToolPrices Json     @default("{}")
+  // Batch API: % taken off the token prices of batch results. null = 50 (the vendors' own batch discount)
+  batchDiscountPct   Decimal? @db.Decimal(5, 2)
+
+  // reference official price (marketing / "savings" display only)
+  officialInputPrice  Decimal? @db.Decimal(24, 12)
+  officialOutputPrice Decimal? @db.Decimal(24, 12)
+  officialCachedPrice Decimal? @db.Decimal(24, 12)
+  // §9c official prices for every other billable unit (same units as the sell fields above)
+  officialCacheWritePrice  Decimal? @db.Decimal(24, 12)
+  officialImagePrice       Decimal? @db.Decimal(24, 12)
+  officialRequestPrice     Decimal? @db.Decimal(24, 12)
+  officialAudioInputPrice  Decimal? @db.Decimal(24, 12)
+  officialAudioOutputPrice Decimal? @db.Decimal(24, 12)
+  officialPerMinutePrice   Decimal? @db.Decimal(24, 12)
+  officialPerMillionChars  Decimal? @db.Decimal(24, 12)
+  officialPerSecondPrice   Decimal? @db.Decimal(24, 12)
+
+  // §9c pricing rule; when not FIXED the sell prices above are recomputed automatically
+  pricingMode  PricingMode @default(FIXED)
+  pricingValue Decimal?    @db.Decimal(10, 4)
+  // signed amount added to every derived unit price after the rule (USD per 1M tokens for token units, per image /
+  // request / second / minute for flat units), e.g. -0.05 = "five cents less"; never below 0
+  pricingAdjust Decimal?   @db.Decimal(24, 12)
+  retiresAt    DateTime? // upstream shutdown date, shown as a "retiring" badge
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  routes ModelRoute[]
+
+  @@index([status, sortOrder])
+  @@index([vendor])
+}
+
+model ModelRoute {
+  // how a public model maps to an upstream provider + our COST
+  id              String   @id @default(cuid())
+  modelId         String
+  model           Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  providerId      String
+  provider        Provider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  upstreamModel   String // model id sent upstream
+  label           String? // §9b
+  enabled         Boolean  @default(true)
+  priority        Int      @default(0) // higher first; same priority => weighted random
+  weight          Int      @default(1)
+  groupSlugs      String[] @default([]) // §9b route only used for these groups/pools; empty = all
+  paramOverrides  Json     @default("{}") // §9b deep-merged into upstream body; null value = delete field
+  maxOutputTokens Int? // §9b clamp
+
+  // COST prices (what we pay upstream) — same units as Model sell prices
+  inputCost           Decimal  @default(0) @db.Decimal(24, 12)
+  outputCost          Decimal  @default(0) @db.Decimal(24, 12)
+  cachedInputCost     Decimal? @db.Decimal(24, 12)
+  cacheWriteCost      Decimal? @db.Decimal(24, 12)
+  cacheWrite1hCost    Decimal? @db.Decimal(24, 12)
+  imageCost           Decimal? @db.Decimal(24, 12)
+  requestCost         Decimal? @db.Decimal(24, 12)
+  audioInputCost      Decimal? @db.Decimal(24, 12)
+  audioOutputCost     Decimal? @db.Decimal(24, 12)
+  perMinuteCost       Decimal? @db.Decimal(24, 12)
+  perMillionCharsCost Decimal? @db.Decimal(24, 12)
+  perSecondCost       Decimal? @db.Decimal(24, 12) // video: USD per generated second
+  toolCosts           Json     @default("{}") // server-tool COSTS (USD per unit, same keys as Model.toolPrices)
+  batchCostDiscountPct Decimal @default(50) @db.Decimal(5, 2) // what the supplier takes off the token prices of Batch API results
+  // auto-updated cost: the provider's published price (its own API) is re-read lazily DURING calls, at most every
+  // `autoPriceSyncHours` or every `autoPriceSyncCalls` calls on this route - never on a timer
+  autoCostSync        Boolean   @default(false)
+  autoCostSourceModel String? // the provider's model id when it differs from upstreamModel
+  autoCostSyncedAt    DateTime?
+  autoCostStatus      String? // last outcome, e.g. "ok", "not published", "provider unreachable"
+
+
+  createdAt DateTime @default(now())
+
+  @@unique([modelId, providerId, upstreamModel])
+  @@index([providerId])
+}
+
+// ----------------------------------------------------------------------------
+// Metering
+// ----------------------------------------------------------------------------
+
+model RequestLog {
+  id               String        @id @default(cuid()) // also returned as x-request-id
+  userId           String?
+  user             User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  apiKeyId         String?
+  apiKey           ApiKey?       @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  groupSlug        String?
+  modelSlug        String?
+  endpoint         String // "/v1/chat/completions", "/v1/messages", "/v1beta/models:generateContent" ...
+  inboundFormat    String
+  providerId       String?
+  provider         Provider?     @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  providerKeyId    String?
+  providerKey      ProviderKey?  @relation(fields: [providerKeyId], references: [id], onDelete: SetNull)
+  upstreamModel    String?
+  status           RequestStatus
+  httpStatus       Int
+  errorCode        String?
+  errorMessage     String? // customer-safe message
+  internalError    String? // admin-only detail (upstream body, stack) — never shown to customers
+  stream           Boolean       @default(false)
+  inputTokens      Int           @default(0)
+  outputTokens     Int           @default(0)
+  cachedTokens     Int           @default(0)
+  cacheWriteTokens Int           @default(0)
+  reasoningTokens  Int           @default(0)
+  imageCount       Int           @default(0)
+  audioSeconds     Float         @default(0)
+  characters       Int           @default(0)
+  videoSeconds     Float         @default(0)
+  toolUsage        Json          @default("{}") // server tools used by the request, e.g. {"web_search_request":2,"code_execution_hour":0.0833}
+  batchId          String? // Batch API: the upstream batch this row was metered from
+  usageEstimated   Boolean       @default(false)
+  price            Decimal       @default(0) @db.Decimal(24, 12) // charged to customer
+  cost             Decimal       @default(0) @db.Decimal(24, 12) // paid upstream
+  profit           Decimal       @default(0) @db.Decimal(24, 12)
+  officialPrice    Decimal       @default(0) @db.Decimal(24, 12) // §9c what this usage would cost at official prices (savings = officialPrice - price)
+  latencyMs       Int           @default(0)
+  ttftMs           Int?
+  queueMs          Int           @default(0) // §9b time spent waiting for an upstream slot
+  attempts         Json          @default("[]") // [{providerId, providerKeyId, status, error, latencyMs}]
+  ip               String?
+  userAgent        String?
+  requestBody      Json? // only if settings.logBodies
+  responseBody     Json?
+  createdAt        DateTime      @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@index([providerId, createdAt])
+  @@index([modelSlug, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([status, createdAt])
+  @@index([batchId])
+}
+
+model VideoJob {
+  // OpenAI-compatible video generation job (POST /v1/videos). `id` is OUR public id ("video_..."); the upstream id
+  // and the provider key that created it are stored here so status / content / delete calls stay sticky to the
+  // same upstream account, and so ownership (userId) can be enforced.
+  id            String    @id
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKeyId      String?
+  modelId       String
+  modelSlug     String
+  providerId    String
+  providerKeyId String
+  routeId       String
+  upstreamId    String
+  upstreamModel String
+  status        String    @default("queued") // queued | in_progress | completed | failed
+  progress      Int       @default(0)
+  seconds       Float     @default(0)
+  size          String?
+  price         Decimal   @default(0) @db.Decimal(24, 12) // charged at creation
+  cost          Decimal   @default(0) @db.Decimal(24, 12)
+  refunded      Boolean   @default(false)
+  refundedAt    DateTime?
+  deleted       Boolean   @default(false)
+  requestId     String? // RequestLog id of the creating request
+  meta          Json      @default("{}") // backend-specific (e.g. queue urls)
+  lastObject    Json? // last upstream video object seen (id/model already rewritten)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  completedAt   DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model UpstreamObject {
+  // A stateful object that lives on ONE upstream account (provider key): an uploaded file, a multipart upload in
+  // progress, a Gemini resumable-upload session. Later calls that reference it (file endpoints, `file_id` /
+  // `fileUri` inside chat / responses / messages / generateContent bodies) are pinned to that account, and every
+  // lookup is scoped to the owning customer (foreign or unknown ids answer 404). `upstreamId` is the id the
+  // customer sees (it is the upstream's own id; Gemini upload sessions use OUR opaque session id).
+  id            String   @id @default(cuid())
+  kind          String // "file" | "upload" | "gemini_upload" | "batch"
+  upstreamId    String
+  providerId    String
+  providerKeyId String
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKeyId      String?
+  meta          Json? // last upstream object seen (file listing is served from here) / session details / batch bookkeeping
+  // Batch API (kind "batch"): processing state, and the exactly-once metering of its results
+  status         String? // last upstream processing status (in_progress | canceling | ended ... / validating | in_progress | completed ...)
+  meteredAt      DateTime? // set when every result of the batch was metered
+  meterClaimedAt DateTime? // a metering run holds the batch (stale after 10 minutes)
+  createdAt     DateTime @default(now())
+
+  @@unique([kind, upstreamId, providerId])
+  @@index([userId, kind, createdAt])
+  @@index([providerKeyId])
+  @@index([kind, meteredAt])
+}
+
+// ----------------------------------------------------------------------------
+// Billing
+// ----------------------------------------------------------------------------
+
+model LedgerEntry {
+  // every balance movement EXCEPT per-request usage (that lives in RequestLog)
+  id           String     @id @default(cuid())
+  userId       String
+  user         User       @relation("LedgerUser", fields: [userId], references: [id], onDelete: Cascade)
+  type         LedgerType
+  amount       Decimal    @db.Decimal(24, 12) // + credit, - debit
+  balanceAfter Decimal    @db.Decimal(24, 12)
+  description  String
+  paymentId    String?    @unique
+  payment      Payment?   @relation(fields: [paymentId], references: [id])
+  createdById  String? // admin who made an adjustment
+  metadata     Json       @default("{}")
+  createdAt    DateTime   @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  userId                String
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stripePaymentIntentId String?       @unique
+  stripeCheckoutId      String?       @unique
+  amount                Decimal       @db.Decimal(24, 12)
+  currency              String        @default("usd")
+  status                PaymentStatus @default(PENDING)
+  kind                  String // "topup" | "auto_recharge" | "postpaid_settlement"
+  failureReason         String?
+  receiptUrl            String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  ledger LedgerEntry?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model RedeemCode {
+  id          String    @id @default(cuid())
+  code        String    @unique
+  amount      Decimal   @db.Decimal(24, 12)
+  maxUses     Int       @default(1)
+  uses        Int       @default(0)
+  expiresAt   DateTime?
+  note        String?
+  createdById String?
+  createdAt   DateTime  @default(now())
+
+  usages RedeemCodeUse[]
+}
+
+model RedeemCodeUse {
+  id        String     @id @default(cuid())
+  codeId    String
+  code      RedeemCode @relation(fields: [codeId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+
+  @@unique([codeId, userId])
+}
+
+// ----------------------------------------------------------------------------
+// Operations
+// ----------------------------------------------------------------------------
+
+model HealthCheck {
+  id            String       @id @default(cuid())
+  providerId    String
+  provider      Provider     @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  providerKeyId String?
+  providerKey   ProviderKey? @relation(fields: [providerKeyId], references: [id], onDelete: Cascade)
+  ok            Boolean
+  latencyMs     Int?
+  error         String?
+  createdAt     DateTime     @default(now())
+
+  @@index([providerId, createdAt])
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  action     String
+  targetType String?
+  targetId   String?
+  data       Json     @default("{}")
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  level     String   @default("info")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+model EmailOutbox {
+  id        String    @id @default(cuid())
+  to        String
+  subject   String
+  html      String
+  sentAt    DateTime?
+  error     String?
+  createdAt DateTime  @default(now())
+
+  @@index([createdAt])
+}
