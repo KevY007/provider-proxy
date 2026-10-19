@@ -68,6 +68,7 @@ function modelData(f: ModelFields) {
     batchDiscountPct: f.batchDiscountPct,
     pricingMode: f.pricingMode,
     pricingValue: f.pricingValue,
+    ...(f.pricingAdjust !== undefined ? { pricingAdjust: f.pricingMode === "FIXED" ? null : f.pricingAdjust } : {}),
     retiresAt: f.retiresAt,
   };
 }
@@ -96,6 +97,8 @@ function routeData(f: RouteFields) {
     perSecondCost: f.perSecondCost,
     toolCosts: toolJson(f.toolCosts),
     batchCostDiscountPct: f.batchCostDiscountPct,
+    ...(f.autoCostSync !== undefined ? { autoCostSync: f.autoCostSync } : {}),
+    ...(f.autoCostSourceModel !== undefined ? { autoCostSourceModel: f.autoCostSourceModel } : {}),
   };
 }
 
@@ -257,6 +260,7 @@ export async function createRoute(modelId: string, input: unknown) {
     await audit(admin.id, "route.create", { type: "ModelRoute", id: r.id }, { model: model.slug, providerId, upstreamModel: f.upstreamModel }, ip);
     await afterPricingChange(modelId);
     await invalidateGatewayConfig("models", modelId);
+    if (rest.autoCostSync) await firstAutoSync(r.id, admin.id);
     return { data: { id: r.id }, message: "Route added" };
   });
 }
@@ -271,6 +275,7 @@ export async function updateRoute(routeId: string, input: unknown) {
     await audit(admin.id, "route.update", { type: "ModelRoute", id: routeId }, { modelId: existing.modelId, providerId, upstreamModel: f.upstreamModel }, ip);
     await afterPricingChange(existing.modelId);
     await invalidateGatewayConfig("models", existing.modelId);
+    if (rest.autoCostSync) await firstAutoSync(routeId, admin.id);
     return { message: "Route saved" };
   });
 }
@@ -502,3 +507,34 @@ export async function createModelWithRoute(input: unknown) {
     return { data: { id: m.id }, message: `Model ${f.slug} is ready` };
   });
 }
+
+/** "Sync now" on a route with an auto-updated cost: re-read the provider's published price and re-derive the customer prices. */
+export async function syncRouteCostNow(routeId: string) {
+  return adminAction<{ status: string; changed: string[] }>({ adminOnly: true }, async ({ admin }) => {
+    const route = await db.modelRoute.findUnique({ where: { id: routeId }, select: { id: true } });
+    if (!route) throw new ActionFail("Route not found");
+    const { syncRouteCost } = await import("@/server/pricing/auto-sync");
+    const r = await syncRouteCost(routeId, { force: true, actorId: admin.id, reason: "manual" });
+    const message =
+      r.status === "ok" ? `Cost updated from the provider's price (${r.changed.length} field${r.changed.length === 1 ? "" : "s"})` :
+      r.status === "unchanged" ? "The provider's price is unchanged" :
+      r.status === "not published" ? "The provider does not publish a price for this model (set the provider's model id if it differs)" :
+      r.status === "provider unreachable" ? "The provider's price list could not be read" : `Sync: ${r.status}`;
+    if (r.status === "not published" || r.status === "provider unreachable") throw new ActionFail(message);
+    return { data: { status: r.status, changed: r.changed }, message };
+  });
+}
+
+/** A route switched to an auto-updated cost gets its first price at once (later refreshes happen during calls). Never throws. */
+async function firstAutoSync(routeId: string, actorId: string): Promise<void> {
+  try {
+    const r = await db.modelRoute.findUnique({ where: { id: routeId }, select: { autoCostSyncedAt: true } });
+    if (r && !r.autoCostSyncedAt) {
+      const { syncRouteCost } = await import("@/server/pricing/auto-sync");
+      await syncRouteCost(routeId, { force: true, actorId, reason: "enabled" });
+    }
+  } catch {
+    /* the next call on the route retries */
+  }
+}
+

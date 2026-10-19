@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "src/generated/**",
     // Agent worktrees (each is a full checkout with its own .next output).
     ".claude/**",
+    // Live-workload output (gitignored; may hold a CLI config dir).
+    "live-output/**",
     "out/**",
     "build/**",
     "next-env.d.ts",

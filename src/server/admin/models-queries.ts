@@ -18,6 +18,7 @@ export interface ModelRow {
   loss: boolean;
   pricingMode: string;
   pricingValue: string | null;
+  pricingAdjust: string | null;
   retiresAt: string | null;
   routesTotal: number;
   routesEnabled: number;
@@ -54,6 +55,7 @@ export async function getModelRows(): Promise<ModelRow[]> {
       loss: best ? sum.loss : false,
       pricingMode: m.pricingMode,
       pricingValue: dstr(m.pricingValue),
+      pricingAdjust: dstr(m.pricingAdjust),
       retiresAt: iso(m.retiresAt),
       routesTotal: m.routes.length,
       routesEnabled: m.routes.filter((r) => r.enabled).length,
@@ -121,6 +123,7 @@ export function serializeModel(m: NonNullable<Awaited<ReturnType<typeof db.model
     batchDiscountPct: dstr(m.batchDiscountPct) ?? "",
     pricingMode: m.pricingMode as string,
     pricingValue: dstr(m.pricingValue) ?? "",
+    pricingAdjust: dstr(m.pricingAdjust) ?? "",
     retiresAt: m.retiresAt ? m.retiresAt.toISOString().slice(0, 10) : "",
   };
 }
@@ -155,6 +158,10 @@ export interface RouteRow {
   /** server tools: { key: USD per unit } */
   toolCosts: Record<string, string>;
   batchCostDiscountPct: string;
+  autoCostSync: boolean;
+  autoCostSourceModel: string;
+  autoCostSyncedAt: string | null;
+  autoCostStatus: string | null;
 }
 
 export async function getModelDetail(id: string) {
@@ -197,6 +204,10 @@ export async function getModelDetail(id: string) {
     perSecondCost: dstr(r.perSecondCost) ?? "",
     toolCosts: toolPricesForForm(r.toolCosts),
     batchCostDiscountPct: dstr0(r.batchCostDiscountPct),
+    autoCostSync: r.autoCostSync,
+    autoCostSourceModel: r.autoCostSourceModel ?? "",
+    autoCostSyncedAt: r.autoCostSyncedAt ? r.autoCostSyncedAt.toISOString() : null,
+    autoCostStatus: r.autoCostStatus,
   }));
   return { model: serializeModel(model), routes, providers, groups, totals };
 }

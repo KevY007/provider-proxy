@@ -9,7 +9,7 @@ import { toAdapter } from "./health";
 import { KNOWN_PRICES, lookupKnownPrice, type KnownPrice } from "./price-catalog";
 import { NO_PRICE_API_PRESETS, fetchRemotePricing, parseRemotePricing, type RemotePrice, type RemotePricingResult } from "./remote-pricing";
 import type { JsonObject } from "./types";
-import { ClientAbortError, UpstreamTimeoutError, readTextLimited, sendUpstream } from "./upstream";
+import { ClientAbortError, UpstreamTimeoutError, readTextLimited, sendUpstream, type UpstreamResponse } from "./upstream";
 import { isObject, safeJsonParse } from "./util";
 
 export type UpstreamModel = {
@@ -48,6 +48,25 @@ function isoDate(v: unknown): string | null {
 
 class ListError extends Error {}
 
+/**
+ * The provider's own short error text (e.g. "INSUFFICIENT_BALANCE: Insufficient account balance"), so an admin sees why
+ * a key was refused. JSON bodies only (never an HTML page), at most 200 chars, anything key-shaped redacted.
+ */
+async function upstreamMessage(res: UpstreamResponse): Promise<string | null> {
+  try {
+    const j = safeJsonParse<unknown>(await readTextLimited(res, 64 * 1024));
+    if (!isObject(j)) return null;
+    const e = isObject(j.error) ? j.error : j;
+    const msg = typeof e.message === "string" ? e.message : typeof j.error === "string" ? j.error : typeof j.detail === "string" ? j.detail : null;
+    const code = typeof e.code === "string" ? e.code : typeof e.type === "string" ? e.type : null;
+    const text = [code && !msg?.includes(code) ? code : null, msg].filter(Boolean).join(": ");
+    if (!text) return null;
+    return text.replace(/[A-Za-z0-9_\-]{24,}/g, "[redacted]").replace(/\s+/g, " ").slice(0, 200);
+  } catch {
+    return null;
+  }
+}
+
 async function getJson(url: string, headers: Record<string, string>): Promise<JsonObject> {
   let h;
   try {
@@ -60,12 +79,13 @@ async function getJson(url: string, headers: Record<string, string>): Promise<Js
   try {
     if (h.res.status < 200 || h.res.status >= 300) {
       const s = h.res.status;
+      const said = await upstreamMessage(h.res);
       throw new ListError(
         s === 401 || s === 403
-          ? `The provider rejected the key (HTTP ${s}). Test the key and fix it first.`
+          ? `The provider rejected the key (HTTP ${s})${said ? ` - it says: ${said}` : ". Test the key and fix it first."}`
           : s === 404 || s === 405
             ? "This provider does not offer a model list; type the model id instead."
-            : `The provider answered HTTP ${s}.`,
+            : `The provider answered HTTP ${s}${said ? `: ${said}` : "."}`,
       );
     }
     const text = await readTextLimited(h.res, MAX_BODY);

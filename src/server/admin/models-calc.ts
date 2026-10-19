@@ -65,7 +65,7 @@ export const OFFICIAL_PRICE_FIELDS = MODEL_PRICE_PAIRS.filter((p) => p.official)
   unit: p.unit,
 }));
 
-export const PRICING_MODES = ["FIXED", "PERCENT_OF_OFFICIAL", "MARKUP_OVER_COST"] as const;
+export const PRICING_MODES = ["FIXED", "PERCENT_OF_OFFICIAL", "MARKUP_OVER_COST", "PERCENT_OF_COST"] as const;
 export type PricingModeId = (typeof PRICING_MODES)[number];
 
 export const PRICING_MODE_LABELS: Record<PricingModeId, { label: string; hint: string; valueLabel: string; valueHint: string }> = {
@@ -82,7 +82,21 @@ export const PRICING_MODE_LABELS: Record<PricingModeId, { label: string; hint: s
     valueLabel: "Markup over our cost",
     valueHint: "30 = we charge 30% more than we pay our supplier.",
   },
+  PERCENT_OF_COST: {
+    label: "% of our cost",
+    hint: "Customer price = Our cost × value%. With an auto-updated route cost, the price follows the provider's own price.",
+    valueLabel: "Percent of our cost",
+    valueHint: "50 = customers pay half of what the provider charges us. 100 = the provider's price as it is.",
+  },
 };
+
+/** "70% of official", "+30% over cost", "50% of cost" (+ "-$0.05" when an adjustment is set). */
+export function ruleSummary(mode: string, value: string | null | undefined, adjust?: string | null): string {
+  const v = value ?? "?";
+  const base = mode === "PERCENT_OF_OFFICIAL" ? `${v}% of official` : mode === "PERCENT_OF_COST" ? `${v}% of cost` : mode === "MARKUP_OVER_COST" ? `+${v}% over cost` : "fixed";
+  const a = toNum(adjust ?? null);
+  return a ? `${base} ${a > 0 ? "+" : "-"}$${Math.abs(a)}` : base;
+}
 
 // ---------------------------------------------------------------------------
 // numbers
@@ -187,6 +201,17 @@ export function bestRouteCost(routes: Array<{ enabled: boolean; inputCost: Num; 
 function plainDecimal(v: unknown): unknown {
   return typeof v === "number" && Number.isFinite(v) ? new Decimal(v).toFixed() : v;
 }
+
+const signedDecOpt = z.unknown().transform((raw0, ctx): string | null => {
+  const raw = plainDecimal(raw0);
+  if (raw === null || raw === undefined || (typeof raw === "string" && raw.trim() === "")) return null;
+  const s = String(raw).trim();
+  if (!/^-?\d+(\.\d+)?$/.test(s) || Math.abs(Number(s)) > 1_000_000) {
+    ctx.addIssue({ code: "custom", message: "Must be a number (negative to lower the price)" });
+    return z.NEVER;
+  }
+  return Number(s) === 0 ? null : s;
+}).default(null);
 
 const decOpt = z.unknown().transform((raw, ctx): string | null => {
   const v = plainDecimal(raw);
@@ -349,7 +374,7 @@ export function previewToolPrices(
   const value = toNum(ruleValue);
   if (mode === "FIXED" || value === null || value <= 0) return out;
   const basis = mode === "PERCENT_OF_OFFICIAL" ? official : cost;
-  const factor = mode === "PERCENT_OF_OFFICIAL" ? new Decimal(value).div(100) : new Decimal(value).div(100).plus(1);
+  const factor = mode === "MARKUP_OVER_COST" ? new Decimal(value).div(100).plus(1) : new Decimal(value).div(100);
   for (const [k, v] of Object.entries(basis)) {
     const b = toNum(v);
     if (b !== null) out[k] = new Decimal(String(v)).times(factor).toNumber();
@@ -429,6 +454,8 @@ const modelFieldsBase = z.object({
   batchDiscountPct: pctOpt(null),
   pricingMode: z.enum(PRICING_MODES).default("FIXED"),
   pricingValue: decOpt,
+  /** signed per-unit adjustment after the rule (USD per 1M tokens / per unit); blank = none */
+  pricingAdjust: signedDecOpt,
   retiresAt: dateOpt,
 });
 function refinePricingRule(m: { pricingMode: string; pricingValue: string | null }, ctx: z.RefinementCtx) {
@@ -436,7 +463,7 @@ function refinePricingRule(m: { pricingMode: string; pricingValue: string | null
     ctx.addIssue({
       code: "custom",
       path: ["pricingValue"],
-      message: m.pricingMode === "PERCENT_OF_OFFICIAL" ? "Enter a percent of the official price, e.g. 70" : "Enter a markup percent, e.g. 30",
+      message: m.pricingMode === "PERCENT_OF_OFFICIAL" ? "Enter a percent of the official price, e.g. 70" : m.pricingMode === "PERCENT_OF_COST" ? "Enter a percent of our cost, e.g. 50" : "Enter a markup percent, e.g. 30",
     });
   }
 }
@@ -467,6 +494,9 @@ export const routeFieldsSchema = z.object({
   toolCosts: toolMapOpt,
   /** Batch API: what the supplier takes off its token prices (blank = 50). */
   batchCostDiscountPct: pctOpt("50"),
+  /** the cost follows the provider's published price (refreshed lazily during calls) */
+  autoCostSync: z.boolean().optional(),
+  autoCostSourceModel: optText,
 });
 export type RouteFields = z.output<typeof routeFieldsSchema>;
 

@@ -17,7 +17,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { JsonField, MultiSelectField, NumberField, SelectField, SwitchField, jsonObjectError } from "@/components/admin/fields";
 import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
-import { createRoute, deleteRoute, duplicateRoute, toggleRoute, updateRoute } from "@/server/admin/models-actions";
+import { createRoute, deleteRoute, duplicateRoute, syncRouteCostNow, toggleRoute, updateRoute } from "@/server/admin/models-actions";
 import { compactUnits, fmtPct, formatMargin, MODEL_PRICE_PAIRS, marginTone, pairMargin, routeMargins, rowUnits, summarizeRow, toNum, trafficShares } from "@/server/admin/models-calc";
 import type { RouteRow, WizardProvider } from "@/server/admin/models-queries";
 import { AddRouteWizard } from "./add-route-wizard";
@@ -278,6 +278,8 @@ type RouteForm = {
   maxOutputTokens: string;
   toolCosts: Record<string, string>;
   batchCostDiscountPct: string;
+  autoCostSync: boolean;
+  autoCostSourceModel: string;
 } & Record<string, string | boolean | string[] | Record<string, string>>;
 
 const PRIMARY_SELL = new Set(["inputPrice", "outputPrice", "cachedInputPrice", "cacheWritePrice", "cacheWrite1hPrice"]);
@@ -315,6 +317,8 @@ function RouteDialog({
       maxOutputTokens: route?.maxOutputTokens ?? "",
       toolCosts: route?.toolCosts ?? {},
       batchCostDiscountPct: route?.batchCostDiscountPct ?? "50",
+      autoCostSync: route?.autoCostSync ?? false,
+      autoCostSourceModel: route?.autoCostSourceModel ?? "",
     };
     for (const p of MODEL_PRICE_PAIRS) base[p.cost] = route ? String((route as unknown as Record<string, string>)[p.cost] ?? "") : "";
     return base;
@@ -400,6 +404,35 @@ function RouteDialog({
           </>
         }
       />
+
+      <section className="space-y-2 rounded-md border bg-muted/20 p-3">
+        <SwitchField
+          label="Auto-update the cost from the provider's published price"
+          checked={f.autoCostSync}
+          onChange={(v) => set("autoCostSync", v)}
+          description="Re-read lazily during calls on this route (every few hours or N calls, see Settings - never on a timer). Combine with the model's '% of our cost' rule and a +/- adjustment to price relative to the provider."
+        />
+        {f.autoCostSync && (
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="auto-src">Provider&apos;s model id (optional)</FieldLabel>
+              <Input id="auto-src" value={f.autoCostSourceModel} onChange={(e) => set("autoCostSourceModel", e.target.value)} placeholder={f.upstreamModel} />
+              <FieldDescription>Only when the price list names the model differently from the upstream model.</FieldDescription>
+            </Field>
+            {route && (
+              <div className="space-y-1 text-sm">
+                <p className="text-muted-foreground">
+                  Last sync: {route.autoCostSyncedAt ? new Date(route.autoCostSyncedAt).toLocaleString() : "never"}
+                  {route.autoCostStatus ? ` (${route.autoCostStatus})` : ""}
+                </p>
+                <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => void run(() => syncRouteCostNow(route.id))}>
+                  Sync now
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       <section className="space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">

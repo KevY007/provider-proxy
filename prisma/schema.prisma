@@ -82,6 +82,7 @@ enum PricingMode {
   FIXED // admin types every customer price
   PERCENT_OF_OFFICIAL // customer price = official price × pricingValue / 100
   MARKUP_OVER_COST // customer price = primary route cost × (1 + pricingValue / 100)
+  PERCENT_OF_COST // customer price = primary route cost × pricingValue / 100 (e.g. 50 = half the provider's price)
 }
 
 enum RequestStatus {
@@ -359,6 +360,9 @@ model Model {
   // §9c pricing rule; when not FIXED the sell prices above are recomputed automatically
   pricingMode  PricingMode @default(FIXED)
   pricingValue Decimal?    @db.Decimal(10, 4)
+  // signed amount added to every derived unit price after the rule (USD per 1M tokens for token units, per image /
+  // request / second / minute for flat units), e.g. -0.05 = "five cents less"; never below 0
+  pricingAdjust Decimal?   @db.Decimal(24, 12)
   retiresAt    DateTime? // upstream shutdown date, shown as a "retiring" badge
 
   createdAt DateTime @default(now())
@@ -401,6 +405,13 @@ model ModelRoute {
   perSecondCost       Decimal? @db.Decimal(24, 12) // video: USD per generated second
   toolCosts           Json     @default("{}") // server-tool COSTS (USD per unit, same keys as Model.toolPrices)
   batchCostDiscountPct Decimal @default(50) @db.Decimal(5, 2) // what the supplier takes off the token prices of Batch API results
+  // auto-updated cost: the provider's published price (its own API) is re-read lazily DURING calls, at most every
+  // `autoPriceSyncHours` or every `autoPriceSyncCalls` calls on this route - never on a timer
+  autoCostSync        Boolean   @default(false)
+  autoCostSourceModel String? // the provider's model id when it differs from upstreamModel
+  autoCostSyncedAt    DateTime?
+  autoCostStatus      String? // last outcome, e.g. "ok", "not published", "provider unreachable"
+
 
   createdAt DateTime @default(now())
 

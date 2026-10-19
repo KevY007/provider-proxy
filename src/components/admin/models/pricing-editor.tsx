@@ -42,17 +42,17 @@ export type FocusUnits = PriceUnitKey[];
 const ALWAYS: PriceUnitKey[] = ["input", "output"];
 
 /** Pure: model/route string values + rule -> live preview via previewPricing. */
-export function usePricingPreview(values: PriceValues, mode: string, ruleValue: string, multiplier = 1) {
+export function usePricingPreview(values: PriceValues, mode: string, ruleValue: string, multiplier = 1, adjust = "") {
   return useMemo(() => {
     const v = toNum(ruleValue);
     return previewPricing({
-      rule: { mode: (PRICING_MODES as readonly string[]).includes(mode) ? (mode as PricingModeId) : "FIXED", value: v },
+      rule: { mode: (PRICING_MODES as readonly string[]).includes(mode) ? (mode as PricingModeId) : "FIXED", value: v, adjust: toNum(adjust) },
       official: officialTable(values),
       cost: costTable(values),
       fixed: sellTable(values),
       multiplier,
     });
-  }, [values, mode, ruleValue, multiplier]);
+  }, [values, mode, ruleValue, multiplier, adjust]);
 }
 
 function NumInput({ value, onChange, label, error, className }: { value: string; onChange: (v: string) => void; label: string; error?: string; className?: string }) {
@@ -235,17 +235,24 @@ export function RuleSelector({
   onMode,
   onValue,
   valueError,
+  adjust,
+  onAdjust,
+  adjustError,
 }: {
   mode: string;
   value: string;
   onMode: (m: PricingModeId) => void;
   onValue: (v: string) => void;
   valueError?: string;
+  /** optional signed per-unit adjustment (omit both to hide the field) */
+  adjust?: string;
+  onAdjust?: (v: string) => void;
+  adjustError?: string;
 }) {
   const info = PRICING_MODE_LABELS[(mode as PricingModeId) in PRICING_MODE_LABELS ? (mode as PricingModeId) : "FIXED"];
   return (
     <div className="space-y-3">
-      <div role="radiogroup" aria-label="How is the customer price set?" className="grid gap-2 sm:grid-cols-3">
+      <div role="radiogroup" aria-label="How is the customer price set?" className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         {PRICING_MODES.map((m) => {
           const on = m === mode;
           return (
@@ -289,6 +296,22 @@ export function RuleSelector({
             </div>
             {valueError ? <p className="text-xs text-destructive">{valueError}</p> : <p className="max-w-md text-xs text-muted-foreground">{info.valueHint}</p>}
           </div>
+          {onAdjust && (
+            <div className="space-y-1">
+              <label htmlFor="rule-adjust" className="text-sm font-medium">
+                Then add / subtract
+              </label>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-muted-foreground">$</span>
+                <Input id="rule-adjust" type="number" step="any" inputMode="decimal" value={adjust ?? ""} onChange={(e) => onAdjust(e.target.value)} aria-invalid={!!adjustError} placeholder="0" className="h-9 w-28 tabular-nums" />
+              </div>
+              {adjustError ? (
+                <p className="text-xs text-destructive">{adjustError}</p>
+              ) : (
+                <p className="max-w-md text-xs text-muted-foreground">Per unit, after the percentage: -0.05 = five cents less per 1M tokens (per image / request / second for flat units). Never below $0.</p>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
