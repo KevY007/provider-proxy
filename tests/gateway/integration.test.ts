@@ -202,6 +202,8 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     P.all429 = await makeProvider("all429", { formats: ["openai_chat"], keys: [{ s: "fail429x" }, { s: "fail429y" }] });
     P.f500 = await makeProvider("f500", { formats: ["openai_chat"], keys: [{ s: "fail500z" }] });
     P.bad = await makeProvider("bad", { formats: ["openai_chat"], keys: [{ s: "badkey" }] });
+    P.deny = await makeProvider("deny", { formats: ["openai_chat"], keys: [{ s: "deny403a", priority: 10 }, { s: "denyok", priority: 0 }] });
+    P.denyOnly = await makeProvider("denyonly", { formats: ["openai_chat"], keys: [{ s: "deny403b" }] });
     P.q = await makeProvider("q", { formats: ["openai_chat"], keys: [{ s: "q1", maxConcurrency: 1 }] });
     P.nousage = await makeProvider("nousage", { formats: ["openai_chat"], settings: { forceStreamUsage: false }, keys: [{ s: "nu1" }] });
     P.cap = await makeProvider("cap", { formats: ["openai_chat"], keys: [{ s: "cap1" }, { s: "cap2" }] });
@@ -219,6 +221,8 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     M.fail = await makeModel("fail", { caps: ["chat"], providerId: P.fo.id });
     M.all429 = await makeModel("all429", { caps: ["chat"], providerId: P.all429.id });
     M.f500 = await makeModel("f500", { caps: ["chat"], providerId: P.f500.id });
+    M.deny = await makeModel("deny", { caps: ["chat"], providerId: P.deny.id });
+    M.denyOnly = await makeModel("denyonly", { caps: ["chat"], providerId: P.denyOnly.id });
     M.bad = await makeModel("bad", { caps: ["chat"], providerId: P.bad.id });
     M.queue = await makeModel("queue", { caps: ["chat"], providerId: P.q.id });
     M.nousage = await makeModel("nousage", { caps: ["chat"], providerId: P.nousage.id });
@@ -684,6 +688,26 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
   });
 
   // ------------------------------------------------------------------ failover + health
+  it("a 'not allowed' 403 fails over to the next key without retrying the same key, and never invalidates the key", async () => {
+    const res = await call("/v1/chat/completions", fx.main.key, { model: M.deny, messages: [{ role: "user", content: "hi" }] });
+    expect(res.status).toBe(200);
+    const log = await logOf(res);
+    expect((log.attempts as Array<{ status: number }>).map((a) => a.status)).toEqual([403, 200]);
+    expect(log.providerKeyId).toBe(P.deny.keys[1]);
+
+    // only key: one attempt (a retry cannot help), the customer gets a gateway error, the key stays ACTIVE
+    const only = await call("/v1/chat/completions", fx.main.key, { model: M.denyOnly, messages: [{ role: "user", content: "hi" }] });
+    expect(only.status).toBe(503);
+    expect((((await logOf(only)).attempts as unknown[]) ?? []).length).toBe(1);
+    const again = await call("/v1/chat/completions", fx.main.key, { model: M.denyOnly, messages: [{ role: "user", content: "hi" }] });
+    expect(again.status).toBe(503);
+    await sleep(1500);
+    for (const id of [P.deny.keys[0], P.denyOnly.keys[0]]) {
+      const pk = await db.providerKey.findUniqueOrThrow({ where: { id } });
+      expect(pk.status).toBe("ACTIVE");
+    }
+  });
+
   it("fails over from a 429 key to the next key (same request succeeds) and cools the 429 key down", async () => {
     const res = await call("/v1/chat/completions", fx.main.key, { model: M.fail, messages: [{ role: "user", content: "hi [[usage:in=100,out=10]]" }] });
     expect(res.status).toBe(200);

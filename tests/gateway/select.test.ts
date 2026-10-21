@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ConfigSnapshot, GroupRec, KeyRec, ModelRec, ProviderRec, RouteRec } from "@/gateway/cache";
 import { __resetCacheForTests, effectiveKeyState, isKeyUsable, setKeyRuntime } from "@/gateway/cache";
-import { recordKeyFailure, recordKeySuccess } from "@/gateway/keyhealth";
+import { classifyStatus, recordKeyFailure, recordKeySuccess } from "@/gateway/keyhealth";
 import { sellTable, costTable, officialTable } from "@/gateway/pricing";
 import { buildCandidates, eligibleRoutes, orderKeys, orderRoutes } from "@/gateway/select";
 import { Decimal } from "@/lib/money";
@@ -248,6 +248,33 @@ describe("upstream key ordering + health", () => {
     recordKeyFailure(k, "network", { status: 0, message: "c" }, settings, now);
     expect(isKeyUsable(k, now)).toBe(false);
     expect(isKeyUsable(k, now + 61_000)).toBe(true);
+  });
+
+  it("tells the different 403s apart: bad key, no credit, or just not allowed for this model / endpoint", () => {
+    // real upstream texts
+    expect(classifyStatus(401)).toBe("auth");
+    expect(classifyStatus(403, "API key not valid. Please pass a valid API key.")).toBe("auth");
+    expect(classifyStatus(403, "Your API key has been revoked")).toBe("auth");
+    expect(classifyStatus(403, "Insufficient account balance")).toBe("payment");
+    expect(classifyStatus(403, "You exceeded your current quota, please check your plan and billing details.")).toBe("payment");
+    expect(classifyStatus(403, "This group does not allow /v1/messages dispatch")).toBe("forbidden");
+    expect(classifyStatus(403, "Project `proj_x` does not have access to model `gpt-6-astra`")).toBe("forbidden");
+    expect(classifyStatus(403, "")).toBe("forbidden");
+    expect(classifyStatus(402)).toBe("payment");
+    expect(classifyStatus(429)).toBe("rate_limit");
+  });
+
+  it("a 'forbidden' 403 never invalidates or cools down the key (other customers keep using it)", () => {
+    __resetCacheForTests();
+    const k = key("k403", "p");
+    const now = Date.now();
+    for (let i = 0; i < 5; i++) recordKeyFailure(k, "forbidden", { status: 403, message: "This group does not allow /v1/messages dispatch" }, settings, now);
+    expect(isKeyUsable(k, now)).toBe(true);
+    expect(effectiveKeyState(k)).toMatchObject({ status: "ACTIVE", consecutiveFailures: 0 });
+    // a real bad-key 403 still invalidates after two in a row
+    recordKeyFailure(k, classifyStatus(403, "API key not valid"), { status: 403, message: "API key not valid" }, settings, now);
+    recordKeyFailure(k, classifyStatus(403, "API key not valid"), { status: 403, message: "API key not valid" }, settings, now);
+    expect(effectiveKeyState(k).status).toBe("INVALID");
   });
 
   it("ignores transient failures of requests that started before the key last answered (connection bursts)", () => {

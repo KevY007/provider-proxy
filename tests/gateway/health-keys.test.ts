@@ -19,6 +19,7 @@ describe("judgeProbe", () => {
     expect(judgeProbe("anthropic", r(402), 60)).toMatchObject({ kind: "cooldown", seconds: 600 });
     expect(judgeProbe("fal", r(403, "User is locked. Reason: Exhausted balance"), 60)).toMatchObject({ kind: "cooldown", seconds: 600 });
     expect(judgeProbe("fal", r(403, "forbidden"), 60)).toEqual({ kind: "invalid" });
+    expect(judgeProbe("codex-everywhere", r(403, '{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}'), 60)).toMatchObject({ kind: "cooldown", seconds: 600 });
     expect(judgeProbe("openai", r(500), 60)).toEqual({ kind: "none" });
     expect(judgeProbe("openai", r(0, "timeout"), 60)).toEqual({ kind: "none" });
   });

@@ -7,14 +7,18 @@ import { broadcastKeyState, effectiveKeyState, getKeyRuntime, setKeyRuntime, typ
 /**
  * Upstream key health (PLAN 5 step 10).
  *   429                    -> COOLDOWN until retry-after (or settings.keyCooldownSeconds)
- *   401 / 403              -> INVALID after 2 consecutive auth failures
- *   402                    -> COOLDOWN for 10 minutes (upstream account out of credit)
+ *   401 (and a 403 that says the key itself is bad) -> INVALID after 2 consecutive auth failures
+ *   402 (and a 403 about balance / credit / quota)   -> COOLDOWN for 10 minutes (upstream account out of credit)
+ *   any other 403          -> "forbidden": this request may not use this model / endpoint with this key (a reseller
+ *                             group without Claude, a project without access to a model). Fail over, but the key's
+ *                             health is untouched: one customer calling something the key cannot do must not take
+ *                             the key away from everyone else.
  *   5xx / network / timeout-> consecutiveFailures++, COOLDOWN after settings.failuresBeforeCooldown
  *   success                -> counters reset (the meter writer also resets them in the DB)
  * State changes apply to the in-process overlay immediately, are broadcast to other instances and persisted
  * (coalesced, 1s) so the admin console sees them.
  */
-export type FailureKind = "rate_limit" | "auth" | "payment" | "server" | "network" | "timeout";
+export type FailureKind = "rate_limit" | "auth" | "payment" | "forbidden" | "server" | "network" | "timeout";
 
 export interface FailureInfo {
   status: number; // 0 for network errors
@@ -54,9 +58,16 @@ function queuePersist(id: string, patch: Pending): void {
   persist.timer.unref?.();
 }
 
-export function classifyStatus(status: number): FailureKind {
+// 403 wording that means the credential itself is bad (Google answers a wrong key with 403 PERMISSION_DENIED)
+const BAD_KEY_403 = /api[ _-]?key[^.]{0,40}(invalid|not valid|incorrect|expired|revoked|disabled|deleted|suspended)|(invalid|incorrect|expired|revoked|disabled|unknown)[^.]{0,20}(api[ _-]?key|x-api-key|token|credential)|api_key_invalid|unauthenticated|authentication[ _]failed|invalid[ _]authentication|account[^.]{0,20}(suspended|deactivated|disabled|banned)/i;
+// 403 wording that means the upstream account is out of money
+const NO_CREDIT_403 = /insufficient[ _](account[ _])?(balance|credit|funds|quota)|insufficient_quota|out of credit|credit balance|billing|payment required|quota exceeded|exceeded your (current )?quota/i;
+
+/** Failure kind of an upstream HTTP error; `message` (the upstream's error text) tells the different 403s apart. */
+export function classifyStatus(status: number, message = ""): FailureKind {
   if (status === 429) return "rate_limit";
-  if (status === 401 || status === 403) return "auth";
+  if (status === 401) return "auth";
+  if (status === 403) return NO_CREDIT_403.test(message) ? "payment" : BAD_KEY_403.test(message) ? "auth" : "forbidden";
   if (status === 402) return "payment";
   if (status === 0) return "network";
   return "server";
@@ -99,6 +110,9 @@ export function recordKeyFailure(
     case "payment":
       cooldownUntil = now + 10 * 60_000;
       status = "COOLDOWN";
+      break;
+    case "forbidden":
+      // not the key's fault (see above): only remembered as the last error
       break;
     default:
       authStreak = 0;

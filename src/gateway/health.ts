@@ -8,6 +8,7 @@ import { getSettings } from "@/lib/settings";
 import { broadcastKeyState, invalidateGatewayConfig } from "./cache";
 import { buildUpstreamHeaders, type AdapterProvider } from "./providers/adapters";
 import { maxTokensParamFor, parseRetryAfter } from "./shape";
+import { classifyStatus } from "./keyhealth";
 import type { InboundFormat, JsonObject } from "./types";
 import { ClientAbortError, UpstreamTimeoutError, readErrorBody, sendUpstream } from "./upstream";
 import { isObject } from "./util";
@@ -123,11 +124,14 @@ type ProbeResult = Awaited<ReturnType<typeof runProbe>>;
 /** What a failed probe says about the credential. */
 export type ProbeVerdict = { kind: "invalid" } | { kind: "cooldown"; seconds: number; why: string } | { kind: "none" };
 
-/** 401/403 = bad credential (INVALID), 429 = rate limited (COOLDOWN with retry-after), 402 / "balance exhausted" = COOLDOWN 10 min. */
+/**
+ * 401/403 = bad credential (INVALID), 429 = rate limited (COOLDOWN with retry-after), 402 or a 403 about balance /
+ * credit / quota (any provider; fal also says "User is locked") = COOLDOWN 10 min.
+ */
 export function judgeProbe(preset: string, r: Pick<ProbeResult, "status" | "text" | "retryAfterSec">, keyCooldownSeconds: number): ProbeVerdict {
   const paymentLike = /locked|exhaust|balance|insufficient|quota|billing|payment/i.test(r.text);
   if (r.status === 429) return { kind: "cooldown", seconds: Math.min(3600, Math.max(1, r.retryAfterSec ?? keyCooldownSeconds)), why: "rate limited" };
-  if (r.status === 402 || (r.status === 403 && preset === "fal" && paymentLike)) return { kind: "cooldown", seconds: 600, why: "account out of credit" };
+  if (r.status === 402 || (r.status === 403 && (classifyStatus(403, r.text) === "payment" || (preset === "fal" && paymentLike)))) return { kind: "cooldown", seconds: 600, why: "account out of credit" };
   if (r.status === 401 || r.status === 403) return { kind: "invalid" };
   return { kind: "none" };
 }

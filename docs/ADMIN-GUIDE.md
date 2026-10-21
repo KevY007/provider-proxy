@@ -64,7 +64,7 @@ Secrets are encrypted with `ENCRYPTION_KEY`. Only the last 4 characters are ever
 | RPM / TPM limit | Per-key limits. The key is skipped when it is over them. |
 | Daily budget | Stop using the key after this much cost per day |
 | Extra (JSON) | Org id, project id, Azure deployment map, ... |
-| Status | ACTIVE, DISABLED, COOLDOWN (automatic, until `cooldownUntil`), INVALID (automatic after 2 consecutive 401/403), EXHAUSTED |
+| Status | ACTIVE, DISABLED, COOLDOWN (automatic, until `cooldownUntil`), INVALID (automatic after 2 consecutive 401s, or 403s whose message says the key itself is bad; a 403 about balance / quota is a 10-minute COOLDOWN, and any other 403 (a model or endpoint this key may not use, e.g. a reseller group without Claude) fails over without touching the key's status), EXHAUSTED |
 
 Automatic key health: a 429 puts the key in cooldown until `retry-after` (or `keyCooldownSeconds`, 60). A 402 means
 the account is out of credit and gives a 10 min cooldown. 5xx and timeouts count toward `failuresBeforeCooldown` (3).
