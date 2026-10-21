@@ -52,6 +52,7 @@ function modelData(f: ModelFields) {
     perSecondPrice: f.perSecondPrice,
     longContextThreshold: f.longContextThreshold,
     longContextMultiplier: f.longContextMultiplier,
+    longContextOutputMultiplier: f.longContextOutputMultiplier,
     officialInputPrice: f.officialInputPrice,
     officialOutputPrice: f.officialOutputPrice,
     officialCachedPrice: f.officialCachedPrice,

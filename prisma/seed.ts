@@ -156,6 +156,7 @@ async function seedModels() {
           sortOrder: m.sortOrder,
           longContextThreshold: known.longContext?.threshold ?? null,
           longContextMultiplier: known.longContext ? String(known.longContext.multiplier) : null,
+          longContextOutputMultiplier: known.longContext?.outputMultiplier ? String(known.longContext.outputMultiplier) : null,
           retiresAt: known.retiresAt ? new Date(known.retiresAt) : null,
           ...official,
           ...sellNew,

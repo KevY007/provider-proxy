@@ -22,8 +22,8 @@ export type KnownPrice = {
   description?: string;
   /** Anthropic 1h cache write ($/1M). Only a route COST / sell value: there is no separate official column for it. */
   cacheWrite1h?: number;
-  /** Long-context surcharge: tokens above `threshold` input tokens are priced x `multiplier`. */
-  longContext?: { threshold: number; multiplier: number };
+  /** Long-context surcharge: above `threshold` input tokens, tokens are priced x `multiplier` (output x `outputMultiplier` when set). */
+  longContext?: { threshold: number; multiplier: number; outputMultiplier?: number };
   /** Extra ids that resolve to this entry. */
   aliases?: string[];
   /** ISO date the vendor retires the model (shown as "retiring" in admin). */
@@ -54,6 +54,13 @@ const chat = (vendor: string, model: string, i: number, o: number, cached: numbe
   return k(vendor, model, { input: i, output: o, ...(cached !== null ? { cachedInput: cached } : {}) }, { capabilities: CHAT, ...(vendor === "openai" && caps.includes("responses") ? { tools: { ...OPENAI_TOOL_PRICES } } : {}), ...opts });
 };
 
+const OPENAI_PRICING = "OpenAI pricing page (developers.openai.com/api/docs/pricing, standard tier), checked 2026-10-21";
+/** GPT-6 / GPT-5.6: 1M context, long context above 272K input (input 2x, output 1.5x), 30-minute cache write 1.25x input. */
+const oai6 = (model: string, i: number, o: number, cached: number, displayName: string, description: string, x: { cacheWrite?: number } = {}): KnownPrice => ({
+  ...chat("openai", model, i, o, cached, { displayName, description, contextWindow: 1_000_000, maxOutput: 128_000, longContext: { threshold: 272_000, multiplier: 2, outputMultiplier: 1.5 }, source: OPENAI_PRICING }),
+  official: { input: i, output: o, cachedInput: cached, cacheWrite: x.cacheWrite ?? round(i * 1.25) },
+});
+
 /** Anthropic: cache read 0.1x, 5m write 1.25x, 1h write 2x of input (unless overridden) */
 const claude = (model: string, i: number, o: number, opts: Opts & { cached?: number; cw?: number; cw1h?: number } = {}): KnownPrice => {
   const { cached, cw, cw1h, ...rest } = opts;
@@ -66,15 +73,20 @@ function round(n: number): number {
 
 export const KNOWN_PRICES: KnownPrice[] = [
   // ======================================================================================================== OpenAI
-  // ---- post-2025 models from the project seed (prices unverified)
-  chat("openai", "gpt-6-astra", 10, 50, 1, { displayName: "GPT-6 Astra", description: "OpenAI flagship reasoning model.", contextWindow: 1_000_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-6.1-sol", 2, 10, 0.1, { displayName: "GPT-6.1 Sol", description: "Balanced GPT-6.1 model for everyday workloads.", contextWindow: 1_000_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-6-sol", 2, 10, 0.2, { displayName: "GPT-6 Sol", description: "Balanced GPT-6 model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-6-luna", 0.1, 0.5, 0.01, { displayName: "GPT-6 Luna", description: "Fast, low-cost GPT-6 model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-5.6-sol", 5, 30, 0.5, { displayName: "GPT-5.6 Sol", description: "GPT-5.6 high-capability model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-5.6-terra", 2, 12, 0.2, { displayName: "GPT-5.6 Terra", description: "GPT-5.6 mid-tier model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  chat("openai", "gpt-5.6-luna", 0.2, 1.2, 0.02, { displayName: "GPT-5.6 Luna", description: "GPT-5.6 small, fast model.", contextWindow: 400_000, maxOutput: 128_000, source: SEED, needsReview: true }),
-  k("openai", "gpt-image-2", { image: 0.04 }, { displayName: "GPT Image 2", description: "Image generation and editing (flat per image).", capabilities: ["images"], contextWindow: 32_000, source: SEED, needsReview: true }),
+  // ---- GPT-6 / GPT-5.6: OpenAI pricing page (standard tier), checked 2026-10-21. 1M context; above 272K input tokens
+  // input and cached input cost 2x and output 1.5x; 30-minute cache writes are 1.25x input.
+  oai6("gpt-6-astra", 10, 50, 1, "GPT-6 Astra", "OpenAI flagship reasoning model."),
+  oai6("gpt-6.1-sol", 2, 10, 0.1, "GPT-6.1 Sol", "Balanced GPT-6.1 model for everyday workloads."),
+  oai6("gpt-6-sol", 2, 10, 0.2, "GPT-6 Sol", "Balanced GPT-6 model."),
+  oai6("gpt-6-luna", 0.1, 0.5, 0.01, "GPT-6 Luna", "Fast, low-cost GPT-6 model."),
+  // promotional price, "at least through November 21, 2026" (list price before it: 5 / 0.5 / 30)
+  oai6("gpt-5.6-sol", 4, 20, 0.4, "GPT-5.6 Sol", "GPT-5.6 high-capability model.", { cacheWrite: 5 }),
+  oai6("gpt-5.6-terra", 2, 12, 0.2, "GPT-5.6 Terra", "GPT-5.6 mid-tier model."),
+  oai6("gpt-5.6-luna", 0.2, 1.2, 0.02, "GPT-5.6 Luna", "GPT-5.6 small, fast model."),
+  // GPT Image 2 / 2.5: token-billed (text input 5, cached text 1.25, image output 30; image inputs are 8 per 1M)
+  k("openai", "gpt-image-2", { input: 5, output: 30, cachedInput: 1.25 }, { displayName: "GPT Image 2", description: "Image generation and editing (token-billed: text in, image out).", capabilities: ["images"], contextWindow: 32_000, source: OPENAI_PRICING }),
+  k("openai", "gpt-image-2.5-flare", { input: 5, output: 30, cachedInput: 1.25 }, { displayName: "GPT Image 2.5 Flare", description: "GPT Image 2.5 image generation and editing (token-billed).", capabilities: ["images"], contextWindow: 32_000, source: OPENAI_PRICING }),
+  k("openai", "gpt-image-2.5-sunburst", { input: 5, output: 30, cachedInput: 1.25 }, { displayName: "GPT Image 2.5 Sunburst", description: "GPT Image 2.5 image generation and editing (token-billed).", capabilities: ["images"], contextWindow: 32_000, source: OPENAI_PRICING }),
   k("openai", "sora-2", { perSecond: 0.1 }, { displayName: "Sora 2", description: "Text/image-to-video generation with synced audio (720p, 4-12 s).", capabilities: ["video"], retiresAt: "2026-09-24", source: LIST }),
   // ---- GPT-5 family
   chat("openai", "gpt-5.2", 1.75, 14, 0.175, { displayName: "GPT-5.2", contextWindow: 400_000, maxOutput: 128_000, needsReview: true }),

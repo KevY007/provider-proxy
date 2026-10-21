@@ -242,7 +242,11 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       sell: sellTable(m),
       official: officialTable(m),
       retiresAt: m.retiresAt ? m.retiresAt.getTime() : null,
-      longContext: { threshold: m.longContextThreshold, multiplier: m.longContextMultiplier ? toDecimal(m.longContextMultiplier) : null },
+      longContext: {
+        threshold: m.longContextThreshold,
+        multiplier: m.longContextMultiplier ? toDecimal(m.longContextMultiplier) : null,
+        outputMultiplier: m.longContextOutputMultiplier ? toDecimal(m.longContextOutputMultiplier) : null,
+      },
       batchDiscountPct: m.batchDiscountPct === null ? null : toDecimal(m.batchDiscountPct),
       createdAt: m.createdAt.getTime(),
     };

@@ -107,7 +107,7 @@ Running several dev servers from one checkout: `NEXT_DIST_DIR=.next-<name> pnpm 
 | `/api/pricing` with an API key while pricing is private (the key's own prices) | ✅ `checkApiKey` in `src/gateway/auth.ts` (PR #18) |
 | Upstream 403s told apart (bad key / no credit / not allowed for this model or endpoint); Codex Everywhere preset verified live | ✅ `classifyStatus` in `src/gateway/keyhealth.ts` (PR #19) |
 
-Last verified gates (2026-10-21, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 803 passed / 1 skipped,
+Last verified gates (2026-10-21, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 805 passed / 1 skipped,
 `pnpm build` OK, CI green on `main`; live smoke suites against the production deployment 19/19.
 
 **State:** everything is done, merged into `main` (PR #1 - #15) and running in production: every push to `main`

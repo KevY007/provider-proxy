@@ -256,6 +256,7 @@ model Model {                       // public catalog entry (what customers put 
   perMillionChars   Decimal? @db.Decimal(24, 12)    // TTS USD per 1M input chars
   longContextThreshold  Int?                        // input tokens above which multiplier applies
   longContextMultiplier Decimal? @db.Decimal(10, 4)
+  longContextOutputMultiplier Decimal? @db.Decimal(10, 4)    // output tokens; null => longContextMultiplier
   // reference official price (marketing/"savings" display only)
   officialInputPrice  Decimal? @db.Decimal(24, 12)
   officialOutputPrice Decimal? @db.Decimal(24, 12)

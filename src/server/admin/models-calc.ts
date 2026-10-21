@@ -437,6 +437,7 @@ const modelFieldsBase = z.object({
   perSecondPrice: decOpt,
   longContextThreshold: intOpt(1),
   longContextMultiplier: decOpt,
+  longContextOutputMultiplier: decOpt,
   officialInputPrice: decOpt,
   officialOutputPrice: decOpt,
   officialCachedPrice: decOpt,

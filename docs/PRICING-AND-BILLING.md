@@ -64,11 +64,14 @@ It never applies to our cost.
 ## The formula (`computeAmount` / `priceRequest`)
 
 ```
-lc       = (longContextThreshold && inputTokens > threshold) ? longContextMultiplier : 1
-tokens$  = ( uncachedInput x input + cached x (cachedInput ?? input)
+long     = longContextThreshold && inputTokens > threshold
+lcIn     = long ? longContextMultiplier : 1
+lcOut    = long ? (longContextOutputMultiplier ?? longContextMultiplier) : 1
+in$      = ( uncachedInput x input + cached x (cachedInput ?? input)
            + cacheWrite5m x (cacheWrite ?? input) + cacheWrite1h x (cacheWrite1h ?? cacheWrite ?? input)
-           + output x output + audioIn x audioInput + audioOut x audioOutput ) / 1e6
-tokens$  = tokens$ x lc                         (long-context factor first)
+           + audioIn x audioInput ) / 1e6
+out$     = ( output x output + audioOut x audioOutput ) / 1e6
+tokens$  = in$ x lcIn + out$ x lcOut           (long-context factors first; OpenAI GPT-6 / 5.6 above 272K: 2 / 1.5)
 tokens$  = tokens$ x (1 - batchDiscountPct/100) (Batch API results only)
 flat$    = images x image + request (successful requests only) + audioSeconds/60 x perMinute
          + chars x perMillionChars / 1e6 + videoSeconds x perSecond + sum(toolUsage[k] x tools[k])
