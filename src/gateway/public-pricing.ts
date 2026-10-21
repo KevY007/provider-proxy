@@ -1,9 +1,12 @@
 import { Decimal } from "@/lib/money";
 import { getConfig, type GroupRec, type ModelRec } from "./cache";
+import { effectiveGroup } from "./auth";
+import type { AuthRecord } from "./cache";
 import { modalities, plainNumber, priceMatrix } from "./price-view";
+import { effectiveMultiplier } from "./pricing";
 
 /**
- * Public price list (`GET /api/pricing`, no authentication): every ACTIVE model that can actually be served, with the
+ * Price list (`GET /api/pricing`, public or with an API key): every ACTIVE model that can actually be served, with the
  * official price, the price a customer of the (default or requested public) group pays and the saving, per billable
  * unit. Never contains costs, provider names or upstream model ids.
  */
@@ -22,8 +25,8 @@ const cache = new Map<string, { at: number; body: PublicPricing }>();
 
 const groupView = (g: GroupRec) => ({ slug: g.slug, name: g.name, multiplier: plainNumber(g.priceMultiplier) ?? 1 });
 
-function modelView(m: ModelRec, g: GroupRec | null): Record<string, unknown> {
-  const matrix = priceMatrix(m.sell, m.official, g?.priceMultiplier ?? new Decimal(1));
+function modelView(m: ModelRec, mult: Decimal): Record<string, unknown> {
+  const matrix = priceMatrix(m.sell, m.official, mult);
   return {
     id: m.slug,
     name: m.displayName,
@@ -45,8 +48,16 @@ function modelView(m: ModelRec, g: GroupRec | null): Record<string, unknown> {
   };
 }
 
-/** Returns the document, or null when `groupSlug` is not a public group. */
-export async function getPublicPricing(groupSlug?: string | null): Promise<PublicPricing | null> {
+/**
+ * Returns the document, or null when `groupSlug` is not a public group. With `viewer` (an authenticated API key) and
+ * no `groupSlug`, the prices and models are that key's own: its group, the customer multiplier and the key's model
+ * allow-list (never cached across viewers).
+ */
+export async function getPublicPricing(groupSlug?: string | null, viewer?: AuthRecord | null): Promise<PublicPricing | null> {
+  if (viewer && !groupSlug) {
+    const snap = await getConfig();
+    return buildPricing(snap, effectiveGroup(snap, viewer), viewer);
+  }
   const key = groupSlug || "";
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.body;
@@ -54,21 +65,28 @@ export async function getPublicPricing(groupSlug?: string | null): Promise<Publi
   const snap = await getConfig();
   const group = groupSlug ? (snap.groupsBySlug.get(groupSlug) ?? null) : snap.defaultGroup;
   if (groupSlug && (!group || !group.isPublic)) return null;
+  const body = buildPricing(snap, group, null);
+  cache.set(key, { at: Date.now(), body });
+  if (cache.size > 50) cache.clear();
+  return body;
+}
 
+function buildPricing(snap: Awaited<ReturnType<typeof getConfig>>, group: GroupRec | null, viewer: AuthRecord | null): PublicPricing {
   const models: ModelRec[] = [];
   for (const m of snap.modelsById.values()) {
     if (m.status !== "ACTIVE") continue;
     if (group?.allowedModels && !group.allowedModels.has(m.slug)) continue;
+    if (viewer?.key.allowedModels && !viewer.key.allowedModels.has(m.slug)) continue;
     const routable = (snap.routesByModel.get(m.id) ?? []).some((r) => r.provider.status === "ACTIVE");
     if (routable) models.push(m);
   }
   models.sort((a, b) => a.sortOrder - b.sortOrder || a.slug.localeCompare(b.slug));
-
-  const body: PublicPricing = {
+  const mult = viewer ? effectiveMultiplier(viewer.user.priceMultiplier, group?.priceMultiplier) : (group?.priceMultiplier ?? new Decimal(1));
+  return {
     object: "pricing",
     currency: "USD",
     updated_at: new Date().toISOString(),
-    group: group ? groupView(group) : { slug: "", name: "Default", multiplier: 1 },
+    group: group ? { ...groupView(group), ...(viewer ? { multiplier: plainNumber(mult) ?? 1 } : {}) } : { slug: "", name: "Default", multiplier: plainNumber(mult) ?? 1 },
     groups: [...snap.groupsById.values()].filter((g) => g.isPublic).map(groupView),
     units: {
       usd_per_1m_tokens: "US dollars per one million tokens",
@@ -78,11 +96,8 @@ export async function getPublicPricing(groupSlug?: string | null): Promise<Publi
       usd_per_minute: "US dollars per audio minute",
       usd_per_1m_characters: "US dollars per one million input characters",
     },
-    data: models.map((m) => modelView(m, group)),
+    data: models.map((m) => modelView(m, mult)),
   };
-  cache.set(key, { at: Date.now(), body });
-  if (cache.size > 50) cache.clear();
-  return body;
 }
 
 export function __resetPublicPricingForTests(): void {
