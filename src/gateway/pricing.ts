@@ -6,7 +6,8 @@ import type { Usage } from "./types";
  *
  *   effectiveMultiplier = (user.priceMultiplier ?? 1) x group.priceMultiplier
  *   uncachedInput = inputTokens - cachedTokens - cacheWriteTokens
- *   lc            = (longContextThreshold && inputTokens > threshold) ? longContextMultiplier : 1   (token components only)
+ *   lc            = (longContextThreshold && inputTokens > threshold) ? longContextMultiplier : 1   (token components only;
+ *                   output tokens use longContextOutputMultiplier when set)
  *   tokens$       = lc x ( uncachedInput x in + cached x (cachedIn ?? in) + cacheWrite5m x (cacheWrite ?? in)
  *                          + cacheWrite1h x (cacheWrite1h ?? cacheWrite ?? in) + output x out
  *                          + audioIn x audioInputPrice + audioOut x audioOutputPrice ) / 1e6
@@ -57,6 +58,8 @@ export function toolTable(v: unknown): Record<string, Decimal> {
 export interface LongContext {
   threshold: number | null;
   multiplier: Decimal | null;
+  /** Output tokens above the threshold (null/undefined: `multiplier`). */
+  outputMultiplier?: Decimal | null;
 }
 
 const opt = (v: MoneyLike): Decimal | null => (v === null || v === undefined ? null : toDecimal(v));
@@ -127,9 +130,9 @@ export function costTable(r: {
   };
 }
 
-export function longContextFactor(inputTokens: number, lc: LongContext | null | undefined): Decimal {
-  if (!lc || !lc.threshold || !lc.multiplier) return new Decimal(1);
-  return inputTokens > lc.threshold ? lc.multiplier : new Decimal(1);
+export function longContextFactor(inputTokens: number, lc: LongContext | null | undefined, part: "input" | "output" = "input"): Decimal {
+  if (!lc || !lc.threshold || !lc.multiplier || inputTokens <= lc.threshold) return new Decimal(1);
+  return part === "output" && lc.outputMultiplier ? lc.outputMultiplier : lc.multiplier;
 }
 
 export function effectiveMultiplier(userMultiplier: MoneyLike, groupMultiplier: MoneyLike): Decimal {
@@ -140,8 +143,8 @@ export function effectiveMultiplier(userMultiplier: MoneyLike, groupMultiplier: 
 
 const perM = (units: number, price: Decimal | null): Decimal => (price && units > 0 ? price.times(units).div(ONE_MILLION) : ZERO);
 
-/** Unrounded token component (before long-context). */
-function tokenAmount(u: Usage, t: PriceTable): Decimal {
+/** Unrounded token components (before long-context): input side (incl. cache reads / writes) and output side. */
+function tokenAmount(u: Usage, t: PriceTable): { input: Decimal; output: Decimal } {
   const cached = Math.max(0, Math.min(u.cachedTokens, u.inputTokens));
   const cw = Math.max(0, Math.min(u.cacheWriteTokens, u.inputTokens - cached));
   const cw1h = Math.max(0, Math.min(u.cacheWrite1hTokens, cw));
@@ -154,13 +157,14 @@ function tokenAmount(u: Usage, t: PriceTable): Decimal {
   const audioOut = t.audioOutput ? Math.max(0, Math.min(u.audioOutputTokens, out)) : 0;
   out -= audioOut;
 
-  return perM(uncached, t.input)
-    .plus(perM(cached, t.cachedInput ?? t.input))
-    .plus(perM(cw5m, t.cacheWrite ?? t.input))
-    .plus(perM(cw1h, t.cacheWrite1h ?? t.cacheWrite ?? t.input))
-    .plus(perM(out, t.output))
-    .plus(perM(audioIn, t.audioInput))
-    .plus(perM(audioOut, t.audioOutput));
+  return {
+    input: perM(uncached, t.input)
+      .plus(perM(cached, t.cachedInput ?? t.input))
+      .plus(perM(cw5m, t.cacheWrite ?? t.input))
+      .plus(perM(cw1h, t.cacheWrite1h ?? t.cacheWrite ?? t.input))
+      .plus(perM(audioIn, t.audioInput)),
+    output: perM(out, t.output).plus(perM(audioOut, t.audioOutput)),
+  };
 }
 
 function flatAmount(u: Usage, t: PriceTable, billRequest: boolean): Decimal {
@@ -208,8 +212,11 @@ export const DEFAULT_BATCH_DISCOUNT_PCT = 50;
 /** Amount for `usage` under `table` (used for both price and cost). Rounded to 12 dp. */
 export function computeAmount(usage: Usage, table: PriceTable, opts: PriceOptions = {}): Decimal {
   const flatImages = !!table.image && usage.imageCount > 0;
-  let tokens = flatImages ? ZERO : tokenAmount(usage, table);
-  tokens = tokens.times(longContextFactor(usage.inputTokens, opts.longContext));
+  let tokens = ZERO;
+  if (!flatImages) {
+    const t = tokenAmount(usage, table);
+    tokens = t.input.times(longContextFactor(usage.inputTokens, opts.longContext)).plus(t.output.times(longContextFactor(usage.inputTokens, opts.longContext, "output")));
+  }
   if (opts.tokenDiscountPct !== undefined && opts.tokenDiscountPct !== null) tokens = tokens.times(discountFactor(opts.tokenDiscountPct));
   let total = tokens.plus(flatAmount(usage, table, opts.billRequest ?? true));
   if (opts.multiplier !== undefined && opts.multiplier !== null) total = total.times(toDecimal(opts.multiplier, 1));

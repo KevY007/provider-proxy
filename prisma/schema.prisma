@@ -338,6 +338,7 @@ model Model {
   perSecondPrice        Decimal? @db.Decimal(24, 12) // video: USD per generated second
   longContextThreshold  Int? // input tokens above which multiplier applies
   longContextMultiplier Decimal? @db.Decimal(10, 4)
+  longContextOutputMultiplier Decimal? @db.Decimal(10, 4) // output tokens above the threshold; null => longContextMultiplier (OpenAI: input 2x, output 1.5x)
 
   // server-tool SELL prices (USD per unit, keys: web_search_request, code_execution_hour, web_search_call, file_search_call ...) + their official list prices
   toolPrices         Json     @default("{}")

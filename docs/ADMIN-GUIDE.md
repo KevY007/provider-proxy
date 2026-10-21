@@ -117,7 +117,7 @@ the provider's price minus $0.05".
 With a derived rule, customer prices are recomputed whenever official prices, the rule, or the primary route's cost,
 priority or enabled flag change. Units without a basis keep their typed value. Price units: input, output, cached
 input, cache write (5 min) and cache write (1 h), per image, per request, audio in/out, per minute, per 1M chars,
-per second (video), long-context threshold + multiplier, **Server tools** (customer and official price per tool
+per second (video), long-context threshold + multiplier (+ an optional separate output multiplier: OpenAI bills input 2x and output 1.5x above 272K), **Server tools** (customer and official price per tool
 key, e.g. `web_search_request`, `web_fetch_request`, `code_execution_request`, `code_execution_hour`,
 `web_search_call`, `file_search_call`), and **Batch API discount** (% off token prices of batch results; blank = 50).
 The list shows margin and savings badges, loss warnings and "retiring <date>" badges. Use **Apply pricing rule** on

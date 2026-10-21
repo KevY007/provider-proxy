@@ -352,6 +352,7 @@ async function upsertModel(m: ModelInput, providerDbId: string, upstream: string
     status,
     longContextThreshold: k.longContext?.threshold ?? null,
     longContextMultiplier: k.longContext ? String(k.longContext.multiplier) : null,
+    longContextOutputMultiplier: k.longContext?.outputMultiplier ? String(k.longContext.outputMultiplier) : null,
     ...(m.retiresAt ? { retiresAt: new Date(m.retiresAt) } : {}),
     ...knownOfficialFields(k),
     ...knownSellFields(k, rule),

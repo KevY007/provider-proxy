@@ -267,7 +267,8 @@ export function ModelWorkspace({
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               <NumberField label="Cache write (1h)" value={f.cacheWrite1hPrice} onChange={(v) => set("cacheWrite1hPrice", v)} error={fieldErrors.cacheWrite1hPrice} description="USD / 1M tokens (customer price)" min={0} />
               <NumberField label="Long-context threshold" suffix="input tokens" step="1" min={1} value={f.longContextThreshold} onChange={(v) => set("longContextThreshold", v)} error={fieldErrors.longContextThreshold} description="Above this many input tokens the multiplier applies." />
-              <NumberField label="Long-context multiplier" suffix="x" value={f.longContextMultiplier} onChange={(v) => set("longContextMultiplier", v)} error={fieldErrors.longContextMultiplier} description="Applied to price and cost, e.g. 2" min={0} />
+              <NumberField label="Long-context multiplier" suffix="x" value={f.longContextMultiplier} onChange={(v) => set("longContextMultiplier", v)} error={fieldErrors.longContextMultiplier} description="Input tokens (and output, unless set below), price and cost, e.g. 2" min={0} />
+              <NumberField label="Long-context output multiplier" suffix="x" value={f.longContextOutputMultiplier} onChange={(v) => set("longContextOutputMultiplier", v)} error={fieldErrors.longContextOutputMultiplier} description="Output tokens only, e.g. 1.5 (empty: same as above)" min={0} />
               <Field data-invalid={!!fieldErrors.retiresAt}>
                 <FieldLabel htmlFor="retires-at">Retires on</FieldLabel>
                 <Input id="retires-at" type="date" value={f.retiresAt} onChange={(e) => set("retiresAt", e.target.value)} aria-invalid={!!fieldErrors.retiresAt} />
