@@ -12,6 +12,8 @@
  *   key contains "fail429" -> 429 + retry-after: 2     "fail500" -> 500     "fail529" -> 529 (overloaded)
  *   key contains "bad"     -> 401 invalid key          "slow"    -> +1500ms before responding / first byte
  *   key contains "deny403" -> 403 "this group does not allow" (a reseller key without access to this endpoint; the key itself is fine)
+ *   key contains "flakystart" -> streamed chat: every other request opens the stream (role-only chunk) and then sends an
+ *                             in-band "Service Unavailable" error before any output (the relay failure seen in production)
  * Delay knobs: header `x-mock-delay-ms`, body field `mock_delay_ms`, or marker `[[delay:N]]` in the last user
  * text. Non-stream: wait N ms before responding. Stream: wait N ms before EVERY SSE chunk (holds slots open).
  * Usage override marker (in the last user text / prompt / input): `[[usage:in=1000,out=500,cached=200,cw=50]]`.
@@ -157,6 +159,9 @@ interface MockContainerFile {
   data: Buffer;
   createdAt: number;
 }
+/** "flakystart" credentials: streamed chat requests seen per credential (odd ones fail before any output). */
+const flakyStarts = new Map<string, number>();
+
 interface MockState {
   total: number;
   inflight: number;
@@ -958,6 +963,13 @@ async function handleChat(ctx: Ctx, b: Obj): Promise<void> {
       choices: [{ index: 0, delta, logprobs: null, finish_reason }],
       ...(includeUsage ? { usage: null } : {}),
     });
+  if (ctx.cred.includes("flakystart")) {
+    const n = (flakyStarts.get(ctx.cred) ?? 0) + 1;
+    flakyStarts.set(ctx.cred, n);
+    if (n % 2 === 1) {
+      return emitFrames(ctx, [chunk({ role: "assistant", content: "" }, null), dataFrame({ error: { message: "Service Unavailable", type: "upstream_error" } })], delay, SSE);
+    }
+  }
   const frames: string[] = [];
   if (p.tool) {
     frames.push(chunk({ role: "assistant", content: null }, null));

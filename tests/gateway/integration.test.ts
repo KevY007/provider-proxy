@@ -202,6 +202,9 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     P.all429 = await makeProvider("all429", { formats: ["openai_chat"], keys: [{ s: "fail429x" }, { s: "fail429y" }] });
     P.f500 = await makeProvider("f500", { formats: ["openai_chat"], keys: [{ s: "fail500z" }] });
     P.bad = await makeProvider("bad", { formats: ["openai_chat"], keys: [{ s: "badkey" }] });
+    P.flaky = await makeProvider("flaky", { formats: ["openai_chat"], settings: { noCooldown: true }, keys: [{ s: "flakystart1" }] });
+    P.collect = await makeProvider("collect", { formats: ["openai_chat"], settings: { streamUpstream: true }, keys: [{ s: "col1" }] });
+    P.collectFlaky = await makeProvider("colflaky", { formats: ["openai_chat"], settings: { streamUpstream: true, noCooldown: true }, keys: [{ s: "flakystart2" }] });
     P.deny = await makeProvider("deny", { formats: ["openai_chat"], keys: [{ s: "deny403a", priority: 10 }, { s: "denyok", priority: 0 }] });
     P.denyOnly = await makeProvider("denyonly", { formats: ["openai_chat"], keys: [{ s: "deny403b" }] });
     P.q = await makeProvider("q", { formats: ["openai_chat"], keys: [{ s: "q1", maxConcurrency: 1 }] });
@@ -222,6 +225,9 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     M.all429 = await makeModel("all429", { caps: ["chat"], providerId: P.all429.id });
     M.f500 = await makeModel("f500", { caps: ["chat"], providerId: P.f500.id });
     M.deny = await makeModel("deny", { caps: ["chat"], providerId: P.deny.id });
+    M.flaky = await makeModel("flaky", { caps: ["chat"], providerId: P.flaky.id });
+    M.collect = await makeModel("collect", { caps: ["chat"], providerId: P.collect.id });
+    M.collectFlaky = await makeModel("colflaky", { caps: ["chat"], providerId: P.collectFlaky.id });
     M.denyOnly = await makeModel("denyonly", { caps: ["chat"], providerId: P.denyOnly.id });
     M.bad = await makeModel("bad", { caps: ["chat"], providerId: P.bad.id });
     M.queue = await makeModel("queue", { caps: ["chat"], providerId: P.q.id });
@@ -688,6 +694,52 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
   });
 
   // ------------------------------------------------------------------ failover + health
+  it("a relay that opens the stream and fails before any output is retried invisibly (same key), and never cooled down", async () => {
+    for (let i = 0; i < 2; i++) {
+      const res = await call("/v1/chat/completions", fx.main.key, { model: M.flaky, stream: true, messages: [{ role: "user", content: "flaky [[usage:in=40,out=8]]" }] });
+      expect(res.status).toBe(200);
+      const blocks = sseBlocks(await res.text());
+      expect(blocks[blocks.length - 1].data).toBe("[DONE]");
+      const chunks = blocks.slice(0, -1).map((b) => JSON.parse(b.data));
+      // the client never sees the failed attempt: no error event, one role chunk, the whole reply
+      expect(chunks.some((c) => c.error)).toBe(false);
+      expect(chunks.filter((c) => c.choices?.[0]?.delta?.role).length).toBe(1);
+      expect(chunks.map((c) => c.choices?.[0]?.delta?.content ?? "").join("")).toContain("Mock reply to: flaky");
+      const log = await logOf(res);
+      expect(log.status).toBe("SUCCESS");
+      expect((log.attempts as unknown[]).length).toBe(2);
+    }
+    await sleep(1500);
+    expect((await db.providerKey.findUniqueOrThrow({ where: { id: P.flaky.keys[0] } })).status).toBe("ACTIVE");
+  });
+
+  it("streamUpstream: a non-streaming request is sent upstream as a stream and answered as normal JSON (usage billed)", async () => {
+    const res = await call("/v1/chat/completions", fx.main.key, { model: M.collect, messages: [{ role: "user", content: "assemble me [[usage:in=300,out=60]]" }] });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = await res.json();
+    expect(body.object).toBe("chat.completion");
+    expect(body.model).toBe(M.collect);
+    expect(body.choices[0].message.content).toContain("Mock reply to: assemble me");
+    expect(body.choices[0].finish_reason).toBe("stop");
+    expect(body.usage).toMatchObject({ prompt_tokens: 300, completion_tokens: 60 });
+    const up = (await mockLast("/v1/chat/completions")).body;
+    expect(up.stream).toBe(true);
+    expect(up.stream_options).toEqual({ include_usage: true });
+    const log = await logOf(res);
+    expect(log).toMatchObject({ status: "SUCCESS", stream: false, inputTokens: 300, outputTokens: 60, usageEstimated: false });
+  });
+
+  it("streamUpstream + a relay failing before output: retried invisibly, the client just gets the JSON", async () => {
+    const res = await call("/v1/chat/completions", fx.main.key, { model: M.collectFlaky, messages: [{ role: "user", content: "assemble flaky [[usage:in=30,out=6]]" }] });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.choices[0].message.content).toContain("Mock reply to: assemble flaky");
+    const log = await logOf(res);
+    expect(log.status).toBe("SUCCESS");
+    expect((log.attempts as unknown[]).length).toBe(2);
+  });
+
   it("a 'not allowed' 403 fails over to the next key without retrying the same key, and never invalidates the key", async () => {
     const res = await call("/v1/chat/completions", fx.main.key, { model: M.deny, messages: [{ role: "user", content: "hi" }] });
     expect(res.status).toBe(200);

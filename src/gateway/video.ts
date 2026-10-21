@@ -9,7 +9,7 @@ import { logOutcome, withCommon, type Ctx } from "./context";
 import { GatewayError } from "./errors";
 import type { AttemptResult, Fail, Rec } from "./execute";
 import { finalError, type Failure } from "./failure";
-import { classifyStatus, recordKeyFailure, recordKeySuccess } from "./keyhealth";
+import { classifyStatus, providerNoCooldown, recordKeyFailure, recordKeySuccess } from "./keyhealth";
 import { getField } from "./multipart";
 import { priceRequest } from "./pricing";
 import { buildUpstreamHeaders, buildUpstreamUrl } from "./providers/adapters";
@@ -155,7 +155,7 @@ function upstreamErrorToGateway(provider: ProviderRec, key: KeyRec, secret: stri
       rlHeaders: pickRateLimitHeaders(headers),
       internal: body.slice(0, 2000),
     };
-    recordKeyFailure(key, f.fk, { status, message, retryAfterSec: f.retryAfterSec }, snap.settings);
+    recordKeyFailure(key, f.fk, { status, message, retryAfterSec: f.retryAfterSec, noCooldown: providerNoCooldown(provider) }, snap.settings);
     return finalError(f, snap.settings);
   }
   return clientErrorFromUpstream(status, body, "openai_videos", "openai_videos", {
@@ -194,7 +194,7 @@ async function upstreamGet(a: UpstreamAccount, url: string, o: { signal?: AbortS
   } catch (err) {
     if (err instanceof ClientAbortError) throw new GatewayError("client_closed");
     const timeout = err instanceof UpstreamTimeoutError;
-    recordKeyFailure(a.key, timeout ? "timeout" : "network", { status: 0, message: describeNetworkError(err) }, a.snap.settings);
+    recordKeyFailure(a.key, timeout ? "timeout" : "network", { status: 0, message: describeNetworkError(err), noCooldown: providerNoCooldown(a.provider) }, a.snap.settings);
     throw new GatewayError(timeout ? "upstream_timeout" : "upstream_error", undefined, { internal: `video status poll failed: ${describeNetworkError(err)}` });
   }
   const text = h.res.status >= 200 && h.res.status < 300 ? await readTextLimited(h.res, 8 * 1024 * 1024).catch(() => "") : await readErrorBody(h.res);
