@@ -59,7 +59,7 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
   const [extras, setExtras] = useState<{
     description: string;
     cacheWrite1h: number | null;
-    longContext: { threshold: number; multiplier: number } | null;
+    longContext: { threshold: number; multiplier: number; outputMultiplier?: number } | null;
     tools: Record<string, number> | null;
     direct: boolean;
   }>({ description: "", cacheWrite1h: null, longContext: null, tools: null, direct: false });
@@ -150,7 +150,7 @@ export function AddModelWizard({ providers, taken }: { providers: WizardProvider
             maxOutput: d.maxOutput,
             retiresAt: d.retiresAt,
             description: extras.description,
-            ...(extras.longContext ? { longContextThreshold: extras.longContext.threshold, longContextMultiplier: extras.longContext.multiplier } : {}),
+            ...(extras.longContext ? { longContextThreshold: extras.longContext.threshold, longContextMultiplier: extras.longContext.multiplier, longContextOutputMultiplier: extras.longContext.outputMultiplier ?? "" } : {}),
             status: d.status,
             aliases: [],
             pricingMode: mode,

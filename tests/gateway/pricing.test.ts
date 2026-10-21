@@ -87,6 +87,19 @@ describe("pricing", () => {
     expect(longContextFactor(200_001, lc).toString()).toBe("2");
   });
 
+  it("long context with a separate output multiplier (OpenAI above 272K: input and cache reads 2x, output 1.5x)", () => {
+    const s = sellTable({ inputPrice: "2", outputPrice: "10", cachedInputPrice: "0.2" });
+    const lc = { threshold: 272_000, multiplier: new Decimal(2), outputMultiplier: new Decimal("1.5") };
+    // 300K input (100K of it cached), 10K output: input 200K x 2 = 0.4, cached 100K x 0.2 = 0.02, output 10K x 10 = 0.1
+    const big = computeAmount(usage({ inputTokens: 300_000, cachedTokens: 100_000, outputTokens: 10_000 }), s, { longContext: lc });
+    expect(big.toString()).toBe(new Decimal("0.4").plus("0.02").times(2).plus(new Decimal("0.1").times("1.5")).toString()); // 0.99
+    expect(longContextFactor(300_000, lc, "output").toString()).toBe("1.5");
+    expect(longContextFactor(300_000, lc, "input").toString()).toBe("2");
+    expect(longContextFactor(100_000, lc, "output").toString()).toBe("1");
+    // no output multiplier: output follows the input multiplier (as before)
+    expect(longContextFactor(300_000, { threshold: 272_000, multiplier: new Decimal(2) }, "output").toString()).toBe("2");
+  });
+
   it("bills flat per-image prices instead of tokens, scaled by the multiplier", () => {
     const s = sellTable({ inputPrice: "10", outputPrice: "40", imagePrice: "0.04" });
     const p = computeAmount(usage({ imageCount: 3, inputTokens: 5000, outputTokens: 9000 }), s, { multiplier: "0.5" });

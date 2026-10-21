@@ -67,10 +67,31 @@ describe("known price catalog", () => {
   });
 
   it("marks the post-2025 seed models it could not verify as needing review", () => {
-    for (const [v, m] of [["openai", "gpt-6-astra"], ["google", "gemini-3.8-flash"], ["xai", "grok-4.7"]]) {
+    for (const [v, m] of [["google", "gemini-3.8-flash"], ["xai", "grok-4.7"]]) {
       expect(lookupKnownPrice(v, m)!.needsReview, m).toBe(true);
     }
     expect(lookupKnownPrice("openai", "gpt-4o-mini")!.needsReview).toBeFalsy();
+  });
+
+  it("GPT-6 / GPT-5.6 entries match the OpenAI pricing page (standard tier, checked 2026-10-21)", () => {
+    const rows: Array<[string, number, number, number, number]> = [
+      // input, cached, output, 30m cache write
+      ["gpt-6-astra", 10, 1, 50, 12.5],
+      ["gpt-6.1-sol", 2, 0.1, 10, 2.5],
+      ["gpt-6-sol", 2, 0.2, 10, 2.5],
+      ["gpt-6-luna", 0.1, 0.01, 0.5, 0.125],
+      ["gpt-5.6-sol", 4, 0.4, 20, 5], // promotional price through at least 2026-11-21
+      ["gpt-5.6-terra", 2, 0.2, 12, 2.5],
+      ["gpt-5.6-luna", 0.2, 0.02, 1.2, 0.25],
+    ];
+    for (const [m, input, cached, output, cw] of rows) {
+      const k = lookupKnownPrice("openai", m)!;
+      expect(k.official, m).toMatchObject({ input, cachedInput: cached, output, cacheWrite: cw });
+      expect(k.needsReview, m).toBeFalsy();
+      expect(k.contextWindow, m).toBe(1_000_000);
+      expect(k.longContext, m).toEqual({ threshold: 272_000, multiplier: 2, outputMultiplier: 1.5 });
+    }
+    expect(lookupKnownPrice("openai", "gpt-image-2")!.official).toMatchObject({ input: 5, output: 30, cachedInput: 1.25 });
   });
 
   it("Claude 5.x entries match the Anthropic pricing page / models overview (checked 2026-10-17)", () => {

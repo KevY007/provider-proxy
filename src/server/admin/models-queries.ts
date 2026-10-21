@@ -106,6 +106,7 @@ export function serializeModel(m: NonNullable<Awaited<ReturnType<typeof db.model
     perSecondPrice: dstr(m.perSecondPrice) ?? "",
     longContextThreshold: m.longContextThreshold?.toString() ?? "",
     longContextMultiplier: dstr(m.longContextMultiplier) ?? "",
+    longContextOutputMultiplier: dstr(m.longContextOutputMultiplier) ?? "",
     officialInputPrice: dstr(m.officialInputPrice) ?? "",
     officialOutputPrice: dstr(m.officialOutputPrice) ?? "",
     officialCachedPrice: dstr(m.officialCachedPrice) ?? "",
