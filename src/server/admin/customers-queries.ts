@@ -124,7 +124,7 @@ export async function exportCustomers(p: CustomerListParams, limit = 20000): Pro
 }
 
 export async function listGroupOptions() {
-  const groups = await db.group.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, slug: true, isDefault: true } });
+  const groups = await db.group.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { id: true, name: true, slug: true, isDefault: true, isPublic: true } });
   return groups;
 }
 
@@ -170,6 +170,7 @@ export async function getCustomerDetail(id: string) {
       totpEnabled: user.totpEnabled,
       groupId: user.groupId,
       groupName: user.group?.name ?? null,
+      extraGroupIds: user.extraGroupIds,
       priceMultiplier: dstr(user.priceMultiplier),
       balance: dstr0(user.balance),
       creditLimit: dstr0(user.creditLimit),

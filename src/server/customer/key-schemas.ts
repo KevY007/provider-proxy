@@ -54,3 +54,15 @@ export const keyUpdateSchema = keyFormSchema.extend({ id: z.string().min(5).max(
 export function parseIpList(text: string): string[] {
   return [...new Set(text.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean))];
 }
+
+/**
+ * May this customer put a key in pool `g`? A public pool, their own pool, a private pool an admin allowed for their
+ * account, or the pool the key is already in (an edit never has to move a key out of the pool it is in).
+ */
+export function canUsePool(
+  g: { id: string; isPublic: boolean },
+  user: { groupId: string | null; extraGroupIds?: string[] | null },
+  currentGroupId: string | null = null,
+): boolean {
+  return g.isPublic || g.id === user.groupId || (user.extraGroupIds ?? []).includes(g.id) || g.id === currentGroupId;
+}

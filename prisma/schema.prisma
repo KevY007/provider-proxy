@@ -130,6 +130,7 @@ model User {
   totpEnabled            Boolean     @default(false)
   groupId                String?
   group                  Group?      @relation(fields: [groupId], references: [id])
+  extraGroupIds          String[]    @default([]) // private pools an admin allowed this customer to put keys in (besides groupId)
   priceMultiplier        Decimal?    @db.Decimal(10, 4) // per-customer override on top of group
   balance                Decimal     @default(0) @db.Decimal(24, 12)
   creditLimit            Decimal     @default(0) @db.Decimal(24, 12) // how far below 0 they may go (postpaid)

@@ -11,17 +11,23 @@ import { getClientIp } from "@/lib/http";
 import { toDbString } from "@/lib/money";
 import type { ActionResult } from "@/lib/auth/types";
 import { fail, invalidInput, withUser } from "./action-utils";
-import { keyFormSchema, keyIdSchema, keyUpdateSchema, type KeyFormValues } from "./key-schemas";
+import { canUsePool, keyFormSchema, keyIdSchema, keyUpdateSchema, type KeyFormValues } from "./key-schemas";
 
 const MAX_KEYS_PER_USER = 100;
 
-/** Validates group + allowed models against what the customer may actually choose. */
-async function resolveKeyFields(v: KeyFormValues, userGroupId: string | null): Promise<{ ok: true; groupId: string | null } | { ok: false; error: string; field?: string }> {
+/**
+ * Validates group + allowed models against what the customer may actually choose: a public pool, their own pool, a
+ * private pool an admin allowed for their account, or (when editing) the pool the key is already in.
+ */
+async function resolveKeyFields(
+  v: KeyFormValues,
+  user: { groupId: string | null; extraGroupIds: string[] },
+  currentGroupId: string | null = null,
+): Promise<{ ok: true; groupId: string | null } | { ok: false; error: string; field?: string }> {
   let groupId: string | null = null;
   if (v.groupId) {
     const g = await db.group.findUnique({ where: { id: v.groupId }, select: { id: true, isPublic: true } });
-    // customers may use public pools, or the pool an admin assigned to them
-    if (!g || (!g.isPublic && g.id !== userGroupId)) return { ok: false, error: "That pool is not available", field: "groupId" };
+    if (!g || !canUsePool(g, user, currentGroupId)) return { ok: false, error: "That pool is not available", field: "groupId" };
     groupId = g.id;
   }
   if (v.allowedModels.length) {
@@ -60,7 +66,7 @@ export async function createKeyAction(input: unknown): Promise<ActionResult<Crea
     if (!s.user.emailVerifiedAt) return fail("Verify your email address before creating API keys. Check your inbox for the verification link.");
     const count = await db.apiKey.count({ where: { userId: s.user.id, isPlayground: false, status: { not: "REVOKED" } } });
     if (count >= MAX_KEYS_PER_USER) return fail(`You have reached the limit of ${MAX_KEYS_PER_USER} active keys. Revoke unused keys first.`);
-    const r = await resolveKeyFields(parsed.data, s.user.groupId);
+    const r = await resolveKeyFields(parsed.data, s.user);
     if (!r.ok) return fail(r.error, r.field ? { [r.field]: r.error } : undefined);
     const gen = generateApiKey();
     const row = await db.apiKey.create({ data: { userId: s.user.id, keyHash: gen.hash, prefix: gen.prefix, secretEncrypted: encrypt(gen.key), ...dataFor(parsed.data, r.groupId) } });
@@ -79,7 +85,7 @@ export async function updateKeyAction(input: unknown): Promise<ActionResult> {
     const key = await db.apiKey.findFirst({ where: { id, userId: s.user.id, isPlayground: false } });
     if (!key) return fail("Key not found");
     if (key.status === "REVOKED") return fail("Revoked keys can't be edited");
-    const r = await resolveKeyFields(rest as KeyFormValues, s.user.groupId);
+    const r = await resolveKeyFields(rest as KeyFormValues, s.user, key.groupId);
     if (!r.ok) return fail(r.error, r.field ? { [r.field]: r.error } : undefined);
     await db.apiKey.update({ where: { id }, data: dataFor(rest as KeyFormValues, r.groupId) });
     await invalidateGatewayConfig("apiKeys", id);

@@ -90,10 +90,15 @@ export async function updateCustomerSettings(input: unknown) {
       const g = await db.group.findUnique({ where: { id: d.groupId }, select: { id: true } });
       if (!g) throw new ActionFail("Group not found", { groupId: "Group not found" });
     }
+    if (d.extraGroupIds.length) {
+      const found = await db.group.count({ where: { id: { in: d.extraGroupIds } } });
+      if (found !== d.extraGroupIds.length) throw new ActionFail("Pool not found", { extraGroupIds: "Pool not found" });
+    }
     await db.user.update({
       where: { id: d.userId },
       data: {
         groupId: d.groupId,
+        extraGroupIds: d.extraGroupIds.filter((id) => id !== d.groupId),
         priceMultiplier: d.priceMultiplier,
         billingMode: d.billingMode,
         creditLimit: d.creditLimit,

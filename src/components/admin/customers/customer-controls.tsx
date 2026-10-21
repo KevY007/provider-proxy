@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { StatusBadge } from "@/components/common/status-badge";
-import { NumberField, SelectField } from "@/components/admin/fields";
+import { CheckField, NumberField, SelectField } from "@/components/admin/fields";
 import { useAction } from "@/components/admin/use-action";
 import { fmtDateTime } from "@/components/admin/format";
 import { setCustomerRole, setCustomerStatus, updateCustomerSettings, verifyCustomerEmail } from "@/server/admin/customers-actions";
@@ -19,13 +19,16 @@ export function CustomerControls({
   isSelf,
 }: {
   user: CustomerDetail["user"];
-  groups: Array<{ id: string; name: string; isDefault: boolean }>;
+  groups: Array<{ id: string; name: string; isDefault: boolean; isPublic?: boolean }>;
   isAdmin: boolean;
   isSelf: boolean;
 }) {
   const { run, pending, fieldErrors } = useAction();
   const [role, setRole] = useState(user.role);
   const [groupId, setGroupId] = useState(user.groupId ?? "");
+  const [extraGroupIds, setExtraGroupIds] = useState<string[]>(user.extraGroupIds ?? []);
+  // private pools that are not already the customer's own pool: the ones an admin can additionally allow
+  const privatePools = groups.filter((g) => g.isPublic === false && g.id !== groupId);
   const [multiplier, setMultiplier] = useState(user.priceMultiplier ?? "");
   const [billingMode, setBillingMode] = useState(user.billingMode);
   const [creditLimit, setCreditLimit] = useState(user.creditLimit === "0" ? "" : user.creditLimit);
@@ -89,7 +92,7 @@ export function CustomerControls({
           onSubmit={(e) => {
             e.preventDefault();
             void run(() =>
-              updateCustomerSettings({ userId: user.id, groupId, priceMultiplier: multiplier, billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc }),
+              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: multiplier, billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc }),
             );
           }}
         >
@@ -127,6 +130,26 @@ export function CustomerControls({
             <NumberField label="Credit limit" suffix="USD" value={creditLimit} onChange={setCreditLimit} placeholder="0" min={0} description="How far below $0 the balance may go." error={fieldErrors.creditLimit} disabled={!isAdmin} />
             <NumberField label="Monthly spend limit" suffix="USD" value={monthlyLimit} onChange={setMonthlyLimit} placeholder="no limit" min={0} error={fieldErrors.monthlySpendLimit} disabled={!isAdmin} />
             <NumberField label="Max concurrency" value={maxConc} onChange={setMaxConc} placeholder="default" step="1" min={1} description="Concurrent in-flight requests across all their keys." error={fieldErrors.maxConcurrency} disabled={!isAdmin} />
+          </div>
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Extra pools for API keys</p>
+            <p className="text-xs text-muted-foreground">
+              Public pools and the customer&apos;s own pool are always available. Allow private pools here and the customer can put any of their keys in them.
+            </p>
+            {privatePools.length ? (
+              <div className="grid gap-2 sm:grid-cols-2">
+                {privatePools.map((g) => (
+                  <CheckField
+                    key={g.id}
+                    label={g.name}
+                    checked={extraGroupIds.includes(g.id)}
+                    onChange={(on) => isAdmin && setExtraGroupIds((cur) => (on ? [...new Set([...cur, g.id])] : cur.filter((x) => x !== g.id)))}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">No other private pools.</p>
+            )}
           </div>
           <div className="flex items-center justify-between gap-2">
             {!isAdmin && <p className="text-xs text-muted-foreground">Only admins can change billing and limit settings.</p>}

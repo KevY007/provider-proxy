@@ -85,6 +85,8 @@ const optIntField = z
 export const customerSettingsSchema = z.object({
   userId: z.string().min(1),
   groupId: z.string().nullable().optional().transform((v) => v || null),
+  /** Private pools this customer may also put keys in. */
+  extraGroupIds: z.array(z.string().min(1)).max(50).optional().transform((v) => [...new Set(v ?? [])]),
   priceMultiplier: z
     .union([z.string(), z.number(), z.null(), z.undefined()])
     .transform((v, ctx) => {
