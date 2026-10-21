@@ -44,6 +44,21 @@ if retry < 0 then retry = 0 end
 return {0, 0, retry}
 `;
 
+// same window as LUA, but only reads: is `key` already at `limit`?
+const PEEK_LUA = `
+local key = KEYS[1]
+local now = tonumber(ARGV[1])
+local window = tonumber(ARGV[2])
+local limit = tonumber(ARGV[3])
+redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
+local count = redis.call('ZCARD', key)
+if count < limit then return {1, limit - count, 0} end
+local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+local retry = tonumber(oldest[2]) + window - now
+if retry < 0 then retry = 0 end
+return {0, 0, retry}
+`;
+
 type Store = Map<string, number[]>;
 const g = globalThis as unknown as { __rlStore?: Store; __rlTimer?: NodeJS.Timeout };
 const store: Store = (g.__rlStore ??= new Map());
@@ -101,6 +116,26 @@ export async function rateLimit(key: string, opts: RateLimitOptions): Promise<Ra
     }
   }
   return memoryLimit(key, opts);
+}
+
+/** Like rateLimit, but only reads the count: ok while fewer than `limit` events happened in the window. Never throws. */
+export async function peekRateLimit(key: string, opts: RateLimitOptions): Promise<RateLimitResult> {
+  const redis = getRedis();
+  if (redis && redis.status === "ready") {
+    try {
+      const res = (await redis.eval(PEEK_LUA, 1, `rl:${key}`, String(Date.now()), String(opts.windowSec * 1000), String(opts.limit))) as [number, number, number];
+      const retryAfterMs = Number(res[2]);
+      return { ok: res[0] === 1, limit: opts.limit, remaining: Number(res[1]), retryAfterMs, retryAfterSec: Math.ceil(retryAfterMs / 1000) };
+    } catch {
+      // fall through to memory
+    }
+  }
+  const now = Date.now();
+  const windowMs = opts.windowSec * 1000;
+  const arr = (store.get(key) ?? []).filter((t) => t > now - windowMs);
+  if (arr.length < opts.limit) return { ok: true, limit: opts.limit, remaining: opts.limit - arr.length, retryAfterMs: 0, retryAfterSec: 0 };
+  const retryAfterMs = Math.max(0, arr[0] + windowMs - now);
+  return { ok: false, limit: opts.limit, remaining: 0, retryAfterMs, retryAfterSec: Math.ceil(retryAfterMs / 1000) };
 }
 
 /** Check several limits at once; returns the first failing result (or the last ok one). */
