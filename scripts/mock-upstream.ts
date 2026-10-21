@@ -967,7 +967,8 @@ async function handleChat(ctx: Ctx, b: Obj): Promise<void> {
     const n = (flakyStarts.get(ctx.cred) ?? 0) + 1;
     flakyStarts.set(ctx.cred, n);
     if (n % 2 === 1) {
-      return emitFrames(ctx, [chunk({ role: "assistant", content: "" }, null), dataFrame({ error: { message: "Service Unavailable", type: "upstream_error" } })], delay, SSE);
+      // role chunk, a reasoning summary (a thinking model streams these for minutes), then the relay's failure
+      return emitFrames(ctx, [chunk({ role: "assistant", content: "" }, null), chunk({ reasoning_content: "**Planning the answer**" }, null), dataFrame({ error: { message: "Service Unavailable", type: "upstream_error" } })], delay, SSE);
     }
   }
   const frames: string[] = [];
