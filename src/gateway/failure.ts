@@ -42,6 +42,7 @@ export function finalError(f: Failure, settings: Pick<SettingValues, "passUpstre
       return new GatewayError("upstream_timeout", undefined, opts);
     case "auth":
     case "payment":
+    case "forbidden":
       return new GatewayError("no_available_provider", undefined, { ...opts, retryAfterSec: 30 });
     default:
       if (f.status === 529) return new GatewayError("upstream_overloaded", undefined, { ...opts, retryAfterSec: f.retryAfterSec ?? 5, anthropicType: "overloaded_error" });
