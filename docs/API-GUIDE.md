@@ -66,11 +66,18 @@ ids are returned as `x-upstream-request-id`. CORS is open (`*`) on the API.
 Gemini requests need a model whose provider speaks Gemini natively; they are not translated. The gateway also
 accepts the doubled `/v1/v1/...` prefix and Google's `/v1beta/openai/...` alias.
 
-### Public, no key
+### Public, or with a key
 
 `GET /api/pricing[?group=slug]` returns the price list (official price vs your price per unit) for public models.
-It is CORS `*` and cached 60 s. The operator can make pricing private (Settings > Access); it then answers
-`401 pricing_private` and only `/v1/models` (with a key) shows prices.
+It is CORS `*` and cached 60 s. The operator can make pricing private (Settings > Access, or portal-only); without
+credentials it then answers `401 pricing_private`. A valid API key always unlocks it, sent the same ways as on the API
+(`Authorization: Bearer`, `x-api-key`, `x-goog-api-key` or `?key=`), so price fetchers keep working:
+
+    curl https://<host>/api/pricing -H "Authorization: Bearer sk-pp-..."
+
+With a key and no `?group=`, the list is your own: your pool, your account multiplier and your key's model
+allow-list, sent `cache-control: private, no-store`. A key that is wrong, disabled, revoked or expired gets the
+usual `401`/`403` error even while pricing is public.
 
 ## Model names
 
@@ -183,7 +190,7 @@ rewrite history. Details: [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md).
 |---|---|
 | `GET /v1/models`, `GET /v1/models/{id}` | `pricing`: the OpenRouter convention (decimal strings, USD per token: `prompt`, `completion`, `input_cache_read`, `input_cache_write`, `request`, `image`), the de-facto standard other gateways and tools read. `x_pricing`: USD per 1M tokens, `yours` / `official` / `savings_pct`, per-call tool prices, and units for non-token models. Prices are your effective prices (pool and account multipliers applied). Also `context_length` and `top_provider.max_completion_tokens`. |
 | `GET /v1/model/info` | LiteLLM format (`input_cost_per_token`, `output_cost_per_token`, `cache_read_input_token_cost`, `max_input_tokens`, `max_output_tokens`, capabilities) for LiteLLM / Langfuse-style cost trackers. |
-| `GET /api/pricing` | Public list for websites; ProviderProxy-specific shape (see above). |
+| `GET /api/pricing` | List for websites and price fetchers; public, or your own prices with an API key when pricing is private. ProviderProxy-specific shape (see above). |
 
 **Limits are the provider's.** The gateway never truncates input by context length and passes an explicit
 `max_tokens` / `max_completion_tokens` / `max_output_tokens` through unchanged; see the funds clamp in

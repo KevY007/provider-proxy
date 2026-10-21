@@ -147,6 +147,38 @@ describe.skipIf(!dbOk)("catalog pricing endpoints", () => {
     expect(text).not.toContain(h.base);
   });
 
+  it("private pricing: a valid API key unlocks it (the key's own prices, never cached); a bad key is always 401", async () => {
+    const get = (headers: Record<string, string> = {}, q = "") => pricingRoute(new Request(`http://x.test/api/pricing${q}`, { headers }));
+    try {
+      for (const off of [{ publicPricing: false }, { publicModels: false }, { portalOnly: true }]) {
+        await setSettings({ publicPricing: true, publicModels: true, portalOnly: false, ...off });
+        expect((await get()).status).toBe(401);
+        for (const h2 of [{ authorization: `Bearer ${fx.key}` }, { "x-api-key": fx.key }] as Array<Record<string, string>>) {
+          const res = await get(h2);
+          expect(res.status).toBe(200);
+          expect(res.headers.get("cache-control")).toBe("private, no-store");
+          const doc = await res.json();
+          expect(doc.data.find((x: { id: string }) => x.id === model.slug).pricing.yours.input).toBe(3);
+        }
+        expect((await get({}, `?key=${fx.key}`)).status).toBe(200);
+      }
+      // the key's own prices: customer multiplier 0.5 applies
+      const disc = await (await get({ authorization: `Bearer ${fxDisc.key}` })).json();
+      expect(disc.data.find((x: { id: string }) => x.id === model.slug).pricing.yours.input).toBe(1.5);
+      // wrong, disabled or revoked keys are rejected even while pricing is public
+      await setSettings({ publicPricing: true, publicModels: true, portalOnly: false });
+      const bad = await get({ authorization: "Bearer sk-pp-not-a-real-key-000000000000000000000" });
+      expect(bad.status).toBe(401);
+      expect(((await bad.json()) as { error: { code: string } }).error.code).toBe("invalid_api_key");
+      const off = await h.makeKey("off", fx.userId, { status: "DISABLED" });
+      expect((await get({ authorization: `Bearer ${off.key}` })).status).toBe(401);
+      // public and keyless: still the shared cacheable document
+      expect((await get()).headers.get("cache-control")).toMatch(/public.*max-age=60/);
+    } finally {
+      await setSettings({ publicPricing: true, publicModels: true, portalOnly: false });
+    }
+  });
+
   it("?group=<slug> prices a public group; unknown / non-public groups are 404", async () => {
     const own = await db.group.findFirstOrThrow({ where: { slug: h.name("g") } });
     await db.group.update({ where: { id: own.id }, data: { priceMultiplier: "0.8" } });

@@ -39,39 +39,60 @@ export function effectiveGroup(snap: ConfigSnapshot, rec: AuthRecord): GroupRec 
   return snap.defaultGroup;
 }
 
-/** Authenticate the request's API key and run the key / user checks (PLAN 5 step 3). Throws GatewayError. */
-export async function authenticate(ctx: Ctx): Promise<void> {
-  const snap = ctx.snap!;
-  const raw = extractApiKey(ctx.req.headers, ctx.url);
+/** Resolve a raw API key to its (cached) record. Throws GatewayError for a missing, malformed or unknown key. */
+export async function lookupApiKey(raw: string | null, ip: string): Promise<AuthRecord> {
   if (!raw) {
-    noteAuthFailure(ctx.ip);
+    noteAuthFailure(ip);
     throw new GatewayError("invalid_api_key", "No API key provided. Send it as 'Authorization: Bearer <key>', 'x-api-key', 'x-goog-api-key' or '?key='.");
   }
   if (!raw.startsWith(KEY_PREFIX) || raw.length > 200) {
-    noteAuthFailure(ctx.ip);
+    noteAuthFailure(ip);
     throw new GatewayError("invalid_api_key");
   }
   const hash = sha256(raw);
   // An IP that keeps presenting garbage keys only gets answers from the cache (known good keys keep working,
   // unknown ones are rejected without touching the database).
-  const throttled = isAuthThrottled(ctx.ip);
+  const throttled = isAuthThrottled(ip);
   const rec = throttled ? peekAuthRecord(hash) : await getAuthRecord(hash);
   if (throttled && !rec) throw new GatewayError("rate_limited", "Too many failed authentication attempts. Please retry later.", { retryAfterSec: 30 });
   if (!rec) {
-    noteAuthFailure(ctx.ip);
+    noteAuthFailure(ip);
     throw new GatewayError("invalid_api_key");
   }
-  ctx.auth = rec;
-  ctx.group = effectiveGroup(snap, rec);
-  const now = Date.now();
-  const { key, user } = rec;
+  return rec;
+}
 
+/**
+ * The checks every use of a known key needs: ACTIVE and unexpired, caller IP on the key's allowlist, account not
+ * suspended (and verified when that is required). Throws GatewayError. Spend limits are not checked here: they gate
+ * billable calls only (see authenticate).
+ */
+export function assertKeyUsable(rec: AuthRecord, ip: string, snap: ConfigSnapshot): void {
+  const { key, user } = rec;
   if (key.status === "DISABLED") throw new GatewayError("key_disabled");
   if (key.status === "REVOKED") throw new GatewayError("key_disabled", "This API key has been revoked.");
-  if (key.expiresAt && key.expiresAt <= now) throw new GatewayError("key_expired");
-  if (key.ipAllowlist.length && !ipAllowed(ctx.ip, key.ipAllowlist)) throw new GatewayError("ip_not_allowed");
+  if (key.expiresAt && key.expiresAt <= Date.now()) throw new GatewayError("key_expired");
+  if (key.ipAllowlist.length && !ipAllowed(ip, key.ipAllowlist)) throw new GatewayError("ip_not_allowed");
   if (user.status === "SUSPENDED") throw new GatewayError("account_suspended");
   if (user.status === "PENDING_VERIFICATION" && snap.settings.requireEmailVerification) throw new GatewayError("email_not_verified");
+}
+
+/** lookupApiKey + assertKeyUsable: a key that may be used right now. */
+export async function checkApiKey(raw: string | null, ip: string, snap: ConfigSnapshot): Promise<AuthRecord> {
+  const rec = await lookupApiKey(raw, ip);
+  assertKeyUsable(rec, ip, snap);
+  return rec;
+}
+
+/** Authenticate the request's API key and run the key / user checks (PLAN 5 step 3). Throws GatewayError. */
+export async function authenticate(ctx: Ctx): Promise<void> {
+  const snap = ctx.snap!;
+  const rec = await lookupApiKey(extractApiKey(ctx.req.headers, ctx.url), ctx.ip);
+  // attach the key before the checks, so a rejected request is still logged against its key and customer
+  ctx.auth = rec;
+  ctx.group = effectiveGroup(snap, rec);
+  assertKeyUsable(rec, ctx.ip, snap);
+  const { key, user } = rec;
 
   if (key.spendLimit && key.spent.plus(rec.spentDelta).gte(key.spendLimit)) {
     throw new GatewayError("spend_limit_reached", "This API key has reached its spend limit.");
