@@ -412,7 +412,7 @@ export function pricingApi(ctx: DocCtx) {
           [<C key="a">GET /v1/models</C>, "API key", "The models your key can use, with your effective prices (pool and account multipliers applied) next to the official list price."],
           [<C key="b">GET /v1/models/{"{id}"}</C>, "API key", "The same fields for one model."],
           [<C key="c">GET /v1/model/info</C>, "API key", "LiteLLM-compatible cost per token, for LiteLLM, Langfuse and other cost trackers."],
-          [<C key="d">GET /api/pricing</C>, "none", "The public price list (default pool, or ?group=<pool>). Cached for 60 s, CORS enabled. May be switched off by the operator."],
+          [<C key="d">GET /api/pricing</C>, "none, or API key", "The price list (default pool, or ?group=<pool>). Cached for 60 s, CORS enabled. When the operator makes pricing private it needs your API key, and then shows your own prices."],
         ]}
       />
       <H2>Your prices: GET /v1/models</H2>
@@ -471,13 +471,16 @@ export function pricingApi(ctx: DocCtx) {
   }
 } ] }`}
       />
-      <H2>Public price list: GET /api/pricing</H2>
+      <H2>Price list: GET /api/pricing</H2>
       <CodeBlock lang="bash" code={`curl ${ctx.appUrl}/api/pricing
-curl "${ctx.appUrl}/api/pricing?group=pro"   # a public pool`} />
+curl "${ctx.appUrl}/api/pricing?group=pro"   # a public pool
+curl ${ctx.appUrl}/api/pricing -H "Authorization: Bearer $PP_API_KEY"   # your own prices (works when pricing is private)`} />
       <P>
         No key needed, CORS <C>*</C>, cached for 60 seconds. The document lists the public pools (<C>groups</C>), the units, and per model the <C>yours</C> / <C>official</C> /{" "}
-        <C>savings_pct</C> prices (US dollars per million tokens for text models). If the operator has made pricing private, it answers <C>401 pricing_private</C>; use{" "}
-        <C>/v1/models</C> with your key instead.
+        <C>savings_pct</C> prices (US dollars per million tokens for text models). If the operator has made pricing private, it answers <C>401 pricing_private</C> without a key; send your
+        API key the same way as on the API (<C>Authorization: Bearer</C>, <C>x-api-key</C> or <C>?key=</C>) and you get your own prices: your pool, your
+        account multiplier and your key&apos;s model allow-list, never cached by shared caches. A wrong, disabled or expired key is rejected with the usual{" "}
+        <C>401</C>.
       </P>
       <H2>Keeping prices in sync</H2>
       <CodeTabs

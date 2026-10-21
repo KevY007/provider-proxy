@@ -230,6 +230,6 @@ Scheduler. Runs are claimed atomically in `JobRun`. Details: [OPERATIONS.md](OPE
 |---|---|
 | `GET /api/healthz` | `{ok, db, redis, time}`. Only the DB gates readiness (503 when down). |
 | `POST /api/stripe/webhook` | Stripe events, signature verified, idempotent |
-| `GET /api/pricing[?group=slug]` | Public price list (official vs customer price), CORS `*`, cached 60 s |
+| `GET /api/pricing[?group=slug]` | Price list (official vs customer price), CORS `*`, cached 60 s when public; with a valid API key it is always served (the key's own prices, `private, no-store`) |
 | `GET /api/admin/slots` | Live slot snapshot (admin/support session) |
 | `/admin/{logs,analytics,customers}/export`, `/dashboard/{logs,usage}/export` | CSV exports |
