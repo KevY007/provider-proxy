@@ -107,6 +107,15 @@ problems. Failures with no upstream answer become 502/504. The response header a
   timeout is `provider.timeoutMs`, counted from the end of the request upload. There is no body timeout. The optional
   stream idle cutoff is `provider.settings.idleTimeoutSec`, else `upstreamIdleTimeoutSec` (default 0 = never).
 - Upstream HTTP/2 is opt-in per provider (`settings.http2: true`, https only).
+- A stream is held back from the client until real output arrives (`stream-start.ts`: an upstream's opening
+  bookkeeping events, such as a role-only chat chunk, `response.created` or `message_start`, do not count), for up to
+  `streamStartHoldSec` (default 120 s, never shorter than one heartbeat). A failure in that window (an in-band error,
+  a drop, an end without output) fails over to the next key or retries the same one after a short pause, up to
+  `maxAttempts`; the client sees one clean stream or, if every attempt failed, a native HTTP error. After that window
+  the response is committed and heartbeats keep it alive.
+- Provider `settings.streamUpstream: true` sends non-streaming chat / responses / messages requests upstream as streams
+  and assembles the reply into the provider's JSON (`stream-collect.ts`); `settings.noCooldown: true` keeps transient
+  failures from cooling the provider's keys down.
 - Client disconnect aborts the upstream request immediately.
 - URLs that come back from an upstream (fal / Replicate result files, video CDN links, redirects) are fetched only
   when they resolve to public addresses (`ssrf.ts`). The provider's own host is the exception, so self-hosted and

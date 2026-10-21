@@ -37,6 +37,8 @@ export interface PrepareInput {
   outputCap?: number | null;
   /** Funds guard: output tokens reserved; used when the upstream REQUIRES a cap (Anthropic) and the client sent none. */
   fillOutput?: number | null;
+  /** Provider option `streamUpstream`: send this non-streaming request with `stream: true` (the reply is assembled back). */
+  forceStream?: boolean;
 }
 
 export interface Prepared {
@@ -49,6 +51,8 @@ export interface Prepared {
   upstreamOp: Operation;
   /** Admin-only remarks the request shaping wants in the request log (e.g. a reasoning request that could not be honoured). */
   notes?: string[];
+  /** Sent upstream as a stream for a non-streaming client: the SSE reply is assembled into the JSON one (stream-collect.ts). */
+  collect?: boolean;
 }
 
 /** Spliced body -> a Buffer when small and in memory, else a fresh stream with an explicit content-length. */
@@ -146,7 +150,8 @@ export function prepareUpstream(i: PrepareInput): Prepared {
     }
     // the Sora-style video API takes `seconds` as a string enum ("4" | "8" | "12")
     if (op === "videos_create" && obj.seconds !== undefined && typeof obj.seconds !== "string") obj.seconds = String(obj.seconds);
-    if (i.stream && (op === "chat" || op === "completions") && ps.forceStreamUsage) {
+    if (i.forceStream) obj.stream = true;
+    if ((i.stream && (op === "chat" || op === "completions") && ps.forceStreamUsage) || (i.forceStream && op === "chat")) {
       obj.stream_options = { ...(isObject(obj.stream_options) ? obj.stream_options : {}), include_usage: true };
     }
     for (const f of ps.stripFields) delete obj[f];
@@ -176,16 +181,18 @@ export function prepareUpstream(i: PrepareInput): Prepared {
         ? "DELETE"
         : "POST";
   const hasBody = body !== null;
-  const headers = buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: i.stream, keyExtra: key.extra, inbound: i.inboundHeaders, contentType, hasBody, op });
+  const streamUp = i.stream || !!i.forceStream;
+  const headers = buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: streamUp, keyExtra: key.extra, inbound: i.inboundHeaders, contentType, hasBody, op });
   if (body !== null && typeof body === "object" && !(body instanceof Uint8Array) && bodyLength !== null) headers["content-length"] = String(bodyLength);
   return {
-    url: buildUpstreamUrl({ provider, format: upFormat, op, upstreamModel: route.upstreamModel, stream: i.stream, keyExtra: key.extra, responseId: i.responseId, videoId: i.videoId, query: i.query, secret: i.secret }),
+    url: buildUpstreamUrl({ provider, format: upFormat, op, upstreamModel: route.upstreamModel, stream: streamUp, keyExtra: key.extra, responseId: i.responseId, videoId: i.videoId, query: i.query, secret: i.secret }),
     method,
     headers,
     body,
     upstreamFormat: upFormat,
     upstreamOp: op,
     ...(translationNotes.notes.length ? { notes: translationNotes.notes } : {}),
+    ...(i.forceStream ? { collect: true } : {}),
   };
 }
 

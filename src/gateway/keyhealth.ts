@@ -26,6 +26,18 @@ export interface FailureInfo {
   message: string;
   /** When the failed request started: failures that predate a later success do not count as "consecutive". */
   startedAt?: number;
+  /** The provider opted out of cooling keys down on transient errors (`settings.noCooldown`). */
+  noCooldown?: boolean;
+}
+
+/**
+ * Provider option `noCooldown`: transient failures (5xx, network, timeouts) never put this provider's keys on cooldown.
+ * For a provider with a single key (a reseller account) a cooldown only turns flaky answers into certain ones ("no
+ * provider available" for every customer); retries handle the flakiness instead. Rate limits (429), credit (402) and
+ * bad keys still apply.
+ */
+export function providerNoCooldown(provider: { settings: Record<string, unknown> }): boolean {
+  return provider.settings.noCooldown === true;
 }
 
 /** Last successful response per upstream key (cheap, in-process). */
@@ -117,7 +129,7 @@ export function recordKeyFailure(
     default:
       authStreak = 0;
       failures += 1;
-      if (failures >= settings.failuresBeforeCooldown) {
+      if (failures >= settings.failuresBeforeCooldown && !info.noCooldown) {
         cooldownUntil = now + Math.min(MAX_COOLDOWN_MS, settings.keyCooldownSeconds * 1000);
         status = "COOLDOWN";
       }

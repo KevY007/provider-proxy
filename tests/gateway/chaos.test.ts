@@ -120,7 +120,12 @@ const NON_STREAM: Array<Fmt & { upstreamPath: () => string }> = [
 let heartbeatOverride: number | null = null;
 async function applyOverrides(): Promise<void> {
   __resetCacheForTests();
-  if (heartbeatOverride !== null) (await getConfig()).settings.streamHeartbeatSec = heartbeatOverride;
+  if (heartbeatOverride !== null) {
+    const st = (await getConfig()).settings;
+    st.streamHeartbeatSec = heartbeatOverride;
+    // these tests time the heartbeat itself: commit after one heartbeat interval instead of holding for real output
+    st.streamStartHoldSec = 0;
+  }
 }
 function setHeartbeatSeconds(sec: number | null): Promise<void> {
   heartbeatOverride = sec;
@@ -288,7 +293,7 @@ describe.skipIf(!dbOk)("connection fidelity (real sockets)", () => {
 
     // ------------------------------------------------------------------ 3. upstream failures inside a stream
     it("an in-stream upstream error event reaches the client verbatim and the stream ends normally", async () => {
-      const r = await run(fmt, { mode: "error-after:2", words: 10 });
+      const r = await run(fmt, { mode: "error-after:7", words: 10 }); // after real output: the opening bookkeeping events alone would fail over instead
       expect(r.status).toBe(200);
       expect(r.error).toBeNull();
       expect(r.ended).toBe(true);

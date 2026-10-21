@@ -81,6 +81,15 @@ provider settings and delete their fixtures.
 6. `VideoJob` is left as is. New sticky objects (files, uploads, Gemini upload sessions) use `UpstreamObject`.
 7. Multipart spool uses `os.tmpdir()` (memory-backed on Cloud Run, see deploy/README); no per-request disk quota.
 
+## Stream start hold (relays that fail right after accepting a request)
+
+Some relays answer 200, send the opening bookkeeping event (a role-only chunk, `response.created`, `message_start`)
+and then an in-band "Service Unavailable" seconds later, before any output (measured on one reseller: 11 of 30
+streams, all 8-27 s in, none after output had started). The gateway does not treat those opening events as the start
+of the response: it holds the response until real output arrives, for up to `streamStartHoldSec` (default 120 s), and
+a failure in that window is retried invisibly (`tests/gateway/integration.test.ts`, mock fault `flakystart`). The
+chaos suite pins the hold to one heartbeat interval where it times the heartbeat itself.
+
 ## Limits and not covered (stated plainly)
 
 - A TCP RST discards whatever the peer had not read yet, so after an upstream reset the client may miss the last few events (real providers behave the same).
