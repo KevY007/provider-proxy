@@ -4,7 +4,7 @@ import { randomToken, sha256 } from "@/lib/crypto";
 import { emailTemplates, sendTemplate } from "@/lib/email";
 import { logger } from "@/lib/logger";
 import { Decimal, toDbString, toDecimal } from "@/lib/money";
-import { rateLimit, resetRateLimit } from "@/lib/ratelimit";
+import { peekRateLimit, rateLimit, resetRateLimit } from "@/lib/ratelimit";
 import { getSettings } from "@/lib/settings";
 import { audit } from "@/lib/audit";
 import type { TokenType } from "@/generated/prisma/client";
@@ -286,6 +286,32 @@ export type LoginOutcome =
 
 const INVALID: LoginOutcome = { kind: "error", code: "invalid", message: "Invalid email or password" };
 
+/**
+ * Brute-force slowdown: every wrong password for an email (or from an IP) within the last 15 minutes doubles the wait
+ * before the answer - 0.25 s, 0.5 s, 1 s ... capped at 10 s - and an account accepts at most 100 wrong passwords a
+ * day from all addresses together. A correct password is never slowed down.
+ */
+const FAIL_WINDOW_SEC = 900;
+const FAIL_COUNTER = { limit: 100_000, windowSec: FAIL_WINDOW_SEC };
+const MAX_DAILY_FAILURES = 100;
+let sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+export function __setLoginSleepForTests(fn: (ms: number) => Promise<void>): void {
+  sleep = fn;
+}
+
+/** Wait before answering the n-th recent failure (n >= 1). */
+export function failedLoginDelayMs(failures: number): number {
+  if (failures < 1) return 0;
+  return Math.min(10_000, 250 * 2 ** Math.min(failures - 1, 6));
+}
+
+async function slowDownFailedLogin(email: string, ip: string): Promise<void> {
+  const [byEmail, byIp] = await Promise.all([rateLimit(`login:fail:email:${email}`, FAIL_COUNTER), rateLimit(`login:fail:ip:${ip}`, FAIL_COUNTER)]);
+  await rateLimit(`login:fail:day:${email}`, { limit: 100_000, windowSec: 86_400 });
+  const failures = Math.max(byEmail.limit - byEmail.remaining, byIp.limit - byIp.remaining);
+  await sleep(failedLoginDelayMs(failures) + Math.floor(Math.random() * 100));
+}
+
 export async function loginUser(input: {
   email: string;
   password: string;
@@ -294,23 +320,29 @@ export async function loginUser(input: {
 }): Promise<LoginOutcome> {
   const email = normalizeEmail(input.email);
 
-  const [byIp, byPair, byAccount] = await Promise.all([
-    rateLimit(`login:ip:${input.ip}`, { limit: 40, windowSec: 600 }),
-    rateLimit(`login:pair:${input.ip}:${email}`, { limit: 8, windowSec: 900 }),
+  const [byIp, byPair, byAccount, daily] = await Promise.all([
+    rateLimit(`login:ip:${input.ip}`, { limit: 20, windowSec: 600 }),
+    rateLimit(`login:pair:${input.ip}:${email}`, { limit: 5, windowSec: 900 }),
     // per account, whatever the source address (rotating IPs must not give unlimited guesses)
     rateLimit(`login:email:${email}`, { limit: 30, windowSec: 3600 }),
+    // wrong passwords for this account today (counted in slowDownFailedLogin; this call only reads the count)
+    peekRateLimit(`login:fail:day:${email}`, { limit: MAX_DAILY_FAILURES, windowSec: 86_400 }),
   ]);
-  if (!byIp.ok || !byPair.ok || !byAccount.ok) {
-    const wait = Math.max(byIp.retryAfterSec, byPair.retryAfterSec, byAccount.retryAfterSec);
+  if (!byIp.ok || !byPair.ok || !byAccount.ok || !daily.ok) {
+    const wait = Math.max(byIp.retryAfterSec, byPair.retryAfterSec, byAccount.retryAfterSec, daily.retryAfterSec);
     return { kind: "error", code: "rate_limited", message: `Too many attempts. Try again in ${Math.max(1, Math.ceil(wait / 60))} min.` };
   }
 
   const user = await db.user.findUnique({ where: { email } });
   if (!user) {
     await burnPasswordCheck(input.password);
+    await slowDownFailedLogin(email, input.ip);
     return INVALID;
   }
-  if (!(await verifyPassword(user.passwordHash, input.password))) return INVALID;
+  if (!(await verifyPassword(user.passwordHash, input.password))) {
+    await slowDownFailedLogin(email, input.ip);
+    return INVALID;
+  }
 
   // Credentials are correct from here on, so specific states can be disclosed.
   if (user.status === "SUSPENDED") {
@@ -324,7 +356,7 @@ export async function loginUser(input: {
     await db.user.update({ where: { id: user.id }, data: { status: "ACTIVE" } });
   }
 
-  await resetRateLimit(`login:pair:${input.ip}:${email}`);
+  await Promise.all([resetRateLimit(`login:pair:${input.ip}:${email}`), resetRateLimit(`login:fail:email:${email}`)]);
 
   if (user.totpEnabled) {
     await createSession(user.id, { ip: input.ip, userAgent: input.userAgent, twoFactorPassed: false });
