@@ -24,6 +24,18 @@ describe("isPreambleEvent", () => {
     expect(isPreambleEvent("openai_chat", ev({ choices: [], usage: { prompt_tokens: 1 } }))).toBe(false);
     expect(isPreambleEvent("openai_chat", ev({ error: { message: "Service Unavailable" } }))).toBe(false);
     expect(isPreambleEvent("openai_chat", ev("[DONE]"))).toBe(false);
+    // reasoning summaries stream for minutes before the answer: still the preamble
+    expect(isPreambleEvent("openai_chat", ev({ choices: [{ index: 0, delta: { reasoning_content: "**Enumerating digit subsets**" } }] }))).toBe(true);
+    expect(isPreambleEvent("openai_chat", ev({ choices: [{ index: 0, delta: { reasoning_content: "thinking", content: "117" } }] }))).toBe(false);
+  });
+  it("reasoning items / summaries / thinking deltas are preamble in Responses and Anthropic", () => {
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.added", item: { type: "reasoning" } }))).toBe(true);
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.done", item: { type: "reasoning" } }))).toBe(true);
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.reasoning_summary_text.delta", delta: "x" }))).toBe(true);
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.metadata" }))).toBe(true);
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.added", item: { type: "function_call" } }))).toBe(false);
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.done", item: { type: "message" } }))).toBe(false);
+    expect(isPreambleEvent("anthropic_messages", ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hm" } }))).toBe(true);
   });
   it("Responses and Anthropic: opening bookkeeping events are preamble, deltas are output", () => {
     for (const t of ["response.created", "response.in_progress", "response.output_item.added", "response.content_part.added"]) expect(isPreambleEvent("openai_responses", ev({ type: t }, t))).toBe(true);
