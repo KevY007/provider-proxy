@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { appUrl } from "@/lib/env";
 import { getSetting } from "@/lib/settings";
 import { getCatalogModels } from "@/server/customer/catalog";
-import { publicVisibility } from "@/server/customer/visibility";
+import { publicVisibility, requirePublicSite } from "@/server/customer/visibility";
 import { List } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -46,6 +46,7 @@ async function buildCtx(): Promise<DocCtx> {
 export default async function DocsPage({ params }: { params: Promise<Params> }) {
   const { slug: parts } = await params;
   const slug = (parts ?? []).join("/");
+  await requirePublicSite(slug ? `/docs/${slug}` : "/docs");
   const page = findDocPage(slug);
   if (!page) notFound();
   const ctx = await buildCtx();

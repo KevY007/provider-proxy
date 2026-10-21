@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { vendorLabel } from "@/server/customer/labels";
 import { getStatusSnapshot } from "@/server/customer/status";
-import { publicVisibility } from "@/server/customer/visibility";
+import { requirePublicSite } from "@/server/customer/visibility";
 import { LEVEL_LABEL, type DayBar, type StatusLevel } from "@/server/customer/status-calc";
 
 export const metadata: Metadata = { title: "Status", description: "Live availability of every model family." };
@@ -43,7 +43,7 @@ function Bars({ bars }: { bars: DayBar[] }) {
 }
 
 export default async function StatusPage() {
-  const vis = await publicVisibility();
+  const vis = await requirePublicSite("/status");
   if (!vis.status) redirect("/login?next=/status");
   const snap = await getStatusSnapshot();
   const Icon = ICON[snap.overall];

@@ -1,4 +1,6 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
+import { getSession } from "@/lib/auth/session";
 import {
   ArrowRight,
   BarChart3,
@@ -54,6 +56,12 @@ const FAQ = [
 ];
 
 export default async function HomePage() {
+  // portal-only: no home page; signed-in users go straight to their console, everyone else to the login page
+  const gate = await publicVisibility();
+  if (gate.portalOnly) {
+    const session = gate.signedIn ? await getSession().catch(() => null) : null;
+    redirect(!session ? "/login" : session.user.role === "CUSTOMER" ? "/dashboard" : "/admin");
+  }
   const [siteName, models, group, vis] = await Promise.all([getSetting("siteName"), getCatalogModels(), getDefaultGroup(), publicVisibility()]);
   // with private pricing nothing price-related reaches a visitor who is not signed in (table, savings, links)
   const showPrices = vis.pricing;
