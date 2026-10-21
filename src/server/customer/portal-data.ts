@@ -37,13 +37,24 @@ export interface PoolOption {
   isDefault: boolean;
 }
 
-/** Pools a customer may pick: public groups + their assigned private group (if any). */
+/**
+ * Pools a customer may pick: public groups + their assigned pool + private pools an admin allowed for them + the pools
+ * their existing keys are already in (so an edit dialog always shows the key's current pool).
+ */
 export async function getSelectablePools(user: SessionUser): Promise<{ pools: PoolOption[]; current: PoolOption | null }> {
-  const [pub, def] = await Promise.all([getPublicGroups(), getDefaultGroup()]);
-  const own = user.groupId ? await db.group.findUnique({ where: { id: user.groupId } }) : null;
+  const [pub, def, keyGroups] = await Promise.all([
+    getPublicGroups(),
+    getDefaultGroup(),
+    db.apiKey.findMany({ where: { userId: user.id, status: { not: "REVOKED" }, groupId: { not: null } }, select: { groupId: true }, distinct: ["groupId"] }),
+  ]);
+  const privateIds = [...new Set([user.groupId, ...(user.extraGroupIds ?? []), ...keyGroups.map((k) => k.groupId)].filter((id): id is string => !!id))];
+  const extra = privateIds.length ? await db.group.findMany({ where: { id: { in: privateIds } }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }) : [];
+  const own = extra.find((g) => g.id === user.groupId) ?? null;
   const all: CatalogGroup[] = [...pub];
-  if (own && !all.some((g) => g.id === own.id)) {
-    all.push({ id: own.id, slug: own.slug, name: own.name, description: own.description, priceMultiplier: own.priceMultiplier.toString(), allowedModels: own.allowedModels, isDefault: own.isDefault, isPublic: own.isPublic, sortOrder: own.sortOrder });
+  for (const g of extra) {
+    if (!all.some((x) => x.id === g.id)) {
+      all.push({ id: g.id, slug: g.slug, name: g.name, description: g.description, priceMultiplier: g.priceMultiplier.toString(), allowedModels: g.allowedModels, isDefault: g.isDefault, isPublic: g.isPublic, sortOrder: g.sortOrder });
+    }
   }
   const pools = all.map((g) => ({
     id: g.id,
