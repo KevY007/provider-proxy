@@ -7,8 +7,11 @@ import { isObject } from "./util";
  * with only `role: "assistant"` (and empty content), the Responses API's `response.created` / `in_progress` /
  * `output_item.added`, Anthropic's `message_start` / `ping` / `content_block_start`. Some relays fail AFTER sending
  * them but before any output ("Service Unavailable" seconds later). Treating these events as a preamble lets the
- * pipeline hold the response back until real output (text, tool calls, reasoning, a usage-bearing end) arrives, so
- * such a failure is retried invisibly instead of reaching the client.
+ * pipeline hold the response back until real output (answer text, tool calls, a usage-bearing end) arrives, so such a
+ * failure is retried invisibly instead of reaching the client. Reasoning counts as preamble too: a thinking model sends
+ * reasoning items / summaries every few seconds for minutes before the answer (measured on a reseller: an Astra xhigh
+ * request thought for 8+ minutes and failed in that phase), and they are buffered and released with the answer (or when
+ * the hold window ends), so a retry never duplicates anything the client saw.
  */
 export function isPreambleEvent(format: InboundFormat, ev: SseEvent): boolean {
   if (ev.comment) return true;
@@ -27,18 +30,25 @@ export function isPreambleEvent(format: InboundFormat, ev: SseEvent): boolean {
       return chatChunkIsPreamble(j);
     case "openai_responses": {
       const type = typeof j.type === "string" ? j.type : ev.event ?? "";
-      return RESPONSES_PREAMBLE.has(type);
+      if (RESPONSES_PREAMBLE.has(type) || type.startsWith("response.reasoning")) return true;
+      // reasoning output items (added / done) carry no answer text
+      if (type === "response.output_item.added") return !isObject(j.item) || j.item.type === "reasoning" || j.item.type === "message";
+      if (type === "response.output_item.done") return isObject(j.item) && j.item.type === "reasoning";
+      return false;
     }
     case "anthropic_messages": {
       const type = typeof j.type === "string" ? j.type : ev.event ?? "";
-      return ANTHROPIC_PREAMBLE.has(type);
+      if (ANTHROPIC_PREAMBLE.has(type)) return true;
+      if (type === "content_block_delta" && isObject(j.delta)) return j.delta.type === "thinking_delta" || j.delta.type === "signature_delta";
+      // a block closing carries no output itself (a text block's deltas have committed the stream already)
+      return type === "content_block_stop";
     }
     default:
       return false;
   }
 }
 
-const RESPONSES_PREAMBLE = new Set(["response.created", "response.in_progress", "response.queued", "response.output_item.added", "response.content_part.added"]);
+const RESPONSES_PREAMBLE = new Set(["response.created", "response.in_progress", "response.queued", "response.content_part.added", "response.metadata"]);
 const ANTHROPIC_PREAMBLE = new Set(["message_start", "ping", "content_block_start"]);
 
 function chatChunkIsPreamble(j: Record<string, unknown>): boolean {
@@ -49,7 +59,8 @@ function chatChunkIsPreamble(j: Record<string, unknown>): boolean {
     if (c.finish_reason) return false;
     const d = isObject(c.delta) ? c.delta : {};
     for (const [k, v] of Object.entries(d)) {
-      if (k === "role") continue;
+      // role, and reasoning summaries / text (reasoning_content, reasoning): not the answer yet
+      if (k === "role" || k === "reasoning_content" || k === "reasoning" || k === "reasoning_details") continue;
       if (v === null || v === undefined || v === "") continue;
       if (Array.isArray(v) && v.length === 0) continue;
       return false; // content / tool_calls / refusal / reasoning text: real output
