@@ -177,17 +177,17 @@ describe.skipIf(!dbOk)("catalog pricing endpoints", () => {
     expect(pre.headers.get("access-control-allow-origin")).toBe("*");
   });
 
-  it("private pricing or a private model list: 401 for visitors, never cached", async () => {
+  it("private pricing, a private model list or portal-only: 401 for visitors, never cached", async () => {
     try {
-      for (const off of [{ publicPricing: false }, { publicModels: false }]) {
-        await setSettings({ publicPricing: true, publicModels: true, ...off });
+      for (const off of [{ publicPricing: false }, { publicModels: false }, { portalOnly: true }]) {
+        await setSettings({ publicPricing: true, publicModels: true, portalOnly: false, ...off });
         const res = await pricingRoute(new Request("http://x.test/api/pricing"));
         expect(res.status).toBe(401);
         expect(((await res.json()) as { error: { code: string } }).error.code).toBe("pricing_private");
         expect(res.headers.get("cache-control")).toBe("no-store");
       }
     } finally {
-      await setSettings({ publicPricing: true, publicModels: true });
+      await setSettings({ publicPricing: true, publicModels: true, portalOnly: false });
     }
     expect((await pricingRoute(new Request("http://x.test/api/pricing"))).status).toBe(200);
   });

@@ -61,7 +61,8 @@ The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
   playground (chat and images), models and pricing (with per-model speed), billing and account settings with 2FA.
 - Public site: landing page, `/pricing`, `/status` and the customer API docs at **`/docs`** (including a Pricing API
   guide). Prices are also machine-readable: `GET /v1/models` (OpenRouter-style `pricing`), `GET /v1/model/info`
-  (LiteLLM) and the public `GET /api/pricing`.
+  (LiteLLM) and the public `GET /api/pricing`. For an internal deployment, the admin setting "Portal only" turns the
+  whole public site off: visitors who are not signed in only get the login page.
 
 ## Architecture
 
