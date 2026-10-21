@@ -79,8 +79,8 @@ export const KNOWN_PRICES: KnownPrice[] = [
   oai6("gpt-6.1-sol", 2, 10, 0.1, "GPT-6.1 Sol", "Balanced GPT-6.1 model for everyday workloads."),
   oai6("gpt-6-sol", 2, 10, 0.2, "GPT-6 Sol", "Balanced GPT-6 model."),
   oai6("gpt-6-luna", 0.1, 0.5, 0.01, "GPT-6 Luna", "Fast, low-cost GPT-6 model."),
-  // promotional price, "at least through November 21, 2026" (list price before it: 5 / 0.5 / 30)
-  oai6("gpt-5.6-sol", 4, 20, 0.4, "GPT-5.6 Sol", "GPT-5.6 high-capability model.", { cacheWrite: 5 }),
+  // regular list price: OpenAI's temporary promotion (4 / 0.4 / 20, "at least through November 21, 2026") is not used
+  oai6("gpt-5.6-sol", 5, 30, 0.5, "GPT-5.6 Sol", "GPT-5.6 high-capability model."),
   oai6("gpt-5.6-terra", 2, 12, 0.2, "GPT-5.6 Terra", "GPT-5.6 mid-tier model."),
   oai6("gpt-5.6-luna", 0.2, 1.2, 0.02, "GPT-5.6 Luna", "GPT-5.6 small, fast model."),
   // GPT Image 2 / 2.5: token-billed (text input 5, cached text 1.25, image output 30; image inputs are 8 per 1M)

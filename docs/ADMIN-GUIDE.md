@@ -162,6 +162,11 @@ The effective pool of a request is the key's group, else the customer's group, e
 multiplier is the customer multiplier x the group multiplier. When you delete a group you can move its members to
 the default group.
 
+Customers choose a pool per API key when they create or edit it (the key and its secret stay the same; only the
+pool changes). They can pick public pools, their own pool and the private pools an admin allowed for their account
+under **Extra pools for API keys** on the customer page; any other private pool is refused, and an edit can always
+keep the pool the key is already in.
+
 ## Customers and credits (`/admin/customers`)
 
 The list has search, balance, spend and CSV export. **Create user** (admins) adds an account that is active and
@@ -171,7 +176,8 @@ New self-service sign-ups are switched on and off under Settings > Access > **Si
 account can always sign up). The detail page shows:
 - **Profile & controls**: status (suspend / activate), role, verify email, group (pool), price multiplier (stacks on
   the group's), billing mode (PREPAID / POSTPAID), credit limit (how far below $0 the balance may go), monthly spend
-  limit, max concurrency (across all their keys).
+  limit, max concurrency (across all their keys), and **Extra pools for API keys** (private pools this customer may
+  put their keys in, besides their own pool).
 - **Balance**: **Add credit** with type **Promotional credit** (ledger ADJUSTMENT), **Refund** (REFUND) or
   **Correction** (ADJUSTMENT, may be negative), plus a required reason. **Grant credit** applies to many customers
   selected in the list. **Adjust balance** is also available.

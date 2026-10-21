@@ -80,7 +80,7 @@ describe("known price catalog", () => {
       ["gpt-6.1-sol", 2, 0.1, 10, 2.5],
       ["gpt-6-sol", 2, 0.2, 10, 2.5],
       ["gpt-6-luna", 0.1, 0.01, 0.5, 0.125],
-      ["gpt-5.6-sol", 4, 0.4, 20, 5], // promotional price through at least 2026-11-21
+      ["gpt-5.6-sol", 5, 0.5, 30, 6.25], // list price (the temporary promotion is not used)
       ["gpt-5.6-terra", 2, 0.2, 12, 2.5],
       ["gpt-5.6-luna", 0.2, 0.02, 1.2, 0.25],
     ];
