@@ -11,6 +11,7 @@
  * Fault injection (by the upstream credential the gateway presents):
  *   key contains "fail429" -> 429 + retry-after: 2     "fail500" -> 500     "fail529" -> 529 (overloaded)
  *   key contains "bad"     -> 401 invalid key          "slow"    -> +1500ms before responding / first byte
+ *   key contains "deny403" -> 403 "this group does not allow" (a reseller key without access to this endpoint; the key itself is fine)
  * Delay knobs: header `x-mock-delay-ms`, body field `mock_delay_ms`, or marker `[[delay:N]]` in the last user
  * text. Non-stream: wait N ms before responding. Stream: wait N ms before EVERY SSE chunk (holds slots open).
  * Usage override marker (in the last user text / prompt / input): `[[usage:in=1000,out=500,cached=200,cw=50]]`.
@@ -2516,6 +2517,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   if (cred.includes("bad")) return sendError(ctx, "auth", "Incorrect API key provided.");
   // (the messages are what a real provider says: the gateway forwards them to the client, so they must not name the fault key)
   if (cred.includes("fail429")) return sendError(ctx, "rate_limit", "Rate limit reached for requests.", { ...rateLimitHeaders(ctx), ...idHeaders() });
+  if (cred.includes("deny403")) return sendError(ctx, "invalid_request", `This group does not allow ${path} dispatch`, idHeaders(), 403);
   if (cred.includes("fail500")) return sendError(ctx, "server", "The server had an error while processing your request.", idHeaders());
   if (cred.includes("fail529")) return sendError(ctx, "overloaded", "Overloaded.", idHeaders());
   // x-mock-fail: <status> - any HTTP status, retry-after 7 + request id, native error body

@@ -190,8 +190,9 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     // anthropicBaseUrl: origin (adapter appends /v1/messages); geminiBaseUrl: includes /v1beta.
     settings: { anthropicBaseUrl: "https://codex-everywhere.com", geminiBaseUrl: "https://codex-everywhere.com/v1beta" },
     docsUrl: "https://codex-everywhere.com",
-    sampleModels: ["gpt-5", "claude-sonnet-4-5", "gemini-2.5-pro"],
-    description: "Codex Everywhere relay: OpenAI, Anthropic and Gemini formats on one key.",
+    sampleModels: ["gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-luna", "gpt-image-2", "claude-sonnet-5", "gemini-3.1-pro", "grok-4.7", "deepseek-flash"],
+    description:
+      "Codex Everywhere relay. What a key may call depends on its CE group (OpenAI-only, Claude, Gemini...): untick the formats your key's group does not allow (requests in those formats are then translated), and add one provider per group key. CE publishes no machine-readable prices: enter costs by hand.",
     tags: ["reseller"],
   },
   {

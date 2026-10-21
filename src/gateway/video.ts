@@ -148,7 +148,7 @@ function upstreamErrorToGateway(provider: ProviderRec, key: KeyRec, secret: stri
   const failover = status === 401 || status === 402 || status === 403 || status === 408 || status === 429 || status >= 500;
   if (failover) {
     const f: Failure = {
-      fk: classifyStatus(status),
+      fk: classifyStatus(status, message),
       status,
       message,
       retryAfterSec: parseRetryAfter(headers),

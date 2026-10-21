@@ -117,6 +117,8 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
   const settings = snap.settings;
   const maxAttempts = opts.maxAttempts ?? settings.maxAttempts;
   const failures = new Map<string, number>();
+  // (route, key) pairs that answered a "forbidden" 403: retrying them cannot help, other routes / keys still may
+  const forbidden = new Set<string>();
   const signal = ctx.req.signal;
   let attemptsMade = 0;
   let lastFailure: Failure | null = null;
@@ -127,7 +129,8 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
   try {
     for (;;) {
       if (signal.aborted) throw new GatewayError("client_closed");
-      const cands = buildCandidates(snap, routes, { failures, pinKeyId: opts.pinKeyId, preferKeyId: opts.preferKeyId });
+      const built = buildCandidates(snap, routes, { failures, pinKeyId: opts.pinKeyId, preferKeyId: opts.preferKeyId });
+      const cands = forbidden.size ? built.filter((c) => !forbidden.has(`${c.route.id}:${c.key.id}`)) : built;
       if (!cands.length) throw lastFailure ? finalError(lastFailure, settings) : noProviderError(snap, routes);
 
       const pick = await pickSlot(cands, settings);
@@ -165,6 +168,7 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       lastFailure = f;
       attemptsMade++;
       failures.set(pick.cand.key.id, (failures.get(pick.cand.key.id) ?? 0) + 1);
+      if (f.fk === "forbidden") forbidden.add(`${pick.cand.route.id}:${pick.cand.key.id}`);
       if (f.fk === "auth" && !getKeySecret(pick.cand.key)) {
         recordKeyFailure(pick.cand.key, "auth", { status: f.status, message: f.message }, settings);
       } else {
@@ -319,7 +323,7 @@ function httpErrorResult(
     return {
       kind: "failure",
       failure: {
-        fk: classifyStatus(status),
+        fk: classifyStatus(status, message),
         status,
         message,
         retryAfterSec: parseRetryAfter(headers),
@@ -492,7 +496,7 @@ async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Upst
   if (isObject(parsed) && isObject(parsed.error) && ["chat", "completions", "messages", "responses", "embeddings"].includes(path.op) && parsed.choices === undefined && parsed.content === undefined && parsed.output === undefined && parsed.data === undefined) {
     const code = Number(parsed.error.code);
     const status = code >= 400 && code < 600 ? code : parsed.error.type === "overloaded_error" ? 529 : parsed.error.type === "rate_limit_error" ? 429 : 502;
-    return fail(classifyStatus(status), status, extractErrorMessage(text) || "upstream error in a 200 response", { internal: text.slice(0, 1000), mirror: isMirrorStatus(status) ? mirrorErrorFromUpstream(status, text, h.res.headers, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, prepared.upstreamFormat, scrubCtx(ctx, cand, getKeySecret(cand.key) ?? ""), { rateLimits: settings.passUpstreamRateLimits }) : undefined });
+    return fail(classifyStatus(status, extractErrorMessage(text)), status, extractErrorMessage(text) || "upstream error in a 200 response", { internal: text.slice(0, 1000), mirror: isMirrorStatus(status) ? mirrorErrorFromUpstream(status, text, h.res.headers, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, prepared.upstreamFormat, scrubCtx(ctx, cand, getKeySecret(cand.key) ?? ""), { rateLimits: settings.passUpstreamRateLimits }) : undefined });
   }
 
   let out: Json = parsed;
@@ -743,7 +747,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
     h.abort();
     h.dispose();
     const mirrorable = isMirrorStatus(inband.status);
-    return fail(classifyStatus(inband.status), inband.status, inband.message, {
+    return fail(classifyStatus(inband.status, inband.message), inband.status, inband.message, {
       internal: `in-band stream error: ${inband.type ?? ""} ${inband.message}`,
       mirror: mirrorable
         ? mirrorErrorFromUpstream(inband.status, inbandErrorDocument(prepared.upstreamFormat, inband), {}, ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format, prepared.upstreamFormat, sc, { rateLimits: settings.passUpstreamRateLimits })
@@ -828,7 +832,7 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
     });
   } else if (info.inband && err) {
     // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
-    recordKeyFailure(cand.key, classifyStatus(err.status), { status: err.status, message: err.message }, settings);
+    recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message }, settings);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: err.status >= 400 ? err.status : 502,
