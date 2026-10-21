@@ -8,7 +8,7 @@ import { handleFilesOk, prepareRawUpstream, registerGeneratedFiles } from "./fil
 import { generatedFilesOfAnthropicMessage, generatedFilesOfResponsesOutput } from "./generated-files";
 import { finalError, type Failure } from "./failure";
 import { forwardUpstreamHeaders } from "./headers";
-import { classifyStatus, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
+import { classifyStatus, providerNoCooldown, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
 import { checkRpm, checkTpm, providerKeyDailyCost } from "./limits";
 import { fileBytes } from "./multipart";
 import type { StreamProcessor } from "./processor";
@@ -35,6 +35,10 @@ import { makeDriverEnv } from "./providers/driver-env";
 import { getDriver } from "./providers/drivers";
 import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPool } from "./slots";
 import { StreamSession, type FinishInfo } from "./stream";
+import { isPreambleEvent } from "./stream-start";
+import { canCollect, SseCollector } from "./stream-collect";
+import { upstreamOp } from "./providers/adapters";
+import { SseParser } from "./sse";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
 import { countRequestTokens, countTokens } from "./tokenizer";
@@ -156,6 +160,11 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
         trackQueued(-1);
       }
 
+      // retrying a key that already failed in this request (a single-key provider, or the last one left): a short,
+      // growing pause so a relay's transient "service unavailable" has a moment to clear
+      const triedThisKey = failures.get(pick.cand.key.id) ?? 0;
+      if (triedThisKey > 0) await sleep(Math.min(3000, 500 * triedThisKey) + Math.floor(Math.random() * 250), signal);
+
       ctx.chosen = pick.cand;
       ctx.upstreamLease = pick.lease;
       const r = await attempt(ctx, pick.cand, settings, opts);
@@ -172,7 +181,7 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       if (f.fk === "auth" && !getKeySecret(pick.cand.key)) {
         recordKeyFailure(pick.cand.key, "auth", { status: f.status, message: f.message }, settings);
       } else {
-        recordKeyFailure(pick.cand.key, f.fk, { status: f.status, message: f.message, retryAfterSec: f.retryAfterSec, startedAt: f.startedAt }, settings);
+        recordKeyFailure(pick.cand.key, f.fk, { status: f.status, message: f.message, retryAfterSec: f.retryAfterSec, startedAt: f.startedAt, noCooldown: providerNoCooldown(pick.cand.route.provider) }, settings);
       }
       if (attemptsMade >= maxAttempts) throw finalError(f, settings);
     }
@@ -235,6 +244,7 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
         query: opts.upstreamQuery,
         outputCap: ctx.funds?.injectOutput ?? null,
         fillOutput: ctx.funds?.fillOutput ?? null,
+        forceStream: collectUpstream(ctx, cand),
       });
     }
     for (const n of prepared.notes ?? []) if (!ctx.notes.includes(n)) ctx.notes.push(n);
@@ -382,10 +392,58 @@ export type Rec = (status: number, error?: string) => number;
 export type Fail = (fk: FailureKind, status: number, message: string, extra?: Partial<Failure>) => AttemptResult;
 
 // ------------------------------------------------------------------ successful upstream response
+/**
+ * Provider option `streamUpstream`: a non-streaming chat / responses / messages request goes upstream as a stream and the
+ * reply is assembled back into JSON (stream-collect.ts). Keeps long generations alive through relays with a read timeout
+ * on silent requests, and makes every failure before the end retryable (the client has received nothing yet).
+ */
+function collectUpstream(ctx: Ctx, cand: Candidate): boolean {
+  if (ctx.stream || ctx.path!.raw || cand.route.provider.settings.streamUpstream !== true) return false;
+  const op = ctx.path!.op;
+  if (op !== "chat" && op !== "responses" && op !== "messages") return false;
+  return canCollect(cand.plan.upstream, upstreamOp(op, cand.plan.upstream));
+}
+
+/** Read an upstream SSE reply to the end and assemble it into the provider's JSON document (see collectUpstream). */
+async function handleCollected(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail): Promise<AttemptResult> {
+  const body = h.res.body as ReadableStream<Uint8Array> | null;
+  if (!body) {
+    h.dispose();
+    return fail("server", 200, "empty upstream stream");
+  }
+  const collector = new SseCollector(prepared.upstreamFormat);
+  const parser = new SseParser();
+  const decoder = new TextDecoder();
+  const idleMs = idleMsFor(cand, settings);
+  let idle: NodeJS.Timeout | null = idleMs > 0 ? setTimeout(() => h.abort(new UpstreamTimeoutError("idle")), idleMs) : null;
+  const reader = body.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      idle?.refresh();
+      const events = done ? [...parser.push(decoder.decode()), ...parser.end()] : parser.push(decoder.decode(value, { stream: true }));
+      for (const ev of events) collector.push(ev);
+      if (done) break;
+    }
+  } catch (err) {
+    if (ctx.req.signal.aborted || err instanceof ClientAbortError || h.signal.reason instanceof ClientAbortError) throw new GatewayError("client_closed");
+    if (h.signal.reason instanceof UpstreamTimeoutError) return fail("timeout", 0, "assembled stream: upstream went silent");
+    return fail("network", 0, `assembled stream broke: ${describeNetworkError(err)}`);
+  } finally {
+    if (idle) clearTimeout(idle);
+    idle = null;
+    h.dispose();
+  }
+  const r = collector.result();
+  if (!r.ok) return fail(classifyStatus(r.status, r.message), r.status, r.message, { internal: `assembled stream: ${r.message}` });
+  return handleJson(ctx, cand, prepared, h, t0, rec, fail, JSON.stringify(r.json));
+}
+
 async function handleOk(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, settings: SettingValues, rec: Rec, fail: Fail, secret: string): Promise<AttemptResult> {
   const path = ctx.path!;
   const ct = h.res.headers.get("content-type") ?? "";
   const isSse = ct.includes("text/event-stream");
+  if (prepared.collect && isSse) return handleCollected(ctx, cand, prepared, h, t0, settings, rec, fail);
 
   if (path.raw) return handleFilesOk(ctx, cand, h, t0, rec, fail);
   if (path.op === "videos_create") return handleVideoCreateOk({ ctx, cand, h, t0, rec, fail });
@@ -451,23 +509,26 @@ function applyToolPolicy(ctx: Ctx, usage: Usage): Usage {
   return { ...usage, toolUsage };
 }
 
-async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, rec: Rec, fail: Fail): Promise<AttemptResult> {
+async function handleJson(ctx: Ctx, cand: Candidate, prepared: Prepared, h: UpstreamHandle, t0: number, rec: Rec, fail: Fail, assembled?: string): Promise<AttemptResult> {
   const path = ctx.path!;
   const provider = cand.route.provider;
   const settings = ctx.snap!.settings;
-  const timer = setTimeout(() => h.abort(new UpstreamTimeoutError("idle")), provider.timeoutMs);
   let text: string;
-  try {
-    text = await readTextLimited(h.res, MAX_JSON_RESPONSE);
-  } catch (err) {
+  if (assembled !== undefined) text = assembled;
+  else {
+    const timer = setTimeout(() => h.abort(new UpstreamTimeoutError("idle")), provider.timeoutMs);
+    try {
+      text = await readTextLimited(h.res, MAX_JSON_RESPONSE);
+    } catch (err) {
+      clearTimeout(timer);
+      h.dispose();
+      if (ctx.req.signal.aborted || err instanceof ClientAbortError || h.signal.reason instanceof ClientAbortError) throw new GatewayError("client_closed");
+      if (h.signal.reason instanceof UpstreamTimeoutError) return fail("timeout", 0, "timed out reading the upstream response");
+      return fail("network", 0, `failed reading upstream response: ${describeNetworkError(err)}`);
+    }
     clearTimeout(timer);
     h.dispose();
-    if (ctx.req.signal.aborted || err instanceof ClientAbortError || h.signal.reason instanceof ClientAbortError) throw new GatewayError("client_closed");
-    if (h.signal.reason instanceof UpstreamTimeoutError) return fail("timeout", 0, "timed out reading the upstream response");
-    return fail("network", 0, `failed reading upstream response: ${describeNetworkError(err)}`);
   }
-  clearTimeout(timer);
-  h.dispose();
 
   const parsed = safeJsonParse<Json>(text);
   const publicName = publicModelName(ctx, cand);
@@ -644,11 +705,11 @@ export function finishLog(ctx: Ctx, cand: Candidate, info: FinishInfo, usage: Us
       logOutcome(ctx, { ...base, status: "GATEWAY_ERROR", httpStatus: 500, errorCode: "internal_error", errorMessage: "Internal server error.", internalError: `${what} stream processing failed: ${describeNetworkError(info.error)}` });
       break;
     case "timeout":
-      recordKeyFailure(cand.key, "timeout", { status: 0, message: `${what} stream idle timeout` }, ctx.snap!.settings);
+      recordKeyFailure(cand.key, "timeout", { status: 0, message: `${what} stream idle timeout`, noCooldown: providerNoCooldown(cand.route.provider) }, ctx.snap!.settings);
       logOutcome(ctx, { ...base, status: "UPSTREAM_ERROR", httpStatus: 504, errorCode: "upstream_timeout", errorMessage: "The upstream provider timed out.", internalError: `${what} stream idle timeout; client connection dropped` });
       break;
     default:
-      recordKeyFailure(cand.key, "server", { status: 0, message: `${what} stream ${info.reason}` }, ctx.snap!.settings);
+      recordKeyFailure(cand.key, "server", { status: 0, message: `${what} stream ${info.reason}`, noCooldown: providerNoCooldown(cand.route.provider) }, ctx.snap!.settings);
       logOutcome(ctx, { ...base, status: "UPSTREAM_ERROR", httpStatus: 502, errorCode: "upstream_error", errorMessage: "The upstream provider returned an error.", internalError: `${what} stream ${info.reason}; client connection dropped: ${describeNetworkError(info.error)}` });
   }
 }
@@ -704,6 +765,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
     idleTimeoutMs: idleMsFor(cand, settings),
     heartbeatMs,
     startedAt: t0,
+    isPreamble: (ev) => isPreambleEvent(prepared.upstreamFormat, ev),
     guard: ctx.funds?.outputTokens
       ? {
           exceeded: () => streamExceedsHold(ctx, processor),
@@ -726,9 +788,10 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   });
 
   try {
-    // Before anything is sent to the client a failure fails over to the next key. If the upstream stays silent for one
-    // heartbeat interval the response is committed anyway (it answered 200 + SSE headers) so heartbeats can keep the client alive.
-    await session.prime({ commitAfterMs: heartbeatMs > 0 ? heartbeatMs : undefined });
+    // Before anything is sent to the client a failure fails over (next key, or a fresh attempt on the same one). The
+    // response is held until real output arrives - opening bookkeeping events do not count - for up to
+    // streamStartHoldSec; after that it is committed anyway (200 + SSE headers) and heartbeats keep the client alive.
+    await session.prime({ commitAfterMs: heartbeatMs > 0 ? Math.max(heartbeatMs, settings.streamStartHoldSec * 1000) : undefined });
   } catch (err) {
     // classify BEFORE aborting: h.abort() itself sets the abort reason
     const reason = h.signal.reason;
@@ -757,7 +820,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   if (session.isEmpty()) {
     session.discard();
     h.dispose();
-    return fail("server", 200, "upstream closed the stream without sending data");
+    return fail("server", 200, "upstream closed the stream before producing any output");
   }
 
   rec(200);
@@ -832,7 +895,7 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
     });
   } else if (info.inband && err) {
     // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
-    recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message }, settings);
+    recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: err.status >= 400 ? err.status : 502,
@@ -845,7 +908,7 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else {
     // upstream reset / dropped / ended early / stalled: the client connection was destroyed the same way
     const timeout = info.reason === "timeout";
-    recordKeyFailure(cand.key, timeout ? "timeout" : "server", { status: 0, message: `stream ${info.reason}` }, settings);
+    recordKeyFailure(cand.key, timeout ? "timeout" : "server", { status: 0, message: `stream ${info.reason}`, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: timeout ? 504 : 502,

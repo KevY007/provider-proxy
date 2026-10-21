@@ -1,5 +1,5 @@
 import type { StreamProcessor } from "./processor";
-import { SseParser } from "./sse";
+import { SseParser, type SseEvent } from "./sse";
 import { ClientAbortError, UpstreamTimeoutError } from "./upstream";
 
 /**
@@ -54,6 +54,11 @@ export interface StreamOptions {
    * (native error ending) is sent to the client and the stream finishes with reason "budget".
    */
   guard?: { exceeded(): boolean; events(): string[] };
+  /**
+   * Upstream events that carry no output yet (role-only chunk, `response.created`, `message_start` ...): they do not
+   * count as the stream having started, so an error right after them still fails over (see stream-start.ts).
+   */
+  isPreamble?: (ev: SseEvent) => boolean;
 }
 
 /** Abort reason used when the funds guard cuts a stream. */
@@ -109,7 +114,9 @@ export class StreamSession {
   private ctrl: ReadableStreamDefaultController<Uint8Array> | null = null;
   private inflight: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
   private anyOutput = false;
-  /** The very first (non-comment) upstream event was an error event: nothing else was produced before it. */
+  /** Real output (beyond preamble events) has been produced. */
+  private started = false;
+  /** An error event arrived before any real output (only preamble events, if anything, came first). */
   firstEventError = false;
 
   constructor(private readonly o: StreamOptions) {
@@ -171,8 +178,11 @@ export class StreamSession {
     for (const ev of events) {
       const hadError = !!p.error();
       const out = p.onEvent(ev);
-      if (!hadError && p.error() && !this.anyOutput) this.firstEventError = true;
-      if (!ev.comment && !p.error() && out.length) this.anyOutput = true;
+      if (!hadError && p.error() && !this.started) this.firstEventError = true;
+      if (!ev.comment && !p.error() && out.length) {
+        this.anyOutput = true;
+        if (!this.o.isPreamble?.(ev)) this.started = true;
+      }
       for (const s of out) if (s) this.pending.push(enc.encode(s));
       if (chunk && this.checkGuard()) break; // checked per event: the cut lands on the event that used the funds up, not at the end of the network chunk
     }
@@ -214,20 +224,24 @@ export class StreamSession {
   }
 
   /**
-   * Read upstream until the first output exists (or an in-band error / EOF shows up), WITHOUT sending anything to the
-   * client. Lets the pipeline fail over (invisibly, on the next key) when the first event is an error or the
-   * connection drops before anything was produced. When the upstream stays silent for `commitAfterMs` the response is
-   * committed anyway (it answered 200 + SSE headers; from then on heartbeats keep the client connection alive).
-   * Throws on read errors.
+   * Read upstream until real output exists (preamble events alone do not count; or an in-band error / EOF shows up),
+   * WITHOUT sending anything to the client. Lets the pipeline fail over (invisibly, on the next key or a retry of the
+   * same one) when the stream fails before producing anything. When this takes longer than `commitAfterMs` the
+   * response is committed anyway (it answered 200 + SSE headers; from then on heartbeats keep the client connection
+   * alive). Throws on read errors.
    */
   async prime(o: { commitAfterMs?: number } = {}): Promise<void> {
     this.arm();
     const commitAfter = o.commitAfterMs ?? 0;
+    const deadline = commitAfter > 0 ? Date.now() + commitAfter : 0;
+    const p = this.o.processor;
+    const ready = () => (p ? this.started || !!p.error() : this.pending.length > 0);
     try {
-      while (!this.pending.length && !this.upstreamDone) {
+      while (!ready() && !this.upstreamDone) {
         let timer: NodeJS.Timeout | undefined;
         const read = this.nextRead();
-        const raced = commitAfter > 0 ? await Promise.race([read, new Promise<"commit">((resolve) => (timer = setTimeout(() => resolve("commit"), commitAfter)))]) : await read;
+        const left = deadline ? Math.max(1, deadline - Date.now()) : 0;
+        const raced = deadline ? await Promise.race([read, new Promise<"commit">((resolve) => (timer = setTimeout(() => resolve("commit"), left)))]) : await read;
         if (timer) clearTimeout(timer);
         if (raced === "commit") return;
         const { done, value } = raced;
@@ -395,9 +409,10 @@ export class StreamSession {
     return want !== undefined && want >= 0 && this.bytesOut >= want;
   }
 
-  /** After prime(): upstream ended without producing any output. */
+  /** After prime(): upstream ended without producing any output (preamble events at most). */
   isEmpty(): boolean {
-    return this.pending.length === 0 && this.upstreamDone;
+    if (!this.upstreamDone) return false;
+    return this.o.processor ? !this.started && !this.o.processor.error() : this.pending.length === 0;
   }
 }
 
