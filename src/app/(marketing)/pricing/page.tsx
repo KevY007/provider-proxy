@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { PricingExplorer } from "@/components/marketing/pricing-explorer";
 import { toPriceModel } from "@/server/customer/price-rows";
 import { getCatalogModels, getPublicGroups } from "@/server/customer/catalog";
-import { publicVisibility } from "@/server/customer/visibility";
+import { requirePublicSite } from "@/server/customer/visibility";
 
 export const metadata: Metadata = {
   title: "Pricing",
@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export const dynamic = "force-dynamic";
 
 export default async function PricingPage() {
-  if (!(await publicVisibility()).pricing) redirect("/login?next=/pricing");
+  if (!(await requirePublicSite("/pricing")).pricing) redirect("/login?next=/pricing");
   const [models, groups] = await Promise.all([getCatalogModels(), getPublicGroups()]);
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-12">

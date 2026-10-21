@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { BrandMark } from "@/components/common/brand-mark";
 import { SiteHeader } from "@/components/marketing/site-header";
 import { getSession } from "@/lib/auth/session";
@@ -12,6 +13,8 @@ export default async function MarketingLayout({ children }: { children: React.Re
     getSession().catch(() => null),
     publicVisibility(),
   ]);
+  // portal-only: nothing of the public site renders for a visitor who is not signed in (each page also checks)
+  if (vis.portalOnly && !vis.signedIn) redirect("/login");
   const cols: Array<{ title: string; links: Array<{ href: string; label: string }> }> = [
     {
       title: "Product",
