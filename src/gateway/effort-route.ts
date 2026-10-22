@@ -13,12 +13,15 @@ import type { InboundFormat, JsonObject } from "./types";
  */
 export const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORTS)[number];
+/** what a rule can tick: an effort, or "default" for requests that set none (the model's default effort) */
+export const EFFORT_MATCHES = ["default", ...EFFORTS] as const;
+export type EffortMatch = (typeof EFFORT_MATCHES)[number];
 
 export interface EffortRoute {
   /** model slugs, `prefix*` globs allowed; empty = every model */
   models: string[];
-  /** applies at this effort and above */
-  minEffort: Effort;
+  /** the efforts this rule applies to (ticked individually) */
+  efforts: EffortMatch[];
   /** pool to route and bill as (null = keep the request's pool) */
   groupId: string | null;
   /** only this provider's routes (null = the pool's provider tags decide) */
@@ -36,13 +39,20 @@ export function parseEffortRoutes(raw: unknown): EffortRoute[] {
   if (!Array.isArray(raw)) return [];
   const out: EffortRoute[] = [];
   for (const r of raw) {
-    if (!isObject(r) || typeof r.minEffort !== "string" || rank(r.minEffort) < 0) continue;
+    if (!isObject(r)) continue;
+    // `efforts` (ticked set); rules saved before it had `minEffort` = that effort and above
+    const efforts = Array.isArray(r.efforts)
+      ? EFFORT_MATCHES.filter((e) => (r.efforts as unknown[]).includes(e))
+      : typeof r.minEffort === "string" && rank(r.minEffort) >= 0
+        ? EFFORTS.filter((e) => rank(e) >= rank(r.minEffort as string))
+        : [];
+    if (!efforts.length) continue;
     const groupId = typeof r.groupId === "string" && r.groupId ? r.groupId : null;
     const providerId = typeof r.providerId === "string" && r.providerId ? r.providerId : null;
     if (!groupId && !providerId) continue;
     const models = Array.isArray(r.models) ? r.models.filter((m): m is string => typeof m === "string" && !!m.trim()).map((m) => m.trim()) : [];
     const capEffort = typeof r.capEffort === "string" && rank(r.capEffort) >= 0 ? (r.capEffort as Effort) : null;
-    out.push({ models, minEffort: r.minEffort as Effort, groupId, providerId, capEffort });
+    out.push({ models, efforts, groupId, providerId, capEffort });
   }
   return out;
 }
@@ -99,7 +109,8 @@ function modelMatches(patterns: readonly string[], model: ModelRec): boolean {
 export interface EffortRouting {
   group: GroupRec;
   rule: EffortRoute;
-  effort: string;
+  /** the requested effort ("default" when the request sets none) */
+  effort: EffortMatch;
   /** the effort to send instead (the rule's cap is below the requested one), else null */
   sendEffort: Effort | null;
 }
@@ -110,15 +121,17 @@ export interface EffortRouting {
  */
 export function routeByEffort(snap: ConfigSnapshot, group: GroupRec | null, model: ModelRec, format: InboundFormat, body: JsonObject | null | undefined): EffortRouting | null {
   if (!group?.effortRoutes.length) return null;
-  const effort = requestEffort(format, body);
-  if (!effort || rank(effort) < 0) return null;
+  const asked = requestEffort(format, body);
+  if (asked && rank(asked) < 0) return null; // a value we do not know: leave the request alone
+  const effort: EffortMatch = (asked as Effort | null) ?? "default";
   for (const rule of group.effortRoutes) {
-    if (rank(effort) < rank(rule.minEffort) || !modelMatches(rule.models, model)) continue;
+    if (!rule.efforts.includes(effort) || !modelMatches(rule.models, model)) continue;
     const target = rule.groupId ? snap.groupsById.get(rule.groupId) : group;
     if (!target) continue;
     if (target.allowedModels && !target.allowedModels.has(model.slug)) continue;
     if (rule.providerId && !snap.providers.has(rule.providerId)) continue;
-    const sendEffort = rule.capEffort && rank(effort) > rank(rule.capEffort) ? rule.capEffort : null;
+    // the cap only lowers an effort the request actually set
+    const sendEffort = asked && rule.capEffort && rank(asked) > rank(rule.capEffort) ? rule.capEffort : null;
     return { group: rule.providerId ? { ...target, routeProviderId: rule.providerId } : target, rule, effort, sendEffort };
   }
   return null;

@@ -16,7 +16,7 @@ import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
 import { createGroup, deleteGroup, setDefaultGroup, updateGroup } from "@/server/admin/groups-actions";
 import type { GroupRow } from "@/server/admin/groups-queries";
-import { EFFORTS, type EffortRoute } from "@/gateway/effort-route";
+import { EFFORT_MATCHES, EFFORTS, type EffortMatch, type EffortRoute } from "@/gateway/effort-route";
 import { slugify } from "@/lib/utils";
 
 interface Options {
@@ -26,7 +26,7 @@ interface Options {
   groups: Array<{ value: string; label: string }>;
 }
 
-const EFFORT_OPTIONS = EFFORTS.filter((e) => e !== "none").map((e) => ({ value: e, label: `${e} and above` }));
+const EFFORT_LABELS: Record<EffortMatch, string> = { default: "not set", none: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
 
 export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Options }) {
   const { run } = useAction();
@@ -286,12 +286,12 @@ function EffortRoutesField({ rules, onChange, options, selfId, error }: { rules:
         <div>
           <p className="text-sm font-medium">Effort routing</p>
           <p className="text-xs text-muted-foreground">
-            Requests asking for this reasoning effort or more are routed and billed as the target pool (its provider tags and multiplier), or sent to one
-            provider. Logs show the pool and provider that served them. Requests without an effort, and conversations pinned to an account by
-            previous_response_id or file ids, stay here.
+            Requests asking for one of the ticked reasoning efforts are routed and billed as the target pool (its provider tags and multiplier), or sent
+            to one provider. The first matching rule wins. Logs show the pool and provider that served them. Conversations pinned to an account by
+            previous_response_id or file ids stay here.
           </p>
         </div>
-        <Button type="button" size="sm" variant="outline" onClick={() => onChange([...rules, { models: [], minEffort: "xhigh", groupId: pools[0]?.value ?? null, providerId: null, capEffort: null }])} disabled={rules.length >= 20}>
+        <Button type="button" size="sm" variant="outline" onClick={() => onChange([...rules, { models: [], efforts: ["xhigh", "max"], groupId: pools[0]?.value ?? null, providerId: null, capEffort: null }])} disabled={rules.length >= 20}>
           <Plus className="size-4" /> Add rule
         </Button>
       </div>
@@ -307,7 +307,20 @@ function EffortRoutesField({ rules, onChange, options, selfId, error }: { rules:
             placeholder="All models"
             description="Empty = every model. Type a prefix ending in * (e.g. gpt-6*) to match a family."
           />
-          <SelectField label="Effort" value={r.minEffort} onChange={(v) => update(i, { minEffort: v as EffortRoute["minEffort"] })} options={EFFORT_OPTIONS} />
+          <div className="space-y-2 sm:col-span-2">
+            <p className="text-sm font-medium">Efforts</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-2">
+              {EFFORT_MATCHES.map((e) => (
+                <CheckField
+                  key={e}
+                  label={EFFORT_LABELS[e]}
+                  checked={r.efforts.includes(e)}
+                  onChange={(on) => update(i, { efforts: EFFORT_MATCHES.filter((x) => (x === e ? on : r.efforts.includes(x))) })}
+                />
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">Tick each effort this rule applies to. &quot;not set&quot; = requests that do not ask for an effort (the model&apos;s default).</p>
+          </div>
           <SelectField label="Route and bill as pool" value={r.groupId ?? ""} onChange={(v) => update(i, { groupId: v || null })} options={pools} allowNone noneLabel="This pool (same price)" />
           <SelectField
             label="Provider"

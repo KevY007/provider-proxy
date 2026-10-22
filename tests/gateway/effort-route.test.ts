@@ -28,6 +28,21 @@ describe("routeByEffort", () => {
   const snap = { groupsById: new Map([["off", official], ["st", studio]]), providers: new Map([["p1", {}]]) } as unknown as ConfigSnapshot;
   const model = (slug: string) => ({ slug }) as ModelRec;
 
+  it("ticked efforts match independently, 'default' = no effort set", () => {
+    const picky = g({ slug: "studio", effortRoutes: parseEffortRoutes([{ models: [], efforts: ["medium", "xhigh"], groupId: "off" }]) });
+    const route = (e?: string) => routeByEffort(snap, picky, model("m"), "openai_chat", e ? { reasoning_effort: e } : {})?.group.slug ?? null;
+    expect([route("low"), route("medium"), route("high"), route("xhigh"), route("max"), route()]).toEqual([null, "standard", null, "standard", null, null]);
+    const dflt = g({ slug: "studio", effortRoutes: parseEffortRoutes([{ models: [], efforts: ["default"], groupId: "off" }]) });
+    const r = routeByEffort(snap, dflt, model("m"), "openai_chat", {});
+    expect(r?.group.slug).toBe("standard");
+    expect(r?.effort).toBe("default");
+    expect(routeByEffort(snap, dflt, model("m"), "openai_chat", { reasoning_effort: "high" })).toBeNull();
+  });
+
+  it("legacy minEffort rules mean that effort and above", () => {
+    expect(parseEffortRoutes([{ minEffort: "xhigh", groupId: "a" }])[0].efforts).toEqual(["xhigh", "max"]);
+  });
+
   it("moves xhigh and above, keeps high, default and other models", () => {
     expect(routeByEffort(snap, studio, model("gpt-6-astra"), "openai_chat", { reasoning_effort: "xhigh" })?.group.slug).toBe("standard");
     expect(routeByEffort(snap, studio, model("gpt-6-astra"), "openai_responses", { reasoning: { effort: "max" } })?.group.slug).toBe("standard");
@@ -52,6 +67,8 @@ describe("routeByEffort", () => {
     const capped = g({ slug: "studio", effortRoutes: parseEffortRoutes([{ models: [], minEffort: "xhigh", groupId: "off", capEffort: "xhigh" }]) });
     expect(routeByEffort(snap, capped, model("m"), "openai_chat", { reasoning_effort: "max" })?.sendEffort).toBe("xhigh");
     expect(routeByEffort(snap, capped, model("m"), "openai_chat", { reasoning_effort: "xhigh" })?.sendEffort).toBeNull();
+    const cappedDefault = g({ slug: "studio", effortRoutes: parseEffortRoutes([{ models: [], efforts: ["default"], groupId: "off", capEffort: "low" }]) });
+    expect(routeByEffort(snap, cappedDefault, model("m"), "openai_chat", {})?.sendEffort).toBeNull();
   });
 
   it("withRequestEffort rewrites a copy in every format", () => {
@@ -66,7 +83,9 @@ describe("routeByEffort", () => {
   });
 
   it("drops malformed stored rules", () => {
-    expect(parseEffortRoutes([{ minEffort: "ultra", groupId: "a" }, { minEffort: "high" }, null, { minEffort: "low", groupId: "a", models: [1, " gpt "] }])).toEqual([{ models: ["gpt"], minEffort: "low", groupId: "a", providerId: null, capEffort: null }]);
+    expect(parseEffortRoutes([{ minEffort: "ultra", groupId: "a" }, { minEffort: "high" }, { efforts: [], groupId: "a" }, { efforts: ["turbo"], groupId: "a" }, null, { efforts: ["max", "low", "x"], groupId: "a", models: [1, " gpt "] }])).toEqual([
+      { models: ["gpt"], efforts: ["low", "max"], groupId: "a", providerId: null, capEffort: null },
+    ]);
     expect(parseEffortRoutes("x")).toEqual([]);
   });
 });
@@ -138,6 +157,19 @@ describe.skipIf(!dbOk)("effort routing through the gateway", () => {
     const row = await h.logOf(next);
     expect(row.providerId).toBe(S.reseller);
     expect(row.groupSlug).toBe(S.studio);
+  });
+
+  it("independently ticked efforts: medium and max move, high / xhigh / not set stay", async () => {
+    await db.group.update({ where: { id: S.studioId }, data: { effortRoutes: [{ models: [], efforts: ["medium", "max"], groupId: S.standardId }] } });
+    await invalidateGatewayConfig("all");
+    const served: Record<string, string | null> = {};
+    for (const e of ["medium", "high", "xhigh", "max", ""]) {
+      const res = await chat(e || undefined);
+      expect(res.status).toBe(200);
+      const row = await h.logOf(res);
+      served[e || "unset"] = row.providerId === S.official ? "official" : row.providerId === S.reseller ? "reseller" : row.providerId;
+    }
+    expect(served).toEqual({ medium: "official", high: "reseller", xhigh: "reseller", max: "official", unset: "reseller" });
   });
 
   it("a capped rule sends max to the official provider as xhigh", async () => {
