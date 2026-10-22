@@ -28,7 +28,10 @@ export function eligibleRoutes(snap: ConfigSnapshot, model: ModelRec, group: Gro
     const p = route.provider;
     if (p.status !== "ACTIVE") continue;
     if (group) {
-      if (group.providerTags.length && !p.tags.some((t) => group.providerTags.includes(t))) continue;
+      // an effort rule naming a provider picks it explicitly (the pool's provider tags do not apply)
+      if (group.routeProviderId) {
+        if (p.id !== group.routeProviderId) continue;
+      } else if (group.providerTags.length && !p.tags.some((t) => group.providerTags.includes(t))) continue;
       if (route.groupSlugs.length && !route.groupSlugs.includes(group.slug)) continue;
     } else if (route.groupSlugs.length) continue;
     const plan = planTranslation(inbound, p.formats);

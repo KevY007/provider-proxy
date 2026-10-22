@@ -5,6 +5,7 @@ import { audit } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { setSetting } from "@/lib/settings";
 import { invalidateGatewayConfig } from "@/gateway/cache";
+import { EFFORTS } from "@/gateway/effort-route";
 import { ActionFail, adminAction, optDecimal, optInt, parseInput, slugSchema, stringList } from "./action";
 
 const groupSchema = z.object({
@@ -19,11 +20,37 @@ const groupSchema = z.object({
   rpmLimit: optInt(1).default(null),
   maxConcurrency: optInt(1).default(null),
   sortOrder: optInt(-100000, 100000).default(null).transform((v) => v ?? 0),
+  effortRoutes: z
+    .array(
+      z
+        .object({
+          models: stringList,
+          minEffort: z.enum(EFFORTS),
+          groupId: z.string().nullish().transform((v) => v || null),
+          providerId: z.string().nullish().transform((v) => v || null),
+        })
+        .refine((r) => r.groupId || r.providerId, "Pick a pool or a provider to send these requests to"),
+    )
+    .max(20)
+    .default([]),
 });
+
+/** Effort rules must point at pools / providers that exist (and not back at the pool itself without a provider). */
+async function checkEffortRoutes(selfId: string | null, rules: z.infer<typeof groupSchema>["effortRoutes"]): Promise<void> {
+  const groupIds = [...new Set(rules.map((r) => r.groupId).filter((v): v is string => !!v))];
+  const providerIds = [...new Set(rules.map((r) => r.providerId).filter((v): v is string => !!v))];
+  const [groups, providers] = await Promise.all([
+    groupIds.length ? db.group.count({ where: { id: { in: groupIds } } }) : 0,
+    providerIds.length ? db.provider.count({ where: { id: { in: providerIds } } }) : 0,
+  ]);
+  if (groups !== groupIds.length || providers !== providerIds.length) throw new ActionFail("An effort rule points at a pool or provider that no longer exists.", { effortRoutes: "Pick an existing pool / provider" });
+  if (rules.some((r) => r.groupId && r.groupId === selfId && !r.providerId)) throw new ActionFail("An effort rule sends requests back to this same pool.", { effortRoutes: "Pick another pool or a provider" });
+}
 
 export async function createGroup(input: unknown) {
   return adminAction<{ id: string }>({ adminOnly: true }, async ({ admin, ip }) => {
     const f = parseInput(groupSchema, input);
+    await checkEffortRoutes(null, f.effortRoutes);
     const g = await db.$transaction(async (tx) => {
       if (f.isDefault) await tx.group.updateMany({ where: { isDefault: true }, data: { isDefault: false } });
       else if ((await tx.group.count({ where: { isDefault: true } })) === 0) f.isDefault = true; // always keep one default
@@ -39,6 +66,7 @@ export async function createGroup(input: unknown) {
 export async function updateGroup(id: string, input: unknown) {
   return adminAction({ adminOnly: true }, async ({ admin, ip }) => {
     const f = parseInput(groupSchema, input);
+    await checkEffortRoutes(id, f.effortRoutes);
     const before = await db.group.findUnique({ where: { id } });
     if (!before) throw new ActionFail("Group not found");
     if (before.isDefault && !f.isDefault) {
@@ -53,7 +81,7 @@ export async function updateGroup(id: string, input: unknown) {
       }
     });
     if (f.isDefault) await setSetting("defaultGroupSlug", f.slug).catch(() => undefined);
-    await audit(admin.id, "group.update", { type: "Group", id }, { slug: f.slug, prevSlug: before.slug, priceMultiplier: f.priceMultiplier, isDefault: f.isDefault }, ip);
+    await audit(admin.id, "group.update", { type: "Group", id }, { slug: f.slug, prevSlug: before.slug, priceMultiplier: f.priceMultiplier, isDefault: f.isDefault, effortRoutes: f.effortRoutes }, ip);
     await invalidateGatewayConfig("groups", id);
     return { message: "Group saved" };
   });
