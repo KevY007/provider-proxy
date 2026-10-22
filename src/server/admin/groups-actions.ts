@@ -5,7 +5,7 @@ import { audit } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { setSetting } from "@/lib/settings";
 import { invalidateGatewayConfig } from "@/gateway/cache";
-import { EFFORTS } from "@/gateway/effort-route";
+import { EFFORT_MATCHES, EFFORTS } from "@/gateway/effort-route";
 import { ActionFail, adminAction, optDecimal, optInt, parseInput, slugSchema, stringList } from "./action";
 
 const groupSchema = z.object({
@@ -25,7 +25,7 @@ const groupSchema = z.object({
       z
         .object({
           models: stringList,
-          minEffort: z.enum(EFFORTS),
+          efforts: z.array(z.enum(EFFORT_MATCHES)).min(1, "Tick at least one effort").transform((a) => EFFORT_MATCHES.filter((e) => a.includes(e))),
           groupId: z.string().nullish().transform((v) => v || null),
           providerId: z.string().nullish().transform((v) => v || null),
           capEffort: z.enum(EFFORTS).nullish().transform((v) => v ?? null),
