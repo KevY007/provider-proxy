@@ -7,6 +7,7 @@ import { logger } from "@/lib/logger";
 import { CONFIG_INVALIDATE_CHANNEL, getRedis, getRedisSubscriber, publishConfigInvalidate } from "@/lib/redis";
 import { getSettings, invalidateSettingsCache, type SettingValues } from "@/lib/settings";
 import { costTable, officialTable, sellTable, type LongContext, type OptTable, type PriceTable } from "./pricing";
+import { parseEffortRoutes, type EffortRoute } from "./effort-route";
 import type { JsonObject } from "./types";
 import { isObject } from "./util";
 
@@ -115,6 +116,10 @@ export interface GroupRec {
   isPublic: boolean;
   rpmLimit: number | null;
   maxConcurrency: number | null;
+  /** requests at a high reasoning effort served as another pool / by one provider (gateway/effort-route) */
+  effortRoutes: EffortRoute[];
+  /** set on the pool a request is served as by an effort rule naming a provider: only that provider's routes */
+  routeProviderId?: string;
 }
 
 export interface ConfigSnapshot {
@@ -301,6 +306,7 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       isPublic: gr.isPublic,
       rpmLimit: gr.rpmLimit,
       maxConcurrency: gr.maxConcurrency,
+      effortRoutes: parseEffortRoutes(gr.effortRoutes),
     };
     groupsById.set(gr.id, rec);
     groupsBySlug.set(gr.slug, rec);

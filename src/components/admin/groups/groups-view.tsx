@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { MoreHorizontal, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { MoreHorizontal, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { DataTable } from "@/components/common/data-table";
 import { PageHeader } from "@/components/common/page-header";
@@ -11,17 +11,22 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { CheckField, MultiSelectField, NumberField, SwitchField, TagsField, TextAreaField } from "@/components/admin/fields";
+import { CheckField, MultiSelectField, NumberField, SelectField, SwitchField, TagsField, TextAreaField } from "@/components/admin/fields";
 import { FormDialog } from "@/components/admin/misc";
 import { useAction } from "@/components/admin/use-action";
 import { createGroup, deleteGroup, setDefaultGroup, updateGroup } from "@/server/admin/groups-actions";
 import type { GroupRow } from "@/server/admin/groups-queries";
+import { EFFORTS, type EffortRoute } from "@/gateway/effort-route";
 import { slugify } from "@/lib/utils";
 
 interface Options {
   models: Array<{ value: string; label: string; hint?: string }>;
   providerTags: string[];
+  providers: Array<{ value: string; label: string }>;
+  groups: Array<{ value: string; label: string }>;
 }
+
+const EFFORT_OPTIONS = EFFORTS.filter((e) => e !== "none").map((e) => ({ value: e, label: `${e} and above` }));
 
 export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Options }) {
   const { run } = useAction();
@@ -76,6 +81,12 @@ export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Optio
       header: "Allowed models",
       accessorFn: (g) => g.allowedModels.length,
       cell: ({ row }) => (row.original.allowedModels.length ? `${row.original.allowedModels.length} models` : <span className="text-xs text-muted-foreground">all</span>),
+    },
+    {
+      id: "effort",
+      header: "Effort routing",
+      accessorFn: (g) => g.effortRoutes.length,
+      cell: ({ row }) => (row.original.effortRoutes.length ? `${row.original.effortRoutes.length} rule${row.original.effortRoutes.length > 1 ? "s" : ""}` : <span className="text-xs text-muted-foreground">-</span>),
     },
     { id: "rpm", header: "RPM", accessorFn: (g) => g.rpmLimit || "", cell: ({ row }) => row.original.rpmLimit || <span className="text-muted-foreground">-</span> },
     { id: "conc", header: "Concurrency", accessorFn: (g) => g.maxConcurrency || "", cell: ({ row }) => row.original.maxConcurrency || <span className="text-muted-foreground">-</span> },
@@ -190,6 +201,7 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
     rpmLimit: group?.rpmLimit ?? "",
     maxConcurrency: group?.maxConcurrency ?? "",
     sortOrder: String(group?.sortOrder ?? 0),
+    effortRoutes: group?.effortRoutes ?? ([] as EffortRoute[]),
   });
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }));
 
@@ -243,6 +255,13 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
         }
       />
       <MultiSelectField label="Allowed models" values={f.allowedModels} onChange={(v) => set("allowedModels", v)} options={options.models} placeholder="All public models" description="Empty = every public model." error={fieldErrors.allowedModels} />
+      <EffortRoutesField
+        rules={f.effortRoutes}
+        onChange={(v) => set("effortRoutes", v)}
+        options={options}
+        selfId={group?.id ?? null}
+        error={fieldErrors.effortRoutes}
+      />
       <div className="grid gap-3 sm:grid-cols-2">
         <SwitchField label="Public" checked={f.isPublic} onChange={(v) => set("isPublic", v)} description="Customers may pick it for their API keys." />
         <SwitchField
@@ -254,5 +273,63 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
         />
       </div>
     </FormDialog>
+  );
+}
+
+/** Requests of this pool at a high reasoning effort go to (and are billed as) another pool and/or one provider. */
+function EffortRoutesField({ rules, onChange, options, selfId, error }: { rules: EffortRoute[]; onChange: (v: EffortRoute[]) => void; options: Options; selfId: string | null; error?: string }) {
+  const update = (i: number, patch: Partial<EffortRoute>) => onChange(rules.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const pools = options.groups.filter((g) => g.value !== selfId);
+  return (
+    <div className="space-y-3 rounded-lg border p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-medium">Effort routing</p>
+          <p className="text-xs text-muted-foreground">
+            Requests asking for this reasoning effort or more are routed and billed as the target pool (its provider tags and multiplier), or sent to one
+            provider. Logs show the pool and provider that served them. Requests without an effort, and conversations pinned to an account by
+            previous_response_id or file ids, stay here.
+          </p>
+        </div>
+        <Button type="button" size="sm" variant="outline" onClick={() => onChange([...rules, { models: [], minEffort: "xhigh", groupId: pools[0]?.value ?? null, providerId: null }])} disabled={rules.length >= 20}>
+          <Plus className="size-4" /> Add rule
+        </Button>
+      </div>
+      {rules.map((r, i) => (
+        <div key={i} className="grid gap-3 rounded-md bg-muted/40 p-3 sm:grid-cols-2">
+          <MultiSelectField
+            className="sm:col-span-2"
+            label="Models"
+            values={r.models}
+            onChange={(v) => update(i, { models: v })}
+            options={options.models}
+            allowCustom
+            placeholder="All models"
+            description="Empty = every model. Type a prefix ending in * (e.g. gpt-6*) to match a family."
+          />
+          <SelectField label="Effort" value={r.minEffort} onChange={(v) => update(i, { minEffort: v as EffortRoute["minEffort"] })} options={EFFORT_OPTIONS} />
+          <SelectField label="Route and bill as pool" value={r.groupId ?? ""} onChange={(v) => update(i, { groupId: v || null })} options={pools} allowNone noneLabel="This pool (same price)" />
+          <SelectField
+            label="Provider"
+            value={r.providerId ?? ""}
+            onChange={(v) => update(i, { providerId: v || null })}
+            options={options.providers}
+            allowNone
+            noneLabel="Any the pool's tags allow"
+            description="Only this provider serves them (ignores provider tags)."
+          />
+          <div className="flex items-end justify-end">
+            <Button type="button" size="sm" variant="ghost" onClick={() => onChange(rules.filter((_, j) => j !== i))}>
+              <X className="size-4" /> Remove
+            </Button>
+          </div>
+        </div>
+      ))}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
   );
 }

@@ -21,6 +21,7 @@ import { closeFunds, reserveFunds } from "./reserve";
 import { validateRequest } from "./validate";
 import { lookupResponse } from "./responses-sticky";
 import { eligibleRoutes, orderRoutes, type RoutePlan } from "./select";
+import { routeByEffort } from "./effort-route";
 import { acquireSlots, type SlotPool } from "./slots";
 import { countRequestTokens } from "./tokenizer";
 import { emptyUsage, type Json, type Operation } from "./types";
@@ -238,8 +239,23 @@ function resolveRequestModel(ctx: Ctx): void {
     // fail closed: a video model without a per-second price would be generated for free
     throw new GatewayError("no_available_provider", undefined, { retryAfterSec: 60, internal: `model '${model.slug}' has no perSecondPrice configured` });
   }
+  // a high reasoning effort may be served (and billed) as another pool / by one provider
+  const byEffort = path.wireFormat ? routeByEffort(snap, ctx.group, model, path.wireFormat, ctx.body) : null;
+  if (byEffort) {
+    ctx.effortFromGroup = ctx.group;
+    ctx.group = byEffort.group;
+  }
   const { user } = ctx.auth!;
   ctx.multiplier = effectiveMultiplier(user.priceMultiplier, ctx.group?.priceMultiplier);
+}
+
+/** Back to the key's own pool (a conversation / file pinned to an account the effort rule's target cannot reach). */
+function undoEffortRoute(ctx: Ctx): boolean {
+  if (!ctx.effortFromGroup) return false;
+  ctx.group = ctx.effortFromGroup;
+  ctx.effortFromGroup = null;
+  ctx.multiplier = effectiveMultiplier(ctx.auth!.user.priceMultiplier, ctx.group?.priceMultiplier);
+  return true;
 }
 
 // ------------------------------------------------------------------ rate limits
@@ -274,7 +290,7 @@ async function dispatch(ctx: Ctx): Promise<Response> {
   const path = ctx.path!;
   const model = ctx.model!;
   let pinKeyId: string | null = null;
-  let routes: RoutePlan[] = orderRoutes(eligibleRoutes(snap, model, ctx.group, path.wireFormat!));
+  let pinProviderId: string | null = null;
 
   if (path.op === "responses" && ctx.body && typeof ctx.body.previous_response_id === "string") {
     const sticky = await lookupResponse(ctx.body.previous_response_id);
@@ -284,7 +300,7 @@ async function dispatch(ctx: Ctx): Promise<Response> {
     }
     if (sticky) {
       pinKeyId = sticky.providerKeyId;
-      routes = routes.filter((r) => r.route.providerId === sticky.providerId);
+      pinProviderId = sticky.providerId;
     }
   }
   // files referenced in the body (file_id / fileUri) live on one upstream account: the request goes there (or 404s for foreign ids)
@@ -294,7 +310,16 @@ async function dispatch(ctx: Ctx): Promise<Response> {
       throw new GatewayError("invalid_request", "The referenced file and the referenced previous response are stored on different upstream accounts.", { param: "file_id" });
     }
     pinKeyId = filePin.providerKeyId;
-    routes = routes.filter((r) => r.route.providerId === filePin.providerId);
+    pinProviderId = filePin.providerId;
+  }
+  const pick = () => {
+    const all = orderRoutes(eligibleRoutes(snap, model, ctx.group, path.wireFormat!));
+    return pinProviderId ? all.filter((r) => r.route.providerId === pinProviderId) : all;
+  };
+  let routes: RoutePlan[] = pick();
+  // the conversation / file lives on an account of the key's own pool: an effort rule cannot move it elsewhere
+  if (!routes.length && pinProviderId && undoEffortRoute(ctx)) routes = pick();
+  if (filePin) {
     if (!routes.length) {
       throw new GatewayError("invalid_request", "The referenced file is stored with a provider that cannot serve this model. Upload the file again or use a different model.", { param: "file_id", internal: "file pin has no eligible route for this model" });
     }

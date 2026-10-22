@@ -29,6 +29,8 @@ export interface Ctx {
   snap: ConfigSnapshot | null;
   auth: AuthRecord | null;
   group: GroupRec | null;
+  /** the key's own pool when an effort rule serves the request as another pool (`group`) */
+  effortFromGroup: GroupRec | null;
   model: ModelRec | null;
   multiplier: Decimal;
   stream: boolean;
@@ -76,6 +78,7 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     snap: null,
     auth: null,
     group: null,
+    effortFromGroup: null,
     model: null,
     multiplier: ZERO,
     stream: false,
