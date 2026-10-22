@@ -291,7 +291,7 @@ function EffortRoutesField({ rules, onChange, options, selfId, error }: { rules:
             previous_response_id or file ids, stay here.
           </p>
         </div>
-        <Button type="button" size="sm" variant="outline" onClick={() => onChange([...rules, { models: [], minEffort: "xhigh", groupId: pools[0]?.value ?? null, providerId: null }])} disabled={rules.length >= 20}>
+        <Button type="button" size="sm" variant="outline" onClick={() => onChange([...rules, { models: [], minEffort: "xhigh", groupId: pools[0]?.value ?? null, providerId: null, capEffort: null }])} disabled={rules.length >= 20}>
           <Plus className="size-4" /> Add rule
         </Button>
       </div>
@@ -318,7 +318,16 @@ function EffortRoutesField({ rules, onChange, options, selfId, error }: { rules:
             noneLabel="Any the pool's tags allow"
             description="Only this provider serves them (ignores provider tags)."
           />
-          <div className="flex items-end justify-end">
+          <SelectField
+            label="Send effort as"
+            value={r.capEffort ?? ""}
+            onChange={(v) => update(i, { capEffort: (v || null) as EffortRoute["capEffort"] })}
+            options={EFFORTS.filter((e) => e !== "none").map((e) => ({ value: e, label: `at most ${e}` }))}
+            allowNone
+            noneLabel="As requested"
+            description="Lowers a higher effort, e.g. max to xhigh for a provider without max."
+          />
+          <div className="flex items-end justify-end sm:col-span-2">
             <Button type="button" size="sm" variant="ghost" onClick={() => onChange(rules.filter((_, j) => j !== i))}>
               <X className="size-4" /> Remove
             </Button>

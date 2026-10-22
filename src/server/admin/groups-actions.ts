@@ -28,6 +28,7 @@ const groupSchema = z.object({
           minEffort: z.enum(EFFORTS),
           groupId: z.string().nullish().transform((v) => v || null),
           providerId: z.string().nullish().transform((v) => v || null),
+          capEffort: z.enum(EFFORTS).nullish().transform((v) => v ?? null),
         })
         .refine((r) => r.groupId || r.providerId, "Pick a pool or a provider to send these requests to"),
     )
