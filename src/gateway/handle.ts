@@ -21,7 +21,7 @@ import { closeFunds, reserveFunds } from "./reserve";
 import { validateRequest } from "./validate";
 import { lookupResponse } from "./responses-sticky";
 import { eligibleRoutes, orderRoutes, type RoutePlan } from "./select";
-import { routeByEffort } from "./effort-route";
+import { routeByEffort, withRequestEffort } from "./effort-route";
 import { acquireSlots, type SlotPool } from "./slots";
 import { countRequestTokens } from "./tokenizer";
 import { emptyUsage, type Json, type Operation } from "./types";
@@ -244,6 +244,11 @@ function resolveRequestModel(ctx: Ctx): void {
   if (byEffort) {
     ctx.effortFromGroup = ctx.group;
     ctx.group = byEffort.group;
+    if (byEffort.sendEffort && ctx.body) {
+      ctx.effortOrigBody = ctx.body;
+      ctx.body = withRequestEffort(path.wireFormat!, ctx.body, byEffort.sendEffort);
+      ctx.jsonRaw = null; // the forwarded bytes must carry the new effort: re-serialise instead of splicing the original
+    }
   }
   const { user } = ctx.auth!;
   ctx.multiplier = effectiveMultiplier(user.priceMultiplier, ctx.group?.priceMultiplier);
@@ -254,6 +259,10 @@ function undoEffortRoute(ctx: Ctx): boolean {
   if (!ctx.effortFromGroup) return false;
   ctx.group = ctx.effortFromGroup;
   ctx.effortFromGroup = null;
+  if (ctx.effortOrigBody) {
+    ctx.body = ctx.effortOrigBody;
+    ctx.effortOrigBody = null;
+  }
   ctx.multiplier = effectiveMultiplier(ctx.auth!.user.priceMultiplier, ctx.group?.priceMultiplier);
   return true;
 }

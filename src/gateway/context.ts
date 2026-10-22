@@ -31,6 +31,8 @@ export interface Ctx {
   group: GroupRec | null;
   /** the key's own pool when an effort rule serves the request as another pool (`group`) */
   effortFromGroup: GroupRec | null;
+  /** the customer's body before an effort rule lowered its effort (restored if the rule is undone) */
+  effortOrigBody: JsonObject | null;
   model: ModelRec | null;
   multiplier: Decimal;
   stream: boolean;
@@ -79,6 +81,7 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     auth: null,
     group: null,
     effortFromGroup: null,
+    effortOrigBody: null,
     model: null,
     multiplier: ZERO,
     stream: false,

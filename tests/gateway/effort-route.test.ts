@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dbOk, createHarness } from "./harness";
 import { invalidateGatewayConfig, type ConfigSnapshot, type GroupRec, type ModelRec } from "@/gateway/cache";
-import { parseEffortRoutes, requestEffort, routeByEffort } from "@/gateway/effort-route";
+import { parseEffortRoutes, requestEffort, routeByEffort, withRequestEffort } from "@/gateway/effort-route";
 import { db } from "@/lib/db";
 import { Decimal } from "@/lib/money";
 
@@ -48,8 +48,25 @@ describe("routeByEffort", () => {
     expect(r?.group.routeProviderId).toBe("p1");
   });
 
+  it("a cap lowers only efforts above it", () => {
+    const capped = g({ slug: "studio", effortRoutes: parseEffortRoutes([{ models: [], minEffort: "xhigh", groupId: "off", capEffort: "xhigh" }]) });
+    expect(routeByEffort(snap, capped, model("m"), "openai_chat", { reasoning_effort: "max" })?.sendEffort).toBe("xhigh");
+    expect(routeByEffort(snap, capped, model("m"), "openai_chat", { reasoning_effort: "xhigh" })?.sendEffort).toBeNull();
+  });
+
+  it("withRequestEffort rewrites a copy in every format", () => {
+    const chat = { reasoning_effort: "max", messages: [] };
+    expect(withRequestEffort("openai_chat", chat, "xhigh").reasoning_effort).toBe("xhigh");
+    expect(chat.reasoning_effort).toBe("max");
+    const resp = { reasoning: { effort: "max", summary: "auto" } };
+    expect(withRequestEffort("openai_responses", resp, "xhigh").reasoning).toEqual({ effort: "xhigh", summary: "auto" });
+    expect(resp.reasoning.effort).toBe("max");
+    expect(withRequestEffort("anthropic_messages", { output_config: { effort: "max" } }, "high").output_config).toEqual({ effort: "high" });
+    expect(withRequestEffort("gemini", { generationConfig: { thinkingConfig: { thinkingLevel: "max" }, temperature: 1 } }, "high").generationConfig).toEqual({ thinkingConfig: { thinkingLevel: "high" }, temperature: 1 });
+  });
+
   it("drops malformed stored rules", () => {
-    expect(parseEffortRoutes([{ minEffort: "ultra", groupId: "a" }, { minEffort: "high" }, null, { minEffort: "low", groupId: "a", models: [1, " gpt "] }])).toEqual([{ models: ["gpt"], minEffort: "low", groupId: "a", providerId: null }]);
+    expect(parseEffortRoutes([{ minEffort: "ultra", groupId: "a" }, { minEffort: "high" }, null, { minEffort: "low", groupId: "a", models: [1, " gpt "] }])).toEqual([{ models: ["gpt"], minEffort: "low", groupId: "a", providerId: null, capEffort: null }]);
     expect(parseEffortRoutes("x")).toEqual([]);
   });
 });
@@ -72,7 +89,7 @@ describe.skipIf(!dbOk)("effort routing through the gateway", () => {
       data: { name: h.name("studio"), slug: h.name("studio"), priceMultiplier: "0.3", providerTags: [`ce-${h.sfx}`], effortRoutes: [{ models: [], minEffort: "xhigh", groupId: standard.id }] },
     });
     h.ids.groups.push(standard.id, studio.id);
-    Object.assign(S, { reseller: reseller.id, official: officialP.id, standard: standard.slug, studio: studio.slug, studioId: studio.id });
+    Object.assign(S, { reseller: reseller.id, official: officialP.id, standard: standard.slug, standardId: standard.id, studio: studio.slug, studioId: studio.id });
     const m = await h.makeModel("astra", { caps: ["chat", "responses", "reasoning"], providerId: reseller.id, in: "3", out: "15" });
     await db.modelRoute.create({ data: { modelId: m.id, providerId: officialP.id, upstreamModel: "up-astra-official", inputCost: "3", outputCost: "15" } });
     modelSlug = m.slug;
@@ -121,6 +138,19 @@ describe.skipIf(!dbOk)("effort routing through the gateway", () => {
     const row = await h.logOf(next);
     expect(row.providerId).toBe(S.reseller);
     expect(row.groupSlug).toBe(S.studio);
+  });
+
+  it("a capped rule sends max to the official provider as xhigh", async () => {
+    await db.group.update({ where: { id: S.studioId }, data: { effortRoutes: [{ models: [], minEffort: "xhigh", groupId: S.standardId, capEffort: "xhigh" }] } });
+    await invalidateGatewayConfig("all");
+    const res = await chat("max");
+    expect(res.status).toBe(200);
+    const row = await h.logOf(res);
+    expect(row.providerId).toBe(S.official);
+    expect(row.groupSlug).toBe(S.standard);
+    const last = (await (await fetch(`${h.base}/__mock/last?path=${encodeURIComponent("/v1/chat/completions")}`)).json()) as { body: Record<string, unknown> };
+    expect(last.body.reasoning_effort).toBe("xhigh");
+    expect(last.body.model).toBe("up-astra-official");
   });
 
   it("a provider-only rule sends the request there but keeps the pool's price", async () => {
