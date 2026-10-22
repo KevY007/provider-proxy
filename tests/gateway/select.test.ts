@@ -88,6 +88,7 @@ const group = (over: Partial<GroupRec> = {}): GroupRec => ({
   isDefault: true,
   isPublic: true,
   rpmLimit: null,
+  effortRoutes: [],
   maxConcurrency: null,
   ...over,
 });

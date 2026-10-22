@@ -242,6 +242,9 @@ model Group {
   rpmLimit        Int?
   maxConcurrency  Int? // §9b
   sortOrder       Int      @default(0)
+  // [{ models: ["gpt-6*"], minEffort: "xhigh", groupId?: "<pool id>", providerId?: "<provider id>" }] - requests at that
+  // reasoning effort or above are routed AND billed as the target pool (and/or only by that provider); see gateway/effort-route
+  effortRoutes    Json     @default("[]")
 
   users   User[]
   apiKeys ApiKey[]
