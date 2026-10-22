@@ -68,3 +68,13 @@ function chatChunkIsPreamble(j: Record<string, unknown>): boolean {
   }
   return true;
 }
+
+/**
+ * How long a stream attempt may still be held before it is committed. The hold window counts from the moment the
+ * request arrived, NOT per attempt: a retry late in the window must not restart it, or the client would wait
+ * attempts x window for its first byte (HTTP clients give up on headers after a fixed time, e.g. Node's 300 s).
+ * Never below one heartbeat interval (the minimum a committed stream needs before its first keep-alive anyway).
+ */
+export function holdCommitAfterMs(heartbeatMs: number, holdSec: number, requestStartedAt: number, now: number = Date.now()): number {
+  return Math.max(heartbeatMs, holdSec * 1000 - (now - requestStartedAt));
+}
