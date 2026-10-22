@@ -35,7 +35,7 @@ import { makeDriverEnv } from "./providers/driver-env";
 import { getDriver } from "./providers/drivers";
 import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPool } from "./slots";
 import { StreamSession, type FinishInfo } from "./stream";
-import { isPreambleEvent } from "./stream-start";
+import { holdCommitAfterMs, isPreambleEvent } from "./stream-start";
 import { canCollect, SseCollector } from "./stream-collect";
 import { upstreamOp } from "./providers/adapters";
 import { SseParser } from "./sse";
@@ -790,8 +790,9 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   try {
     // Before anything is sent to the client a failure fails over (next key, or a fresh attempt on the same one). The
     // response is held until real output arrives - opening bookkeeping events do not count - for up to
-    // streamStartHoldSec; after that it is committed anyway (200 + SSE headers) and heartbeats keep the client alive.
-    await session.prime({ commitAfterMs: heartbeatMs > 0 ? Math.max(heartbeatMs, settings.streamStartHoldSec * 1000) : undefined });
+    // streamStartHoldSec (counted from the request's arrival, across retries); after that it is committed anyway
+    // (200 + SSE headers) and heartbeats keep the client alive.
+    await session.prime({ commitAfterMs: heartbeatMs > 0 ? holdCommitAfterMs(heartbeatMs, settings.streamStartHoldSec, ctx.startedAt) : undefined });
   } catch (err) {
     // classify BEFORE aborting: h.abort() itself sets the abort reason
     const reason = h.signal.reason;
