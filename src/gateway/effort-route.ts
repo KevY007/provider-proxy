@@ -9,6 +9,7 @@ import type { InboundFormat, JsonObject } from "./types";
  * A matching rule swaps the request's pool for the target pool, so routing (its provider tags) AND billing (its
  * multiplier) are exactly the target pool's, and the request log records the pool and provider that really served it.
  * With a provider set the request only goes to that provider's routes (the pool's provider tags are not applied).
+ * `capEffort` lowers a higher requested effort to that level (e.g. `max` -> `xhigh` for an upstream without `max`).
  */
 export const EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORTS)[number];
@@ -22,6 +23,8 @@ export interface EffortRoute {
   groupId: string | null;
   /** only this provider's routes (null = the pool's provider tags decide) */
   providerId: string | null;
+  /** send at most this effort upstream (null = as requested) */
+  capEffort: Effort | null;
 }
 
 // no runtime imports: the admin pool editor (a client component) uses EFFORTS too
@@ -38,7 +41,8 @@ export function parseEffortRoutes(raw: unknown): EffortRoute[] {
     const providerId = typeof r.providerId === "string" && r.providerId ? r.providerId : null;
     if (!groupId && !providerId) continue;
     const models = Array.isArray(r.models) ? r.models.filter((m): m is string => typeof m === "string" && !!m.trim()).map((m) => m.trim()) : [];
-    out.push({ models, minEffort: r.minEffort as Effort, groupId, providerId });
+    const capEffort = typeof r.capEffort === "string" && rank(r.capEffort) >= 0 ? (r.capEffort as Effort) : null;
+    out.push({ models, minEffort: r.minEffort as Effort, groupId, providerId, capEffort });
   }
   return out;
 }
@@ -64,6 +68,29 @@ export function requestEffort(format: InboundFormat, body: JsonObject | null | u
   }
 }
 
+/** A copy of `body` asking for `effort` instead (nested objects copied, the customer's body is not touched). */
+export function withRequestEffort(format: InboundFormat, body: JsonObject, effort: Effort): JsonObject {
+  const out: JsonObject = { ...body };
+  switch (format) {
+    case "openai_chat":
+      if (typeof body.reasoning_effort === "string") out.reasoning_effort = effort;
+      if (isObject(body.reasoning) && typeof body.reasoning.effort === "string") out.reasoning = { ...body.reasoning, effort };
+      break;
+    case "openai_responses":
+      out.reasoning = { ...(isObject(body.reasoning) ? body.reasoning : {}), effort };
+      break;
+    case "anthropic_messages":
+      out.output_config = { ...(isObject(body.output_config) ? body.output_config : {}), effort };
+      break;
+    case "gemini": {
+      const gc = isObject(body.generationConfig) ? body.generationConfig : {};
+      out.generationConfig = { ...gc, thinkingConfig: { ...(isObject(gc.thinkingConfig) ? gc.thinkingConfig : {}), thinkingLevel: effort } };
+      break;
+    }
+  }
+  return out;
+}
+
 function modelMatches(patterns: readonly string[], model: ModelRec): boolean {
   if (!patterns.length) return true;
   return patterns.some((p) => (p.endsWith("*") ? model.slug.startsWith(p.slice(0, -1)) : p === model.slug));
@@ -73,6 +100,8 @@ export interface EffortRouting {
   group: GroupRec;
   rule: EffortRoute;
   effort: string;
+  /** the effort to send instead (the rule's cap is below the requested one), else null */
+  sendEffort: Effort | null;
 }
 
 /**
@@ -89,7 +118,8 @@ export function routeByEffort(snap: ConfigSnapshot, group: GroupRec | null, mode
     if (!target) continue;
     if (target.allowedModels && !target.allowedModels.has(model.slug)) continue;
     if (rule.providerId && !snap.providers.has(rule.providerId)) continue;
-    return { group: rule.providerId ? { ...target, routeProviderId: rule.providerId } : target, rule, effort };
+    const sendEffort = rule.capEffort && rank(effort) > rank(rule.capEffort) ? rule.capEffort : null;
+    return { group: rule.providerId ? { ...target, routeProviderId: rule.providerId } : target, rule, effort, sendEffort };
   }
   return null;
 }
