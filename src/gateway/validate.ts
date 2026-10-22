@@ -30,6 +30,16 @@ function requireObjectItems(b: JsonObject, field: string): void {
   });
 }
 
+const EFFORT_VALUES = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+const quoteList = (a: string[]) => a.map((x) => `'${x}'`).join(", ").replace(/, ([^,]*)$/, ", and $1");
+
+/** A reasoning effort must be one OpenAI defines (a relay answers anything else with an opaque in-stream error). */
+function optionalEffort(v: unknown, param: string): void {
+  if (v === undefined || v === null) return;
+  if (typeof v === "string" && EFFORT_VALUES.includes(v)) return;
+  throw new GatewayError("invalid_request", `Invalid value: '${typeof v === "string" ? v : JSON.stringify(v)}'. Supported values are: ${quoteList(EFFORT_VALUES)}.`, { param, errorCode: "invalid_value" });
+}
+
 function optionalPosInt(b: JsonObject, field: string, max?: number): void {
   const v = b[field];
   if (v === undefined || v === null) return;
@@ -49,6 +59,7 @@ export function validateRequest(ctx: Ctx): void {
       optionalPosInt(b, "max_tokens");
       optionalPosInt(b, "max_completion_tokens");
       optionalPosInt(b, "n", 128);
+      optionalEffort(b.reasoning_effort, "reasoning_effort");
       return;
     case "completions":
       if (b.prompt === undefined || b.prompt === null) fail("'prompt' is required.", "prompt");
@@ -59,6 +70,7 @@ export function validateRequest(ctx: Ctx): void {
       if ((b.input === undefined || b.input === null) && (b.prompt === undefined || b.prompt === null)) fail("'input' is required.", "input");
       if (b.input !== undefined && b.input !== null && blank(b.input)) fail("'input' must not be empty.", "input");
       optionalPosInt(b, "max_output_tokens");
+      if (isObject(b.reasoning)) optionalEffort(b.reasoning.effort, "reasoning.effort");
       return;
     case "messages":
       requireNonEmptyArray(b, "messages");

@@ -4,6 +4,7 @@ import type { SseEvent } from "./sse";
 import type { Json, JsonObject, Usage } from "./types";
 import { mergeUsage, usageFromAnthropic, usageFromGemini, usageFromOpenAI, usageFromResponsesObject } from "./usage";
 import { isObject, safeJsonParse } from "./util";
+import { openaiErrorType, parseInbandError, type InbandError } from "./inband-error";
 import { emptyUsage } from "./types";
 
 /**
@@ -53,7 +54,7 @@ abstract class Base implements StreamProcessor {
   protected sawUsage = false;
   protected text = new TextAcc();
   protected done = false;
-  protected err: { status: number; message: string; type?: string } | null = null;
+  protected err: InbandError | null = null;
   protected rid: string | null = null;
   protected files: GeneratedFile[] = [];
   onGeneratedFiles?: (files: GeneratedFile[]) => void;
@@ -129,7 +130,7 @@ export class OpenAIStreamPassthrough extends Base {
     const d = safeJsonParse<Json>(data);
     if (!isObject(d)) return [rawBlock(ev)];
     if (isObject(d.error)) {
-      this.err = { status: Number(d.error.code) >= 400 ? Number(d.error.code) : 502, message: String(d.error.message ?? "upstream error"), type: String(d.error.type ?? "") };
+      this.err = parseInbandError(d);
       return [errorBlock(ev, d, this.scrub, false)];
     }
     let modified = false;
@@ -178,9 +179,38 @@ export class OpenAIStreamPassthrough extends Base {
 }
 
 /** OpenAI Responses API streams (typed events). */
+export interface ResponsesStreamOptions {
+  /** the client's max_output_tokens: echoed on `response` when the upstream reports null */
+  maxOutputTokens?: number | null;
+  /** the upstream ignores max_output_tokens: end the stream with response.incomplete once the visible output reaches it */
+  enforceMaxOutputTokens?: boolean;
+}
+
+/** Visible output tokens, estimated from characters while streaming (the usual ~4 characters per token). */
+const CHARS_PER_TOKEN = 4;
+
 export class ResponsesStreamPassthrough extends Base {
-  constructor(private readonly publicModel: string | null) {
+  private lastResponse: JsonObject | null = null;
+  private lastSeq = -1;
+  private visibleChars = 0;
+  private stopped = false;
+
+  constructor(
+    private readonly publicModel: string | null,
+    private readonly opts: ResponsesStreamOptions = {},
+  ) {
     super();
+  }
+
+  halted(): boolean {
+    return this.stopped;
+  }
+
+  /** The client's output cap was reached (the upstream ignores it): end like OpenAI does, with response.incomplete. */
+  private capEvent(): string {
+    const max = this.opts.maxOutputTokens!;
+    const response = { ...(this.lastResponse ?? {}), status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, max_output_tokens: max };
+    return `event: response.incomplete\ndata: ${JSON.stringify({ type: "response.incomplete", sequence_number: this.lastSeq + 1, response })}\n\n`;
   }
 
   /** Funds exhausted: a typed Responses `error` event. */
@@ -207,8 +237,14 @@ export class ResponsesStreamPassthrough extends Base {
     if (!isObject(d)) return [rawBlock(ev)];
     const type = String(d.type ?? ev.event ?? "");
     let modified = false;
+    if (typeof d.sequence_number === "number") this.lastSeq = Math.max(this.lastSeq, d.sequence_number);
     if (isObject(d.response)) {
       if (typeof d.response.id === "string" && !this.rid) this.rid = d.response.id;
+      const max = this.opts.maxOutputTokens;
+      if (typeof max === "number" && (d.response.max_output_tokens === null || d.response.max_output_tokens === undefined)) {
+        d.response.max_output_tokens = max;
+        modified = true;
+      }
       if (this.publicModel && typeof d.response.model === "string" && d.response.model !== this.publicModel) {
         d.response.model = this.publicModel;
         modified = true;
@@ -220,19 +256,36 @@ export class ResponsesStreamPassthrough extends Base {
         else if (u.toolUsage && Object.keys(u.toolUsage).length) this.addUsage({ ...emptyUsage(), toolUsage: u.toolUsage });
       }
     }
-    if (type === "response.output_text.delta" && typeof d.delta === "string") this.text.add(d.delta);
-    else if (type === "response.function_call_arguments.delta" && typeof d.delta === "string") this.text.add(d.delta);
+    // an empty text delta carries nothing (one relay opens every stream with one, even before response.created)
+    if (type === "response.output_text.delta" && d.delta === "") return [];
+    if ((type === "response.created" || type === "response.in_progress") && isObject(d.response)) this.lastResponse = d.response;
+    if ((type === "response.output_text.delta" || type === "response.function_call_arguments.delta") && typeof d.delta === "string") {
+      this.text.add(d.delta);
+      this.visibleChars += d.delta.length;
+      const max = this.opts.maxOutputTokens;
+      if (this.opts.enforceMaxOutputTokens && typeof max === "number" && max > 0 && !this.done && Math.ceil(this.visibleChars / CHARS_PER_TOKEN) >= max) {
+        this.done = true;
+        this.stopped = true;
+        return [modified ? emit(ev, d) : rawBlock(ev), this.capEvent()];
+      }
+    }
     else if (type === "response.completed" || type === "response.incomplete") {
       this.done = true;
       if (isObject(d.response)) this.addGeneratedFiles(generatedFilesOfResponsesOutput(d.response.output));
     }
     else if (type === "response.failed") {
       this.done = true;
-      const e = isObject(d.response) && isObject(d.response.error) ? d.response.error : {};
-      this.err = { status: 502, message: String(e.message ?? "response failed"), type: String(e.code ?? "") };
+      this.err = parseInbandError(isObject(d.response) ? d.response.error : null, "response failed");
       return [errorBlock(ev, d, this.scrub, modified)];
     } else if (type === "error") {
-      this.err = { status: 502, message: String(d.message ?? "upstream error"), type: String(d.code ?? "") };
+      this.err = parseInbandError(d);
+      // OpenAI's shape: message / code / param at the top level. Some relays nest them under `error` (+ a `status`):
+      // clients reading the standard shape would only see "stream error", so rewrite those.
+      if (isObject(d.error) || typeof d.message !== "string") {
+        const e = this.err;
+        const flat = { type: "error", code: e.code ?? e.type ?? openaiErrorType(e.status), message: e.message, param: e.param ?? null, ...(typeof d.sequence_number === "number" ? { sequence_number: d.sequence_number } : {}) };
+        return [errorBlock({ ...ev, event: ev.event ?? "error" }, flat, this.scrub, true)];
+      }
       return [errorBlock(ev, d, this.scrub, modified)];
     }
     return [modified ? emit(ev, d) : rawBlock(ev)];

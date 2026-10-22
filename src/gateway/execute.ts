@@ -37,7 +37,7 @@ import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPoo
 import { StreamSession, type FinishInfo } from "./stream";
 import { holdCommitAfterMs, isPreambleEvent } from "./stream-start";
 import { canCollect, SseCollector } from "./stream-collect";
-import { upstreamOp } from "./providers/adapters";
+import { providerSettings, upstreamOp } from "./providers/adapters";
 import { SseParser } from "./sse";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
@@ -435,6 +435,11 @@ async function handleCollected(ctx: Ctx, cand: Candidate, prepared: Prepared, h:
     h.dispose();
   }
   const r = collector.result();
+  if (!r.ok && !isFailoverStatus(r.status)) {
+    rec(r.status, r.message);
+    const inbound = ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format;
+    return { kind: "client_error", error: clientErrorFromUpstream(r.status, inbandErrorDocument(prepared.upstreamFormat, r), inbound, prepared.upstreamFormat, scrubCtx(ctx, cand, getKeySecret(cand.key) ?? "")) };
+  }
   if (!r.ok) return fail(classifyStatus(r.status, r.message), r.status, r.message, { internal: `assembled stream: ${r.message}` });
   return handleJson(ctx, cand, prepared, h, t0, rec, fail, JSON.stringify(r.json));
 }
@@ -731,8 +736,10 @@ function makeProcessor(ctx: Ctx, cand: Candidate): StreamProcessor {
     default:
   }
   switch (cand.plan.upstream) {
-    case "openai_responses":
-      return new ResponsesStreamPassthrough(mask);
+    case "openai_responses": {
+      const max = ctx.body && typeof ctx.body.max_output_tokens === "number" ? ctx.body.max_output_tokens : null;
+      return new ResponsesStreamPassthrough(mask, { maxOutputTokens: max, enforceMaxOutputTokens: providerSettings(cand.route.provider).enforceMaxOutputTokens });
+    }
     case "anthropic_messages":
       return new AnthropicStreamPassthrough(mask);
     case "gemini": {
@@ -806,10 +813,16 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   }
   const inband = processor.error();
   if (inband && session.firstEventError) {
-    // first event is an error: fail over; if every key answers like that the client gets the upstream's error as an HTTP error
+    // an error before any output: fail over; if every key answers like that the client gets the upstream's error as an HTTP error
     session.discard();
     h.abort();
     h.dispose();
+    const inboundFmt = ctx.path!.format === "catalog" ? "openai_chat" : ctx.path!.format;
+    if (!isFailoverStatus(inband.status)) {
+      // the request itself is wrong (invalid / unsupported parameter): every retry would fail the same way
+      rec(inband.status, inband.message);
+      return { kind: "client_error", error: clientErrorFromUpstream(inband.status, inbandErrorDocument(prepared.upstreamFormat, inband), inboundFmt, prepared.upstreamFormat, sc) };
+    }
     const mirrorable = isMirrorStatus(inband.status);
     return fail(classifyStatus(inband.status, inband.message), inband.status, inband.message, {
       internal: `in-band stream error: ${inband.type ?? ""} ${inband.message}`,
