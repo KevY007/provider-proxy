@@ -23,6 +23,11 @@ export interface StreamProcessor {
   note?(): string | null;
   /** True once the upstream signalled a natural end (done sentinel / terminal event). */
   completed(): boolean;
+  /**
+   * The processor ended the stream itself (an output cap the upstream ignores was reached and the terminal event was
+   * emitted): the pipeline stops reading and aborts the upstream; completed() is true.
+   */
+  halted?(): boolean;
   /** Upstream error event seen in-band (used to fail over before the first byte is sent / to log mid-stream errors). */
   error(): { status: number; message: string; type?: string } | null;
   /** Response id created by this stream (Responses API stickiness). */

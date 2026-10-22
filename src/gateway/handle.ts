@@ -22,6 +22,7 @@ import { validateRequest } from "./validate";
 import { lookupResponse } from "./responses-sticky";
 import { eligibleRoutes, orderRoutes, type RoutePlan } from "./select";
 import { routeByEffort, withRequestEffort } from "./effort-route";
+import { providerSettings } from "./providers/adapters";
 import { acquireSlots, type SlotPool } from "./slots";
 import { countRequestTokens } from "./tokenizer";
 import { emptyUsage, type Json, type Operation } from "./types";
@@ -328,6 +329,7 @@ async function dispatch(ctx: Ctx): Promise<Response> {
   let routes: RoutePlan[] = pick();
   // the conversation / file lives on an account of the key's own pool: an effort rule cannot move it elsewhere
   if (!routes.length && pinProviderId && undoEffortRoute(ctx)) routes = pick();
+  routes = byServiceTier(ctx, routes);
   if (filePin) {
     if (!routes.length) {
       throw new GatewayError("invalid_request", "The referenced file is stored with a provider that cannot serve this model. Upload the file again or use a different model.", { param: "file_id", internal: "file pin has no eligible route for this model" });
@@ -348,6 +350,27 @@ async function dispatch(ctx: Ctx): Promise<Response> {
     routes = native;
   }
   return execute(ctx, routes, { pinKeyId });
+}
+
+/**
+ * A request for a service tier (priority, flex, ultrafast ...) only goes to providers that really serve it (provider
+ * setting `serviceTiers`; unset = any). If none can, a 400 says so instead of a reply silently served at "default".
+ */
+function byServiceTier(ctx: Ctx, routes: RoutePlan[]): RoutePlan[] {
+  const tier = ctx.body && typeof ctx.body.service_tier === "string" ? ctx.body.service_tier : null;
+  if (!tier || tier === "auto" || tier === "default" || !routes.length) return routes;
+  const served = routes.filter((r) => {
+    const tiers = providerSettings(r.route.provider).serviceTiers;
+    return !tiers || tiers.includes(tier);
+  });
+  if (!served.length) {
+    throw new GatewayError("invalid_request", `The service tier '${tier}' is not available for the model '${ctx.model!.slug}'. Omit service_tier or use 'auto' / 'default'.`, {
+      param: "service_tier",
+      errorCode: "unsupported_value",
+      internal: "no route's provider serves this service tier (provider setting serviceTiers)",
+    });
+  }
+  return served;
 }
 
 /** Anthropic count_tokens when no native Anthropic upstream exists: estimate locally (not billed). */

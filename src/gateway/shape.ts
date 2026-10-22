@@ -155,6 +155,7 @@ export function prepareUpstream(i: PrepareInput): Prepared {
       obj.stream_options = { ...(isObject(obj.stream_options) ? obj.stream_options : {}), include_usage: true };
     }
     for (const f of ps.stripFields) delete obj[f];
+    if (ps.stripCacheHints) stripCacheHints(obj);
     if (Object.keys(route.paramOverrides).length) deepMerge(obj, route.paramOverrides);
     if (route.maxOutputTokens && route.maxOutputTokens > 0) applyOutputClamp(obj, upFormat, op, route.maxOutputTokens, tokensParam);
     if (i.outputCap && i.outputCap > 0) applyOutputClamp(obj, upFormat, op, i.outputCap, tokensParam);
@@ -400,10 +401,12 @@ const genericUpstreamMessage = (status: number): string =>
   status === 429 ? "Rate limit exceeded. Please retry later." : status === 529 ? "The upstream provider is overloaded. Please retry shortly." : status === 504 || status === 408 ? "The upstream provider timed out." : "The upstream provider returned an error.";
 
 /** The upstream error document equivalent of an in-stream error event (used when a stream fails before the response was committed). */
-export function inbandErrorDocument(upstreamFormat: InboundFormat, e: { status: number; message: string; type?: string }): string {
+export function inbandErrorDocument(upstreamFormat: InboundFormat, e: { status: number; message: string; type?: string; code?: string | null; param?: string | null }): string {
   if (upstreamFormat === "anthropic_messages") return JSON.stringify({ type: "error", error: { type: e.type || anthropicTypeFor(e.status), message: e.message } });
   if (upstreamFormat === "gemini") return JSON.stringify({ error: { code: e.status, message: e.message, status: e.type || geminiStatusFor(e.status) } });
-  return JSON.stringify({ error: { message: e.message, type: e.type || openaiTypeFor(e.status), code: null, param: null } });
+  // OpenAI's own types only; a relay's code ("invalid_parameter") stays in `code`
+  const type = e.type && /_error$/.test(e.type) ? e.type : openaiTypeFor(e.status);
+  return JSON.stringify({ error: { message: e.message, type, param: e.param ?? null, code: e.code ?? null } });
 }
 
 const RL_HEADERS = /^(retry-after|retry-after-ms|x-ratelimit-.+|anthropic-ratelimit-.+|ratelimit-.+)$/i;
@@ -434,4 +437,38 @@ export function parseRetryAfter(h: HeaderLike): number | undefined {
   const d = Date.parse(v);
   if (Number.isFinite(d)) return Math.max(1, Math.ceil((d - Date.now()) / 1000));
   return undefined;
+}
+
+/**
+ * Remove OpenAI's prompt-caching hints: top-level `prompt_cache_options`, and `prompt_cache_breakpoint` on any input /
+ * message content part. Copies what it changes (`obj` shares nested objects with the customer's body).
+ */
+export function stripCacheHints(obj: JsonObject): void {
+  delete obj.prompt_cache_options;
+  const clean = (v: Json, depth: number): Json => {
+    if (depth > 6) return v;
+    if (Array.isArray(v)) {
+      let changed = false;
+      const out = v.map((x) => {
+        const y = clean(x, depth + 1);
+        if (y !== x) changed = true;
+        return y;
+      });
+      return changed ? out : v;
+    }
+    if (!isObject(v)) return v;
+    let next: JsonObject | null = null;
+    if ("prompt_cache_breakpoint" in v) {
+      next = { ...v };
+      delete next.prompt_cache_breakpoint;
+    }
+    for (const k of ["content", "input", "messages", "output"]) {
+      const cur = (next ?? v)[k];
+      if (cur === undefined) continue;
+      const c = clean(cur, depth + 1);
+      if (c !== cur) (next ??= { ...v })[k] = c;
+    }
+    return next ?? v;
+  };
+  for (const k of ["input", "messages"]) if (obj[k] !== undefined) obj[k] = clean(obj[k], 0);
 }

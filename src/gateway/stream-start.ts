@@ -28,14 +28,8 @@ export function isPreambleEvent(format: InboundFormat, ev: SseEvent): boolean {
   switch (format) {
     case "openai_chat":
       return chatChunkIsPreamble(j);
-    case "openai_responses": {
-      const type = typeof j.type === "string" ? j.type : ev.event ?? "";
-      if (RESPONSES_PREAMBLE.has(type) || type.startsWith("response.reasoning")) return true;
-      // reasoning output items (added / done) carry no answer text
-      if (type === "response.output_item.added") return !isObject(j.item) || j.item.type === "reasoning" || j.item.type === "message";
-      if (type === "response.output_item.done") return isObject(j.item) && j.item.type === "reasoning";
-      return false;
-    }
+    case "openai_responses":
+      return !responsesEventIsOutput(typeof j.type === "string" ? j.type : ev.event ?? "", j);
     case "anthropic_messages": {
       const type = typeof j.type === "string" ? j.type : ev.event ?? "";
       if (ANTHROPIC_PREAMBLE.has(type)) return true;
@@ -48,7 +42,24 @@ export function isPreambleEvent(format: InboundFormat, ev: SseEvent): boolean {
   }
 }
 
-const RESPONSES_PREAMBLE = new Set(["response.created", "response.in_progress", "response.queued", "response.content_part.added", "response.metadata"]);
+/**
+ * Responses API: only content counts as output - text / refusal / tool-argument / audio deltas with something in them,
+ * a non-message, non-reasoning output item (a tool call starting), partial images, and the terminal events.
+ * Everything else holds: lifecycle events, reasoning items and summaries, and vendor events a relay adds (one sends
+ * `codex.rate_limits`, `response.metadata` and a blank " " text delta before failing - all of that must not commit).
+ */
+function responsesEventIsOutput(type: string, j: Record<string, unknown>): boolean {
+  if (type === "response.completed" || type === "response.incomplete") return true;
+  if (type.startsWith("response.reasoning")) return false;
+  if (type === "response.output_item.added" || type === "response.output_item.done") return isObject(j.item) && j.item.type !== "reasoning" && j.item.type !== "message";
+  if (type.includes("partial_image")) return true;
+  if (type.endsWith(".delta")) {
+    const d = j.delta;
+    if (typeof d === "string") return d.trim() !== "";
+    return d !== null && d !== undefined;
+  }
+  return false;
+}
 const ANTHROPIC_PREAMBLE = new Set(["message_start", "ping", "content_block_start"]);
 
 function chatChunkIsPreamble(j: Record<string, unknown>): boolean {

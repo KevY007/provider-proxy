@@ -1,0 +1,132 @@
+/**
+ * What an OpenAI Responses client (a studio app) needs from the gateway in front of a relay that misbehaves:
+ * errors before any output come back as real HTTP errors in OpenAI's shape (no retries of a deterministic 400),
+ * transient relay failures are retried invisibly, prompt-cache hints can be stripped, unknown efforts and unserved
+ * service tiers are refused up front, and a max_output_tokens the upstream ignores is enforced.
+ */
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { dbOk, createHarness, sseBlocks } from "./harness";
+import { parseInbandError } from "@/gateway/inband-error";
+import { ResponsesStreamPassthrough } from "@/gateway/stream-processors";
+import type { SseEvent } from "@/gateway/sse";
+
+describe("parseInbandError", () => {
+  it("reads flat, nested and response.failed shapes with a real status", () => {
+    expect(parseInbandError({ type: "error", code: "invalid_value", message: "Invalid value: 'ultra'.", param: "reasoning.effort" })).toMatchObject({ status: 400, code: "invalid_value", param: "reasoning.effort" });
+    expect(parseInbandError({ type: "error", error: { message: "prompt_cache_breakpoint is not supported on this model", type: "invalid_request_error" }, status: 400 })).toMatchObject({ status: 400, type: "invalid_request_error" });
+    expect(parseInbandError({ code: "invalid_parameter", message: "prompt_cache_breakpoint is not supported on this model" }).status).toBe(400);
+    expect(parseInbandError({ type: "error", error: { type: "server_error", message: "Our servers are currently overloaded." }, status: 503 }).status).toBe(503);
+    expect(parseInbandError({ error: { message: "Service Unavailable", type: "upstream_error" } }).status).toBe(503);
+    expect(parseInbandError({ type: "error", code: "upstream_error", message: "Upstream request failed" }).status).toBe(502);
+    expect(parseInbandError({ code: "rate_limit_exceeded", message: "slow down" }).status).toBe(429);
+  });
+});
+
+describe("ResponsesStreamPassthrough", () => {
+  const ev = (data: unknown, event?: string): SseEvent => ({ event, data: JSON.stringify(data), raw: `data: ${JSON.stringify(data)}`, comment: false }) as SseEvent;
+  it("rewrites a nested error event into OpenAI's top-level shape", () => {
+    const p = new ResponsesStreamPassthrough(null);
+    const [out] = p.onEvent(ev({ type: "error", error: { message: "boom", type: "server_error", code: "server_error" }, status: 503 }, "error"));
+    const body = JSON.parse(/^data: (.*)$/m.exec(out)![1]);
+    expect(body).toEqual({ type: "error", code: "server_error", message: "boom", param: null });
+    expect(p.error()?.status).toBe(503);
+  });
+  it("drops empty text deltas and echoes the client's max_output_tokens", () => {
+    const p = new ResponsesStreamPassthrough(null, { maxOutputTokens: 64000 });
+    expect(p.onEvent(ev({ type: "response.output_text.delta", delta: "" }))).toEqual([]);
+    const [out] = p.onEvent(ev({ type: "response.created", response: { id: "r1", max_output_tokens: null } }));
+    expect(JSON.parse(/^data: (.*)$/m.exec(out)![1]).response.max_output_tokens).toBe(64000);
+  });
+});
+
+const h = createHarness("stc");
+
+describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
+  const M: Record<string, string> = {};
+  let key = "";
+  const calls = async (s: string) => ((await (await fetch(`${h.base}/__mock/stats`)).json()) as { byKey: Record<string, { total: number }> }).byKey[h.secret(s)]?.total ?? 0;
+  const lastBody = async () => ((await (await fetch(`${h.base}/__mock/last?path=${encodeURIComponent("/v1/responses")}`)).json()) as { body: Record<string, unknown> }).body;
+  const responses = (model: string, extra: Record<string, unknown> = {}, text = "hi") =>
+    h.call("/v1/responses", key, { model, stream: true, input: [{ role: "user", content: [{ type: "input_text", text }] }], ...extra });
+  const breakpointInput = [{ role: "user", content: [{ type: "input_text", text: "hi", prompt_cache_breakpoint: { mode: "explicit" } }] }];
+
+  beforeAll(async () => {
+    await h.start();
+    const mk = async (t: string, settings: Record<string, unknown>) => {
+      const p = await h.makeProvider(t, { formats: ["openai_responses"], settings: { noCooldown: true, ...settings }, keys: [{ s: `${t}1` }] });
+      M[t] = (await h.makeModel(t, { caps: ["responses"], providerId: p.id })).slug;
+    };
+    await mk("ftfail", {});
+    await mk("ftfails", { stripCacheHints: true }); // "ftfail" in the key: the same relay backend, hints stripped
+    await mk("ceflaky", {});
+    await mk("tier", { serviceTiers: ["auto", "default"] });
+    await mk("cap", { enforceMaxOutputTokens: true });
+    const u = await h.makeUser("u", { balance: "50" });
+    key = (await h.makeKey("k", u.id)).key;
+  });
+  afterAll(() => h.cleanup());
+
+  it("an error before any output is the real HTTP status in OpenAI's shape, not retried", async () => {
+    const res = await h.call("/v1/responses", key, { model: M.ftfail, stream: true, input: breakpointInput, prompt_cache_options: { ttl: "30m" } });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({ message: "prompt_cache_breakpoint is not supported on this model", type: "invalid_request_error", code: "invalid_parameter", param: "prompt_cache_breakpoint" });
+    expect(await calls("ftfail1")).toBe(1);
+  });
+
+  it("stripCacheHints: breakpoints and prompt_cache_options are removed, the request succeeds", async () => {
+    const res = await h.call("/v1/responses", key, { model: M.ftfails, stream: true, input: breakpointInput, prompt_cache_options: { ttl: "30m" }, prompt_cache_key: "run-1" });
+    expect(res.status).toBe(200);
+    const blocks = sseBlocks(await res.text());
+    expect(blocks.at(-1)?.event).toBe("response.completed");
+    const sent = await lastBody();
+    expect(JSON.stringify(sent)).not.toContain("prompt_cache_breakpoint");
+    expect(sent.prompt_cache_options).toBeUndefined();
+    expect(sent.prompt_cache_key).toBe("run-1");
+  });
+
+  it("a relay failing after its opening events (empty delta, created, vendor event) is retried invisibly", async () => {
+    const res = await responses(M.ceflaky);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).not.toContain('"type":"error"');
+    expect(text).not.toContain("codex.rate_limits");
+    expect(sseBlocks(text).at(-1)?.event).toBe("response.completed");
+    expect(await calls("ceflaky1")).toBe(2);
+  });
+
+  it("an unknown reasoning effort is a 400 invalid_value before anything is sent upstream", async () => {
+    const before = await calls("tier1");
+    const res = await responses(M.tier, { reasoning: { effort: "ultra" } });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({ type: "invalid_request_error", param: "reasoning.effort", code: "invalid_value" });
+    expect(await calls("tier1")).toBe(before);
+  });
+
+  it("a service tier no provider serves is refused with a 400; auto / default pass", async () => {
+    const res = await responses(M.tier, { service_tier: "ultrafast" });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: Record<string, unknown> };
+    expect(body.error).toMatchObject({ type: "invalid_request_error", param: "service_tier", code: "unsupported_value" });
+    expect((await responses(M.tier, { service_tier: "default" })).status).toBe(200);
+  });
+
+  it("max_output_tokens is echoed, and enforced (response.incomplete) when the upstream ignores it", async () => {
+    const echo = await responses(M.tier, { max_output_tokens: 64000 });
+    const done = sseBlocks(await echo.text()).find((b) => b.event === "response.completed");
+    expect(JSON.parse(done!.data).response.max_output_tokens).toBe(64000);
+
+    const res = await responses(M.cap, { max_output_tokens: 8 }, "[[runaway:400]]");
+    expect(res.status).toBe(200);
+    const blocks = sseBlocks(await res.text());
+    const last = blocks.at(-1)!;
+    expect(last.event).toBe("response.incomplete");
+    expect(JSON.parse(last.data).response).toMatchObject({ status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, max_output_tokens: 8 });
+    const deltas = blocks.filter((b) => b.event === "response.output_text.delta").length;
+    expect(deltas).toBeLessThan(40);
+    const row = await h.logOf(res);
+    expect(row.status).toBe("SUCCESS");
+  });
+});

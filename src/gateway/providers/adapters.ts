@@ -299,5 +299,11 @@ export function providerSettings(p: { settings: JsonObject }) {
     stripFields: Array.isArray(s.stripFields) ? (s.stripFields as unknown[]).filter((x): x is string => typeof x === "string") : [],
     forceStreamUsage: s.forceStreamUsage !== false,
     maxTokensParam: s.maxTokensParam === "max_completion_tokens" ? ("max_completion_tokens" as const) : s.maxTokensParam === "max_tokens" ? ("max_tokens" as const) : undefined,
+    // remove OpenAI prompt-caching hints (`prompt_cache_breakpoint` on input parts, `prompt_cache_options`) for upstreams that reject or ignore them
+    stripCacheHints: s.stripCacheHints === true,
+    // the service tiers this provider really serves (e.g. ["auto","default"]); a request for another tier skips it. Unset = any.
+    serviceTiers: Array.isArray(s.serviceTiers) ? (s.serviceTiers as unknown[]).filter((x): x is string => typeof x === "string") : null,
+    // the upstream ignores max_output_tokens: the gateway enforces it on the streamed output and ends with response.incomplete
+    enforceMaxOutputTokens: s.enforceMaxOutputTokens === true,
   };
 }
