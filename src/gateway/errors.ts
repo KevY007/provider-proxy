@@ -75,6 +75,8 @@ export interface GatewayErrorOptions {
   /** Override the OpenAI `type` field. */
   type?: string;
   param?: string | null;
+  /** OpenAI `code` field when it should differ from our error code (e.g. "invalid_value") */
+  errorCode?: string;
   retryAfterSec?: number;
   /** Extra response headers (e.g. passed-through x-ratelimit-*). */
   headers?: Record<string, string>;
@@ -187,7 +189,7 @@ export function errorBody(format: ErrorFormat, err: GatewayError, requestId?: st
         error: {
           message: err.message,
           type: err.opts.type ?? def.openaiType,
-          code: err.code,
+          code: err.opts.errorCode ?? err.code,
           param: err.opts.param ?? null,
         },
       };

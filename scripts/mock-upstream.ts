@@ -12,6 +12,10 @@
  *   key contains "fail429" -> 429 + retry-after: 2     "fail500" -> 500     "fail529" -> 529 (overloaded)
  *   key contains "bad"     -> 401 invalid key          "slow"    -> +1500ms before responding / first byte
  *   key contains "deny403" -> 403 "this group does not allow" (a reseller key without access to this endpoint; the key itself is fine)
+ *   key contains "ftfail"   -> streamed responses carrying `prompt_cache_breakpoint`: a relay backend that does not
+ *                              support it (blank " " text, then response.failed invalid_parameter)
+ *   key contains "ceflaky"  -> streamed responses: odd requests open like a relay (empty text delta, response.created,
+ *                              a vendor codex.rate_limits event) and then fail with a NESTED error {error:{..}, status:503}
  *   key contains "flakystart" -> streamed chat: every other request opens the stream (role-only chunk) and then sends an
  *                             in-band "Service Unavailable" error before any output (the relay failure seen in production)
  * Delay knobs: header `x-mock-delay-ms`, body field `mock_delay_ms`, or marker `[[delay:N]]` in the last user
@@ -1122,6 +1126,29 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
   let seq = 0;
   const ev = (type: string, data: Obj) => eventFrame(type, { type, sequence_number: seq++, ...data });
   const frames: string[] = [];
+  if (ctx.cred.includes("ftfail") && JSON.stringify(b).includes("prompt_cache_breakpoint")) {
+    frames.push(ev("response.created", { response: base("in_progress", [], null) }));
+    frames.push(ev("response.in_progress", { response: base("in_progress", [], null) }));
+    frames.push(ev("response.output_item.added", { output_index: 0, item: messageItem("in_progress", "") }));
+    frames.push(ev("response.content_part.added", { item_id: msgId, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }));
+    frames.push(ev("response.output_text.delta", { item_id: msgId, output_index: 0, content_index: 0, delta: " " }));
+    frames.push(ev("response.output_text.done", { item_id: msgId, output_index: 0, content_index: 0, text: " " }));
+    frames.push(ev("response.output_item.done", { output_index: 0, item: messageItem("completed", " ") }));
+    const failed = { ...base("failed", [], null), error: { code: "invalid_parameter", message: "prompt_cache_breakpoint is not supported on this model", param: "prompt_cache_breakpoint" } };
+    frames.push(ev("response.failed", { response: failed }));
+    return emitFrames(ctx, frames, delay, SSE);
+  }
+  if (ctx.cred.includes("ceflaky")) {
+    const n = (flakyStarts.get(ctx.cred) ?? 0) + 1;
+    flakyStarts.set(ctx.cred, n);
+    if (n % 2 === 1) {
+      frames.push(eventFrame("response.output_text.delta", { type: "response.output_text.delta", delta: "" }));
+      frames.push(ev("response.created", { response: base("in_progress", [], null) }));
+      frames.push(eventFrame("codex.rate_limits", { type: "codex.rate_limits", plan_type: "mock", rate_limits: { primary: { used_percent: 1 } } }));
+      frames.push(eventFrame("error", { type: "error", error: { type: "server_error", code: "server_error", message: "Our servers are currently overloaded. Please try again later." }, status: 503 }));
+      return emitFrames(ctx, frames, delay, SSE);
+    }
+  }
   frames.push(ev("response.created", { response: base("in_progress", [], null) }));
   frames.push(ev("response.in_progress", { response: base("in_progress", [], null) }));
   extra.forEach((item, i) => {

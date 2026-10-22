@@ -1,4 +1,5 @@
 import type { SseEvent } from "./sse";
+import { parseInbandError, type InbandError } from "./inband-error";
 import type { InboundFormat, JsonObject } from "./types";
 import { isObject } from "./util";
 
@@ -9,14 +10,14 @@ import { isObject } from "./util";
  * invisibly, because the client has not received anything yet - and the result is handed to the normal JSON pipeline.
  * Supported: OpenAI Chat Completions, OpenAI Responses, Anthropic Messages.
  */
-export type CollectResult = { ok: true; json: JsonObject } | { ok: false; status: number; message: string };
+export type CollectResult = { ok: true; json: JsonObject } | ({ ok: false } & InbandError);
 
 export function canCollect(format: InboundFormat, op: string): boolean {
   return (format === "openai_chat" && op === "chat") || (format === "openai_responses" && op === "responses") || (format === "anthropic_messages" && op === "messages");
 }
 
 export class SseCollector {
-  private err: { status: number; message: string } | null = null;
+  private err: InbandError | null = null;
   private done = false;
   // chat
   private base: JsonObject = {};
@@ -47,7 +48,7 @@ export class SseCollector {
     if (!isObject(j)) return;
     const type = typeof j.type === "string" ? j.type : (ev.event ?? "");
     if (isObject(j.error) || type === "error") {
-      this.err = errorOf(isObject(j.error) ? j.error : j);
+      this.err = errorOf(j);
       return;
     }
     if (this.format === "openai_chat") this.chat(j);
@@ -186,19 +187,6 @@ export class SseCollector {
   }
 }
 
-function errorOf(e: JsonObject): { status: number; message: string } {
-  const message = typeof e.message === "string" ? e.message : typeof e.type === "string" ? e.type : "upstream error";
-  const code = Number(e.code ?? e.status);
-  const type = typeof e.type === "string" ? e.type : "";
-  const status =
-    code >= 400 && code < 600
-      ? code
-      : type === "overloaded_error"
-        ? 529
-        : type === "rate_limit_error" || type === "rate_limit_exceeded"
-          ? 429
-          : /unavailable/i.test(message)
-            ? 503
-            : 502;
-  return { status, message };
+function errorOf(e: JsonObject): InbandError {
+  return parseInbandError(e);
 }

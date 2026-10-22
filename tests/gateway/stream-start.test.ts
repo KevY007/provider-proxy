@@ -34,7 +34,8 @@ describe("isPreambleEvent", () => {
     expect(isPreambleEvent("openai_responses", ev({ type: "response.reasoning_summary_text.delta", delta: "x" }))).toBe(true);
     expect(isPreambleEvent("openai_responses", ev({ type: "response.metadata" }))).toBe(true);
     expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.added", item: { type: "function_call" } }))).toBe(false);
-    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.done", item: { type: "message" } }))).toBe(false);
+    // a message item closing carries no text itself (its deltas commit; a relay's blank " " message must not)
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.done", item: { type: "message" } }))).toBe(true);
     expect(isPreambleEvent("anthropic_messages", ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hm" } }))).toBe(true);
   });
   it("Responses and Anthropic: opening bookkeeping events are preamble, deltas are output", () => {
@@ -73,7 +74,7 @@ describe("SseCollector", () => {
   });
   it("OpenAI chat: an in-band error or a stream without finish_reason is a failure", () => {
     const err = collect("openai_chat", `data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: "assistant" } }] })}\n\ndata: ${JSON.stringify({ error: { message: "Service Unavailable", type: "upstream_error" } })}\n\n`);
-    expect(err).toEqual({ ok: false, status: 503, message: "Service Unavailable" });
+    expect(err).toMatchObject({ ok: false, status: 503, message: "Service Unavailable" });
     const cut = collect("openai_chat", `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "half" } }] })}\n\n`);
     expect(cut.ok).toBe(false);
   });
@@ -113,5 +114,25 @@ describe("holdCommitAfterMs", () => {
     expect(holdCommitAfterMs(15_000, 240, 1_000_000, 1_200_000)).toBe(40_000);
     expect(holdCommitAfterMs(15_000, 240, 1_000_000, 1_300_000)).toBe(15_000);
     expect(holdCommitAfterMs(15_000, 0, 1_000_000, 1_000_000)).toBe(15_000);
+  });
+});
+
+describe("Responses: only content commits the stream", () => {
+  const r = (o: Record<string, unknown>) => isPreambleEvent("openai_responses", ev(o));
+  it("vendor events, blank deltas and lifecycle events hold", () => {
+    expect(r({ type: "codex.rate_limits", rate_limits: {} })).toBe(true);
+    expect(r({ type: "response.output_text.delta", delta: "" })).toBe(true);
+    expect(r({ type: "response.output_text.delta", delta: " " })).toBe(true);
+    expect(r({ type: "response.output_item.done", item: { type: "message" } })).toBe(true);
+    expect(r({ type: "response.output_text.done", text: " " })).toBe(true);
+    expect(r({ type: "response.content_part.done" })).toBe(true);
+  });
+  it("text, tool calls, images and the terminal events commit", () => {
+    expect(r({ type: "response.output_text.delta", delta: "OK" })).toBe(false);
+    expect(r({ type: "response.function_call_arguments.delta", delta: "{" })).toBe(false);
+    expect(r({ type: "response.output_item.added", item: { type: "function_call" } })).toBe(false);
+    expect(r({ type: "response.image_generation_call.partial_image", partial_image_b64: "x" })).toBe(false);
+    expect(r({ type: "response.completed", response: {} })).toBe(false);
+    expect(r({ type: "response.incomplete", response: {} })).toBe(false);
   });
 });

@@ -61,6 +61,14 @@ export interface StreamOptions {
   isPreamble?: (ev: SseEvent) => boolean;
 }
 
+/** Abort reason used when the gateway ends a stream at the client's max_output_tokens (the upstream ignored it). */
+export class OutputCapError extends Error {
+  constructor() {
+    super("stream ended: max_output_tokens reached");
+    this.name = "OutputCapError";
+  }
+}
+
 /** Abort reason used when the funds guard cuts a stream. */
 export class BudgetCutError extends Error {
   constructor() {
@@ -184,9 +192,25 @@ export class StreamSession {
         if (!this.o.isPreamble?.(ev)) this.started = true;
       }
       for (const s of out) if (s) this.pending.push(enc.encode(s));
+      if (p.halted?.()) {
+        this.haltUpstream();
+        break;
+      }
       if (chunk && this.checkGuard()) break; // checked per event: the cut lands on the event that used the funds up, not at the end of the network chunk
     }
     if (!chunk) for (const s of p.onEnd()) if (s) this.pending.push(enc.encode(s));
+  }
+
+  /** The processor ended the stream (output cap reached): nothing more is read, the upstream is told to stop. */
+  private haltUpstream(): void {
+    if (this.upstreamDone) return;
+    this.upstreamDone = true;
+    try {
+      this.o.abort(new OutputCapError());
+    } catch {
+      /* already aborted */
+    }
+    this.reader.cancel().catch(() => undefined);
   }
 
   /** Funds guard (see StreamOptions.guard): end the stream right here when the reserved amount is used up. Returns true when it cut. */
