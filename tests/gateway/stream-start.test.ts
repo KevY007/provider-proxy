@@ -1,6 +1,6 @@
 /** Stream start detection (preamble events) and assembling a stream back into the provider's JSON. */
 import { describe, expect, it } from "vitest";
-import { isPreambleEvent } from "@/gateway/stream-start";
+import { holdCommitAfterMs, isPreambleEvent } from "@/gateway/stream-start";
 import { SseCollector } from "@/gateway/stream-collect";
 import { SseParser } from "@/gateway/sse";
 import type { InboundFormat } from "@/gateway/types";
@@ -103,5 +103,15 @@ describe("SseCollector", () => {
       ok: true,
       json: { id: "m1", type: "message", role: "assistant", model: "c", stop_reason: "tool_use", usage: { input_tokens: 9, output_tokens: 12 }, content: [{ type: "text", text: "Hi" }, { type: "tool_use", id: "tu", name: "f", input: { q: "x" } }] },
     });
+  });
+});
+
+describe("holdCommitAfterMs", () => {
+  it("counts the hold window from the request's arrival, never below one heartbeat", () => {
+    expect(holdCommitAfterMs(15_000, 240, 1_000_000, 1_000_000)).toBe(240_000);
+    // a retry 200 s in only gets what is left of the window
+    expect(holdCommitAfterMs(15_000, 240, 1_000_000, 1_200_000)).toBe(40_000);
+    expect(holdCommitAfterMs(15_000, 240, 1_000_000, 1_300_000)).toBe(15_000);
+    expect(holdCommitAfterMs(15_000, 0, 1_000_000, 1_000_000)).toBe(15_000);
   });
 });
