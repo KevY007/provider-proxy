@@ -37,7 +37,7 @@ import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPoo
 import { StreamSession, type FinishInfo } from "./stream";
 import { holdCommitAfterMs, isPreambleEvent } from "./stream-start";
 import { canCollect, SseCollector } from "./stream-collect";
-import { providerSettings, upstreamOp } from "./providers/adapters";
+import { providerSettings, unbilledCancels, upstreamOp } from "./providers/adapters";
 import { SseParser } from "./sse";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
@@ -914,7 +914,16 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
       billable: true,
     });
   } else if (info.reason === "cancelled") {
-    logOutcome(ctx, { status: "CANCELLED", httpStatus: 499, errorCode: "client_closed", errorMessage: "Client closed the request.", usage, ttftMs: info.firstOutputMs });
+    const upstreamUnbilled = unbilledCancels(cand.route.provider);
+    logOutcome(ctx, {
+      status: "CANCELLED",
+      httpStatus: 499,
+      errorCode: "client_closed",
+      errorMessage: "Client closed the request.",
+      ...(upstreamUnbilled ? { upstreamUnbilled, internalError: "the upstream does not bill a cancelled stream: our cost 0, the delivered output is billed" } : {}),
+      usage,
+      ttftMs: info.firstOutputMs,
+    });
   } else if (info.reason === "gateway_error") {
     logger.error("GATEWAY_ERROR", { requestId: ctx.requestId, endpoint: path.endpoint, err: describeNetworkError(info.error) });
     logOutcome(ctx, {
