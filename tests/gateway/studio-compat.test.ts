@@ -66,6 +66,8 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     const relay = await h.makeProvider("relay", { formats: ["openai_responses"], settings: { noCooldown: true }, keys: [{ s: "relay1" }] });
     M.limited = (await h.makeModel("limited", { caps: ["responses"], providerId: relay.id, upstream: "up-rpm429" })).slug;
     M.other = (await h.makeModel("other", { caps: ["responses"], providerId: relay.id })).slug;
+    const nocount = await h.makeProvider("nocount", { formats: ["anthropic_messages"], baseUrl: h.base, authStyle: "X_API_KEY", settings: { anthropicBaseUrl: h.base, noCooldown: true }, keys: [{ s: "nocount1" }] });
+    M.claude = (await h.makeModel("claude", { caps: ["chat"], providerId: nocount.id })).slug;
     const u = await h.makeUser("u", { balance: "50" });
     key = (await h.makeKey("k", u.id)).key;
   });
@@ -165,5 +167,11 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     const other = (await h.makeKey("k2", u2.id)).key;
     expect((await h.call(`/v1/requests/${row.id}`, other)).status).toBe(404);
     expect(await db.requestLog.count({ where: { id: row.id } })).toBe(1);
+  });
+
+  it("count_tokens on a relay that does not offer it falls back to the local estimate", async () => {
+    const res = await h.call("/v1/messages/count_tokens", null, { model: M.claude, messages: [{ role: "user", content: "count me please" }] }, { headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { input_tokens: number }).input_tokens).toBeGreaterThan(0);
   });
 });

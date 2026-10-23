@@ -2648,6 +2648,8 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
     case "/v1/messages":
       return handleAnthropicMessages(ctx, b);
     case "/v1/messages/count_tokens":
+      // a relay that does not offer count_tokens
+      if (ctx.cred.includes("nocount")) return sendError(ctx, "not_found", "Upstream request failed");
       return handleAnthropicCountTokens(ctx, b);
     default:
       return sendError(ctx, "not_found", `Unknown request URL: ${method} ${path}`);
