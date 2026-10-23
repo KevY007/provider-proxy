@@ -22,6 +22,10 @@ export interface KeyRow {
   maxConcurrency: number | null;
   spendLimit: string | null;
   spent: string;
+  /** what this key's requests would have cost at official list prices (requests that recorded one); null = none yet */
+  listPrice: string | null;
+  /** what was paid for those same requests (the comparable part of `spent`) */
+  listComparablePaid: string | null;
   expiresAt: string | null;
   lastUsedAt: string | null;
   createdAt: string;
@@ -70,11 +74,13 @@ export async function getSelectablePools(user: SessionUser): Promise<{ pools: Po
 }
 
 export async function getKeysPageData(user: SessionUser) {
-  const [rows, { pools, current }, models] = await Promise.all([
+  const [rows, { pools, current }, models, list] = await Promise.all([
     db.apiKey.findMany({ where: { userId: user.id, isPlayground: false }, include: { group: { select: { name: true, priceMultiplier: true } } }, orderBy: { createdAt: "desc" } }),
     getSelectablePools(user),
     getCatalogModels(),
+    db.requestLog.groupBy({ by: ["apiKeyId"], where: { userId: user.id, apiKeyId: { not: null }, officialPrice: { gt: 0 } }, _sum: { officialPrice: true, price: true } }),
   ]);
+  const listByKey = new Map(list.map((r) => [r.apiKeyId, r._sum]));
   const now = Date.now();
   const keys: KeyRow[] = rows.map((k) => ({
     id: k.id,
@@ -92,6 +98,8 @@ export async function getKeysPageData(user: SessionUser) {
     maxConcurrency: k.maxConcurrency,
     spendLimit: k.spendLimit?.toString() ?? null,
     spent: k.spent.toString(),
+    listPrice: listByKey.get(k.id)?.officialPrice?.toString() ?? null,
+    listComparablePaid: listByKey.get(k.id)?.price?.toString() ?? null,
     expiresAt: iso(k.expiresAt),
     lastUsedAt: iso(k.lastUsedAt),
     createdAt: k.createdAt.toISOString(),
