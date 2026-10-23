@@ -39,6 +39,8 @@ export interface PoolOption {
   /** Group multiplier x the customer's personal multiplier. */
   multiplier: string;
   isDefault: boolean;
+  /** model slugs the pool allows (empty = all) */
+  allowedModels: string[];
 }
 
 /**
@@ -67,9 +69,10 @@ export async function getSelectablePools(user: SessionUser): Promise<{ pools: Po
     description: g.description,
     multiplier: effectiveMultiplier(g.priceMultiplier, user.priceMultiplier).toString(),
     isDefault: g.isDefault,
+    allowedModels: g.allowedModels,
   }));
   const currentId = own?.id ?? def?.id ?? null;
-  const current = pools.find((p) => p.id === currentId) ?? (def ? { id: def.id, slug: def.slug, name: def.name, description: def.description, multiplier: effectiveMultiplier(def.priceMultiplier, user.priceMultiplier).toString(), isDefault: def.isDefault } : null);
+  const current = pools.find((p) => p.id === currentId) ?? (def ? { id: def.id, slug: def.slug, name: def.name, description: def.description, multiplier: effectiveMultiplier(def.priceMultiplier, user.priceMultiplier).toString(), isDefault: def.isDefault, allowedModels: def.allowedModels } : null);
   return { pools, current };
 }
 

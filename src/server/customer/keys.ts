@@ -5,7 +5,7 @@ import { headers } from "next/headers";
 import { z } from "zod";
 import { invalidateGatewayConfig } from "@/gateway/cache";
 import { audit } from "@/lib/audit";
-import { encrypt, generateApiKey } from "@/lib/crypto";
+import { decrypt, encrypt, generateApiKey } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { getClientIp } from "@/lib/http";
 import { toDbString } from "@/lib/money";
@@ -53,7 +53,7 @@ const dataFor = (v: KeyFormValues, groupId: string | null) => ({
 
 export interface CreatedKey {
   id: string;
-  /** The full secret. Shown exactly once - it is never stored. */
+  /** The full secret (stored encrypted: the owner can fill it into the "Use key" steps again later). */
   key: string;
   prefix: string;
 }
@@ -121,6 +121,27 @@ export async function revokeKeyAction(input: unknown): Promise<ActionResult> {
     await audit(s.user.id, "apikey.revoke", { type: "ApiKey", id: key.id }, { name: key.name }, getClientIp(await headers()));
     revalidatePath("/dashboard/keys");
     return { ok: true, message: "Key revoked. Requests using it will now fail." };
+  });
+}
+
+/** The owner's own key in full, to fill it into the "Use key" setup steps (audited; never while impersonating). */
+export async function revealOwnKeyAction(input: unknown): Promise<ActionResult<{ key: string }>> {
+  const parsed = keyIdSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  return withUser<{ key: string }>("revealOwnKey", async (s) => {
+    if (s.impersonatorId) return fail("Keys cannot be shown while impersonating.");
+    const key = await db.apiKey.findFirst({ where: { id: parsed.data.id, userId: s.user.id, isPlayground: false }, select: { id: true, name: true, prefix: true, status: true, secretEncrypted: true } });
+    if (!key) return fail("Key not found");
+    if (key.status === "REVOKED") return fail("This key is revoked.");
+    if (!key.secretEncrypted) return fail("This key was created before keys could be shown again. Create a new key to get one you can view.");
+    let plain: string;
+    try {
+      plain = decrypt(key.secretEncrypted);
+    } catch {
+      return fail("This key cannot be shown. Create a new key.");
+    }
+    await audit(s.user.id, "apikey.reveal_own", { type: "ApiKey", id: key.id }, { name: key.name, prefix: key.prefix }, getClientIp(await headers()));
+    return { ok: true, data: { key: plain } };
   });
 }
 
