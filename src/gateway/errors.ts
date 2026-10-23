@@ -22,6 +22,7 @@ export type GatewayErrorCode =
   | "rate_limited"
   | "no_capacity"
   | "no_available_provider"
+  | "upstream_insufficient_balance"
   | "upstream_timeout"
   | "upstream_error"
   | "upstream_overloaded"
@@ -58,6 +59,8 @@ export const ERROR_DEFS: Record<GatewayErrorCode, ErrorDef> = {
   rate_limited: { status: 429, openaiType: "rate_limit_error", kind: "client", message: "Rate limit exceeded. Please retry later." },
   no_capacity: { status: 429, openaiType: "rate_limit_error", kind: "gateway", message: "All capacity for this model is currently busy. Please retry shortly." },
   no_available_provider: { status: 503, openaiType: "server_error", kind: "gateway", message: "No provider is currently available for this model." },
+  // our upstream account ran out of credit: not the customer's balance, so 503 (retryable) rather than 402
+  upstream_insufficient_balance: { status: 503, openaiType: "server_error", kind: "gateway", message: "Insufficient balance on the upstream provider for this model. Please retry later." },
   upstream_timeout: { status: 504, openaiType: "server_error", kind: "upstream", message: "The upstream provider timed out." },
   upstream_error: { status: 502, openaiType: "server_error", kind: "upstream", message: "The upstream provider returned an error." },
   upstream_overloaded: { status: 529, openaiType: "server_error", kind: "upstream", message: "The upstream provider is overloaded. Please retry shortly." },
@@ -119,7 +122,7 @@ export function isGatewayError(e: unknown): e is GatewayError {
 
 export function anthropicTypeFor(status: number, code?: GatewayErrorCode, override?: string): string {
   if (override) return override;
-  if (code === "upstream_overloaded" || code === "no_available_provider") return "overloaded_error";
+  if (code === "upstream_overloaded" || code === "no_available_provider" || code === "upstream_insufficient_balance") return "overloaded_error";
   switch (status) {
     case 400:
       return "invalid_request_error";
