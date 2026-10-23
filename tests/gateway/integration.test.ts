@@ -202,6 +202,7 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     P.all429 = await makeProvider("all429", { formats: ["openai_chat"], keys: [{ s: "fail429x" }, { s: "fail429y" }] });
     P.f500 = await makeProvider("f500", { formats: ["openai_chat"], keys: [{ s: "fail500z" }] });
     P.bad = await makeProvider("bad", { formats: ["openai_chat"], keys: [{ s: "badkey" }] });
+    P.broke = await makeProvider("broke", { formats: ["openai_chat"], keys: [{ s: "nocredit402k" }] });
     P.flaky = await makeProvider("flaky", { formats: ["openai_chat"], settings: { noCooldown: true }, keys: [{ s: "flakystart1" }] });
     P.collect = await makeProvider("collect", { formats: ["openai_chat"], settings: { streamUpstream: true }, keys: [{ s: "col1" }] });
     P.collectFlaky = await makeProvider("colflaky", { formats: ["openai_chat"], settings: { streamUpstream: true, noCooldown: true }, keys: [{ s: "flakystart2" }] });
@@ -225,6 +226,7 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     M.all429 = await makeModel("all429", { caps: ["chat"], providerId: P.all429.id });
     M.f500 = await makeModel("f500", { caps: ["chat"], providerId: P.f500.id });
     M.deny = await makeModel("deny", { caps: ["chat"], providerId: P.deny.id });
+    M.broke = await makeModel("broke", { caps: ["chat"], providerId: P.broke.id });
     M.flaky = await makeModel("flaky", { caps: ["chat"], providerId: P.flaky.id });
     M.collect = await makeModel("collect", { caps: ["chat"], providerId: P.collect.id });
     M.collectFlaky = await makeModel("colflaky", { caps: ["chat"], providerId: P.collectFlaky.id });
@@ -825,6 +827,16 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     expect(log).toMatchObject({ status: "UPSTREAM_ERROR", httpStatus: 500, errorCode: "upstream_error" });
     expect((log.attempts as Array<{ status: number }>).every((a) => a.status === 500)).toBe(true);
     expect(log.internalError).toContain("500");
+  });
+
+  it("an upstream account out of credit (402) is reported as upstream_insufficient_balance, also while its key cools down", async () => {
+    for (let i = 0; i < 2; i++) {
+      const res = await call("/v1/chat/completions", fx.main.key, { model: M.broke, messages: [{ role: "user", content: "x" }] });
+      expect(res.status).toBe(503);
+      const body = await res.json();
+      expect(body.error.code).toBe("upstream_insufficient_balance");
+      expect(body.error.message).toMatch(/upstream provider/);
+    }
   });
 
   it("a key the upstream keeps rejecting (401) is marked INVALID after 2 consecutive failures", async () => {

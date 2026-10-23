@@ -12,6 +12,7 @@
  *   key contains "fail429" -> 429 + retry-after: 2     "fail500" -> 500     "fail529" -> 529 (overloaded)
  *   key contains "bad"     -> 401 invalid key          "slow"    -> +1500ms before responding / first byte
  *   key contains "deny403" -> 403 "this group does not allow" (a reseller key without access to this endpoint; the key itself is fine)
+ *   key contains "nocredit402" -> 402 "Insufficient account balance" (the upstream account is out of credit)
  *   key contains "ftfail"   -> streamed responses carrying `prompt_cache_breakpoint`: a relay backend that does not
  *                              support it (blank " " text, then response.failed invalid_parameter)
  *   key contains "ceflaky"  -> streamed responses: odd requests open like a relay (empty text delta, response.created,
@@ -2561,6 +2562,7 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   if (cred.includes("fail429")) return sendError(ctx, "rate_limit", "Rate limit reached for requests.", { ...rateLimitHeaders(ctx), ...idHeaders() });
   if (cred.includes("deny403")) return sendError(ctx, "invalid_request", `This group does not allow ${path} dispatch`, idHeaders(), 403);
   if (cred.includes("fail500")) return sendError(ctx, "server", "The server had an error while processing your request.", idHeaders());
+  if (cred.includes("nocredit402")) return sendError(ctx, "invalid_request", "Insufficient account balance", idHeaders(), 402);
   if (cred.includes("fail529")) return sendError(ctx, "overloaded", "Overloaded.", idHeaders());
   // x-mock-fail: <status> - any HTTP status, retry-after 7 + request id, native error body
   const failStatus = Number(hdr(req, "x-mock-fail"));
