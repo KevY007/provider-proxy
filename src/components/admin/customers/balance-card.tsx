@@ -15,7 +15,7 @@ import { adjustCustomerBalance } from "@/server/admin/customers-actions";
 import type { CustomerDetail } from "@/server/admin/customers-queries";
 import { AddCreditDialog } from "./credit-dialogs";
 
-export function BalanceCard({ user, isAdmin, spend30d }: { user: CustomerDetail["user"]; isAdmin: boolean; spend30d: number }) {
+export function BalanceCard({ user, isAdmin }: { user: CustomerDetail["user"]; isAdmin: boolean }) {
   const { run, pending, fieldErrors } = useAction();
   const [open, setOpen] = useState(false);
   const [amount, setAmount] = useState("");
@@ -40,9 +40,6 @@ export function BalanceCard({ user, isAdmin, spend30d }: { user: CustomerDetail[
             <MoneyText value={user.creditLimit} />
           </KV>
           <KV label="Monthly spend limit">{user.monthlySpendLimit ? <MoneyText value={user.monthlySpendLimit} /> : "none"}</KV>
-          <KV label="Spend (selected range)">
-            <MoneyText value={spend30d} />
-          </KV>
           <KV label="Auto-recharge">{user.autoRechargeEnabled ? "on" : "off"}</KV>
           <KV label="Stripe customer">{user.stripeCustomerId ? <code className="text-xs">{user.stripeCustomerId}</code> : "-"}</KV>
         </div>

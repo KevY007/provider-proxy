@@ -139,7 +139,7 @@ export function UsageClient(props: UsageClientProps) {
           value={hasSavingsData ? <span className={savings.kind === "saved" ? "text-emerald-600 dark:text-emerald-400" : savings.kind === "paid_more" ? "text-amber-600 dark:text-amber-400" : undefined}>{savings.value}</span> : "-"}
           hint={hasSavingsData ? (savings.pct === null ? undefined : `${savings.pct >= 0 ? "" : "+"}${Math.abs(savings.pct).toFixed(0)}% ${savings.pct >= 0 ? "below" : "above"} official`) : "No priced requests yet"}
         />
-        <StatCard label="Requests" icon={Activity} value={formatCompact(totals.requests)} hint={`${formatNumber(totals.requests)} total`} />
+        <StatCard label="Requests" icon={Activity} value={formatNumber(totals.requests)} />
         <StatCard label="Tokens" icon={Hash} value={formatCompact(totals.inputTokens + totals.outputTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
         <StatCard label="Cached tokens" icon={Layers} value={formatCompact(totals.cachedTokens)} hint={totals.inputTokens ? `${formatPercent(totals.cachedTokens / totals.inputTokens)} of input` : undefined} />
         <StatCard label="Error rate" icon={AlertCircle} value={formatPercent(totals.requests ? totals.errors / totals.requests : 0)} hint={`${formatNumber(totals.errors)} failed`} />

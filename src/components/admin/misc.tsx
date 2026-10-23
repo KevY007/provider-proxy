@@ -11,7 +11,7 @@ export function SlotBar({ inUse, max, className, compact }: { inUse: number; max
   const pct = max && max > 0 ? Math.min(100, (inUse / max) * 100) : 0;
   const tone = pct >= 100 ? "bg-red-500" : pct >= 70 ? "bg-amber-500" : "bg-emerald-500";
   return (
-    <div className={cn("flex items-center gap-2", className)} title={`${inUse} in use of ${max ?? "unlimited"}`}>
+    <div className={cn("flex items-center gap-2", className)}>
       <div className={cn("h-1.5 flex-1 overflow-hidden rounded-full bg-muted", compact ? "min-w-12" : "min-w-20")}>
         <div className={cn("h-full rounded-full transition-all", tone)} style={{ width: `${max ? pct : inUse > 0 ? 8 : 0}%` }} />
       </div>
