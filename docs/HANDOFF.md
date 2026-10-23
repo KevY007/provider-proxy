@@ -1,5 +1,7 @@
 # ProviderProxy — Handoff & Continuation Guide
 
+> **Latest (2026-10-23): read `docs/HANDOFF-2026-10-23.md` first** (price sync WIP, open requests, prod state).
+
 **Read this first.** It is written for a new agent or cloud session picking the project up cold. Originally written at `780d14a`;
 **§5-§6 updated 2026-10-19** (deployment, scale-out and the final feature PRs added to §5) after Steps A, B, D and E were completed in a cloud session on branch `claude/task-49gbi5`
 (same history as `feat/initial-build` plus the new commits - fast-forward `feat/initial-build` to it, or open the PR from it).
