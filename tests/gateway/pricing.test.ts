@@ -245,6 +245,16 @@ describe("pricing: batch discount", () => {
   });
 });
 
+describe("effectiveOfficial: 1h cache writes", () => {
+  it("prices 1h writes from the official 5m write x the model's 1h:5m ratio, not from the customer's discounted price", () => {
+    const s = sellTable({ inputPrice: "4", outputPrice: "20", cacheWritePrice: "5", cacheWrite1hPrice: "8" });
+    const off = officialTable({ officialInputPrice: "4", officialOutputPrice: "20", officialCacheWritePrice: "5" });
+    expect(effectiveOfficial(off, s, "0.3").cacheWrite1h?.toString()).toBe("8");
+    // no official 5m write either: falls back to what the customer pays
+    expect(effectiveOfficial(officialTable({ officialInputPrice: "4" }), s, "0.3").cacheWrite1h?.toString()).toBe("2.4");
+  });
+});
+
 describe("deriveSellUpdates: server tools", () => {
   it("PERCENT_OF_OFFICIAL: official tool price x percent", () => {
     const u = deriveSellUpdates({ officialToolPrices: { web_search_request: "0.01", code_execution_hour: "0.05" } }, null, { mode: "PERCENT_OF_OFFICIAL", value: 100 });

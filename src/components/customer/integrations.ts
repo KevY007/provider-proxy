@@ -110,6 +110,11 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
   });
 
   const guides: IntegrationGuide[] = [];
+  /** Shell lines that set variables for the current terminal only. */
+  const envLines = (env: Record<string, string>, shell: "unix" | "powershell" | "cmd") =>
+    Object.entries(env)
+      .map(([k, v]) => (shell === "unix" ? `export ${k}="${v}"` : shell === "powershell" ? `$env:${k}="${v}"` : `set ${k}=${v}`))
+      .join("\n");
 
   // ------------------------------------------------------------------------------------------------ coding agents
   const claudeEnv = {
@@ -150,11 +155,19 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
         text: "Run claude in your project. /status must show the base URL above. Switch models any time with /model.",
         code: [{ title: "Terminal", lang: "bash", code: `claude\n# inside Claude Code:\n/status\n/model ${ex.opus ?? sonnet}` }],
       },
+      {
+        title: "Optional: skip the settings file and use the key in one terminal only",
+        text: "Instead of steps 2-3, paste this into a terminal. The variables last until you close that window; new windows start without them.",
+        os: {
+          unix: [{ title: "Terminal (bash / zsh)", lang: "bash", code: `${envLines(claudeEnv, "unix")}\nclaude` }],
+          windows: [
+            { title: "PowerShell", lang: "text", code: `${envLines(claudeEnv, "powershell")}\nclaude` },
+            { title: "Command Prompt (cmd)", lang: "text", code: `${envLines(claudeEnv, "cmd")}\nclaude` },
+          ],
+        },
+      },
     ],
-    notes: [
-      "One-off session instead of the settings file: set the same variables in your shell (macOS / Linux: export NAME=value; PowerShell: $env:NAME=\"value\") and run claude.",
-      `Models this key can use: ${listText}.`,
-    ],
+    notes: [`Models this key can use: ${listText}.`],
   });
 
   const codexToml = `# Put these lines at the very TOP of the file, before any [section]

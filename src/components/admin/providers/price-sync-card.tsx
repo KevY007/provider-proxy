@@ -46,7 +46,6 @@ export function PriceSyncCard({ providerId, providerName, initial, canEdit }: { 
   const [basis, setBasis] = useState(cfg.basis);
   const [poolName, setPoolName] = useState(cfg.poolName ?? "");
   const [auto, setAuto] = useState(cfg.auto);
-  const [intervalHours, setIntervalHours] = useState(String(cfg.intervalHours));
   const [maxChange, setMaxChange] = useState(String(cfg.maxAutoChangePct));
   const run = panel.run;
   const selectable = useMemo(() => (run?.proposals ?? []).filter((p) => p.status === "update" || p.status === "review"), [run]);
@@ -109,10 +108,16 @@ export function PriceSyncCard({ providerId, providerName, initial, canEdit }: { 
           )}
           <div className="flex flex-wrap items-end gap-4 md:col-span-2">
             <label className="flex items-center gap-2 text-sm">
-              <Switch checked={auto} onCheckedChange={setAuto} disabled={!canEdit} /> Update automatically every
+              <Switch checked={auto} onCheckedChange={setAuto} disabled={!canEdit} /> Update automatically
             </label>
-            <Input className="w-20" type="number" min={1} value={intervalHours} onChange={(e) => setIntervalHours(e.target.value)} disabled={!canEdit} aria-label="Interval in hours" />
-            <span className="text-sm">hours, applying changes up to</span>
+            <span className="text-sm">
+              (every {panel.schedule.hours} h
+              {!panel.schedule.enabled && <span className="text-destructive">, but automatic updates are off</span>} -{" "}
+              <Link href="/admin/settings" className="underline underline-offset-2">
+                Settings &gt; Monitoring
+              </Link>
+              ), applying changes up to
+            </span>
             <Input className="w-20" type="number" min={1} value={maxChange} onChange={(e) => setMaxChange(e.target.value)} disabled={!canEdit} aria-label="Largest automatic change in percent" />
             <span className="text-sm">% (bigger ones wait for review)</span>
           </div>
@@ -123,7 +128,7 @@ export function PriceSyncCard({ providerId, providerName, initial, canEdit }: { 
               variant="outline"
               disabled={save.pending}
               onClick={() =>
-                void save.run(() => savePriceSyncConfigAction({ providerId, sources, basis, poolName: poolName || null, auto, intervalHours, maxAutoChangePct: maxChange }), { refresh: false, onOk: onPanel })
+                void save.run(() => savePriceSyncConfigAction({ providerId, sources, basis, poolName: poolName || null, auto, intervalHours: cfg.intervalHours, maxAutoChangePct: maxChange }), { refresh: false, onOk: onPanel })
               }
             >
               {save.pending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />} Save settings
