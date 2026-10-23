@@ -226,6 +226,11 @@ export function parsePath(pathname: string, method: string, headers?: Headers): 
     if (m !== "GET") throw methodNotAllowed(m, "GET");
     return base({ endpoint: "/v1/model/info", format: "catalog", op: "model_info" });
   }
+  if (p.startsWith("/v1/requests/")) {
+    // what one call of this customer was billed (pool, usage, charge), by its x-request-id
+    if (m !== "GET") throw methodNotAllowed(m, "GET");
+    return base({ endpoint: "/v1/requests/{id}", format: "catalog", op: "request_get", responseId: decode(p.slice("/v1/requests/".length)) });
+  }
   if (p.startsWith("/v1/models/")) {
     if (m !== "GET") throw methodNotAllowed(m, "GET");
     return base({ endpoint: "/v1/models/{model}", format: "catalog", op: "model_get", model: decode(p.slice("/v1/models/".length)) });

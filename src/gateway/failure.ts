@@ -25,7 +25,12 @@ export interface Failure {
  * the customer's key being wrong) get a gateway-authored native error.
  */
 export function finalError(f: Failure, settings: Pick<SettingValues, "passUpstreamRateLimits">): GatewayError {
-  if (f.mirror) return f.mirror;
+  if (f.mirror) {
+    // a 429 always tells the client when to come back, even when the upstream said nothing
+    const h = f.mirror.opts.headers ?? {};
+    if (f.fk === "rate_limit" && f.mirror.opts.retryAfterSec === undefined && !Object.keys(h).some((k) => k.toLowerCase() === "retry-after")) f.mirror.opts.retryAfterSec = f.retryAfterSec ?? 2;
+    return f.mirror;
+  }
   let code: GatewayErrorCode;
   let opts: ConstructorParameters<typeof GatewayError>[2] = { internal: `${f.status || "network"} ${f.fk}: ${f.internal}`.slice(0, 4000), upstreamStatus: f.status || undefined };
   switch (f.fk) {
