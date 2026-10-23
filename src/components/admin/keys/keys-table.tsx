@@ -18,12 +18,15 @@ export function KeysTable({
   page,
   pageSize,
   groups,
+  bin = false,
 }: {
   rows: ApiKeyRow[];
   total: number;
   page: number;
   pageSize: number;
   groups: Array<{ id: string; name: string }>;
+  /** the revoked-keys bin: no status filter */
+  bin?: boolean;
 }) {
   const { set } = useUrlFilters();
   const columns = useMemo<ColumnDef<ApiKeyRow>[]>(
@@ -88,22 +91,23 @@ export function KeysTable({
       hideColumnToggle
       pageSize={pageSize}
       getRowId={(r) => r.id}
-      emptyTitle="No API keys match"
-      emptyDescription="Try clearing the filters."
+      emptyTitle={bin ? "No revoked keys" : "No API keys match"}
+      emptyDescription={bin ? "Revoked keys show up here until they are deleted." : "Try clearing the filters."}
       serverPagination={{ page, pageSize, total, onPageChange: (p) => set("page", p ? String(p) : null, { keepPage: true }) }}
       toolbar={
         <>
           <FilterInput param="q" placeholder="Owner email or key name" className="w-56" />
           <FilterInput param="prefix" placeholder="Key prefix (sk-pp-…)" className="w-44" />
-          <FilterSelect
-            param="status"
-            label="Status"
-            options={[
-              { value: "ACTIVE", label: "Active" },
-              { value: "DISABLED", label: "Disabled" },
-              { value: "REVOKED", label: "Revoked" },
-            ]}
-          />
+          {!bin && (
+            <FilterSelect
+              param="status"
+              label="Status"
+              options={[
+                { value: "ACTIVE", label: "Active" },
+                { value: "DISABLED", label: "Disabled" },
+              ]}
+            />
+          )}
           <FilterSelect param="group" label="Group" options={[{ value: "none", label: "(inherit)" }, ...groups.map((g) => ({ value: g.id, label: g.name }))]} />
           <ResetFilters keys={["q", "prefix", "status", "group"]} />
         </>

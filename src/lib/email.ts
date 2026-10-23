@@ -229,6 +229,24 @@ export const emailTemplates = {
     };
   },
 
+  /** The balance reached zero or below: requests are now rejected (or, with a credit line, running on it). */
+  async balanceExhausted(p: { name?: string | null; balance: MoneyLike; creditLeft?: MoneyLike | null; topUpUrl?: string }): Promise<TemplateResult> {
+    const { siteName } = await getSettings();
+    const credit = p.creditLeft !== undefined && p.creditLeft !== null && Number(p.creditLeft) > 0;
+    const effect = credit
+      ? `You are now using your credit line (<strong>${formatUSD(p.creditLeft!)}</strong> left). API requests will be rejected once it is used up.`
+      : "API requests are being rejected until you add credit.";
+    return {
+      subject: `Your ${siteName} balance has run out`,
+      html: layout({
+        siteName,
+        title: "Balance used up",
+        body: `${hello(p.name)}<p>Your balance is <strong>${formatUSD(p.balance)}</strong>. ${effect} Add credit to keep your apps running, or turn on auto-recharge.</p>`,
+        cta: { label: "Add credit", url: p.topUpUrl ?? `${appUrl}/dashboard/billing` },
+      }),
+    };
+  },
+
   async paymentFailed(p: { name?: string | null; amount: MoneyLike; reason?: string | null }): Promise<TemplateResult> {
     const { siteName } = await getSettings();
     return {

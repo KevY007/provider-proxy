@@ -407,7 +407,8 @@ async function writeBatch(batch: MeterEntry[], opts: { financials?: boolean } = 
       safe(() => triggerAutoRecharge(userId));
     }
     const level = row.lowBalanceAlertAt ? toDecimal(row.lowBalanceAlertAt) : toDecimal(row.autoRechargeThreshold);
-    if (bal.lt(level) && allow(`lb:${userId}`, 10 * 60_000)) safe(() => maybeSendLowBalanceAlert(userId));
+    // below the alert level, or used up (zero / negative: its own "balance has run out" email)
+    if ((bal.lt(level) || bal.lte(0)) && allow(`lb:${userId}:${bal.lte(0) ? "zero" : "low"}`, 10 * 60_000)) safe(() => maybeSendLowBalanceAlert(userId));
   }
 }
 

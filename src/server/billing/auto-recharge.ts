@@ -183,10 +183,14 @@ async function failed(
 const LOW_BALANCE_AUDIT_ACTION = "billing.low_balance_alert";
 const LOW_BALANCE_DEDUPE_MS = 24 * 3600_000;
 
+const BALANCE_EXHAUSTED_AUDIT_ACTION = "billing.balance_exhausted_alert";
+
 /**
- * Email the customer when their balance is below their alert level (`lowBalanceAlertAt`, falling back to the
- * auto-recharge threshold). Deduped to one email per 24h per customer (Redis/memory gate + audit-log check so it
- * also holds across restarts). Never throws.
+ * Email the customer about their balance (deduped to one email of each kind per 24h per customer, by a Redis/memory
+ * gate plus an audit-log check so it also holds across restarts). Never throws.
+ *  - below their alert level (`lowBalanceAlertAt`, falling back to the auto-recharge threshold): "running low";
+ *  - at zero or below: "has run out" - its own email, so a customer warned earlier the same day still hears that
+ *    requests are now being rejected (sent even with auto-recharge on: if they are at zero, it did not top them up).
  */
 export async function maybeSendLowBalanceAlert(userId: string): Promise<void> {
   try {
@@ -199,6 +203,7 @@ export async function maybeSendLowBalanceAlert(userId: string): Promise<void> {
         name: true,
         status: true,
         balance: true,
+        creditLimit: true,
         lowBalanceAlertAt: true,
         autoRechargeEnabled: true,
         autoRechargeThreshold: true,
@@ -206,26 +211,27 @@ export async function maybeSendLowBalanceAlert(userId: string): Promise<void> {
       },
     });
     if (!user || user.status !== "ACTIVE") return;
+    const balance = toDecimal(user.balance);
+    const exhausted = balance.lte(0);
     const level = user.lowBalanceAlertAt ?? user.autoRechargeThreshold;
-    if (!toDecimal(user.balance).lt(toDecimal(level))) return;
+    if (!exhausted && !balance.lt(toDecimal(level))) return;
     // Auto-recharge will top them up silently unless they set an explicit alert level.
-    if (user.autoRechargeEnabled && user.defaultPaymentMethodId && !user.lowBalanceAlertAt && isStripeConfigured()) return;
+    if (!exhausted && user.autoRechargeEnabled && user.defaultPaymentMethodId && !user.lowBalanceAlertAt && isStripeConfigured()) return;
 
-    if (!(await once(`lowbal:${userId}`, LOW_BALANCE_DEDUPE_MS))) return;
+    const action = exhausted ? BALANCE_EXHAUSTED_AUDIT_ACTION : LOW_BALANCE_AUDIT_ACTION;
+    if (!(await once(`${exhausted ? "zerobal" : "lowbal"}:${userId}`, LOW_BALANCE_DEDUPE_MS))) return;
     const recent = await db.auditLog.findFirst({
-      where: {
-        action: LOW_BALANCE_AUDIT_ACTION,
-        targetType: "User",
-        targetId: userId,
-        createdAt: { gt: new Date(Date.now() - LOW_BALANCE_DEDUPE_MS) },
-      },
+      where: { action, targetType: "User", targetId: userId, createdAt: { gt: new Date(Date.now() - LOW_BALANCE_DEDUPE_MS) } },
       select: { id: true },
     });
     if (recent) return;
 
-    await sendTemplate(user.email, emailTemplates.lowBalance({ name: user.name, balance: user.balance }));
-    await audit(null, LOW_BALANCE_AUDIT_ACTION, { type: "User", id: userId }, { balance: toDbString(user.balance), level: toDbString(level) });
-    logger.info("low balance alert sent", { userId, balance: formatUSD(user.balance) });
+    const template = exhausted
+      ? emailTemplates.balanceExhausted({ name: user.name, balance: user.balance, creditLeft: balance.add(toDecimal(user.creditLimit)) })
+      : emailTemplates.lowBalance({ name: user.name, balance: user.balance });
+    await sendTemplate(user.email, await template);
+    await audit(null, action, { type: "User", id: userId }, { balance: toDbString(user.balance), level: toDbString(level) });
+    logger.info(exhausted ? "balance exhausted alert sent" : "low balance alert sent", { userId, balance: formatUSD(user.balance) });
   } catch (err) {
     logger.error("low balance alert failed", { userId, err });
   }

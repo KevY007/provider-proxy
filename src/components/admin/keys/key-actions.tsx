@@ -1,13 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { Ban, Eye, Power, PowerOff } from "lucide-react";
+import { Ban, Eye, Power, PowerOff, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { CopyButton } from "@/components/common/copy-button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useAction } from "@/components/admin/use-action";
-import { revealApiKey, setApiKeyStatus } from "@/server/admin/keys-actions";
+import { deleteAllRevokedApiKeys, deleteRevokedApiKey, revealApiKey, setApiKeyStatus } from "@/server/admin/keys-actions";
 
 /**
  * Admin-only: fetch the full key on demand (audited) and show it with a copy button. `compact` is the icon-only
@@ -47,7 +47,25 @@ export function RevealKey({ id, name, compact }: { id: string; name: string; com
 /** Enable / disable / revoke buttons for one customer API key. */
 export function ApiKeyActions({ id, name, status }: { id: string; name: string; status: string }) {
   const { run, pending } = useAction();
-  if (status === "REVOKED") return <span className="text-xs text-muted-foreground">Revoked</span>;
+  if (status === "REVOKED") {
+    return (
+      <ConfirmDialog
+        destructive
+        title={`Delete key "${name}" permanently?`}
+        description="The revoked key is removed from the list for good. Its request logs and charges stay."
+        confirmLabel="Delete key"
+        trigger={
+          <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-500" disabled={pending}>
+            <Trash2 className="size-3.5" /> Delete
+          </Button>
+        }
+        onConfirm={async () => {
+          const res = await run(() => deleteRevokedApiKey(id));
+          if (!res.ok) throw new Error(res.error);
+        }}
+      />
+    );
+  }
   return (
     <div className="flex items-center justify-end gap-1">
       <RevealKey id={id} name={name} />
@@ -76,5 +94,27 @@ export function ApiKeyActions({ id, name, status }: { id: string; name: string; 
         }}
       />
     </div>
+  );
+}
+
+/** "Empty bin": permanently delete every revoked key. */
+export function EmptyRevokedKeys({ count }: { count: number }) {
+  const { run, pending } = useAction();
+  return (
+    <ConfirmDialog
+      destructive
+      title={`Delete all ${count} revoked key${count === 1 ? "" : "s"} permanently?`}
+      description="They are removed for good. Request logs and charges stay."
+      confirmLabel="Delete all"
+      trigger={
+        <Button variant="outline" size="sm" className="text-red-500 hover:text-red-500" disabled={pending || count === 0}>
+          <Trash2 className="size-3.5" /> Empty bin
+        </Button>
+      }
+      onConfirm={async () => {
+        const res = await run(() => deleteAllRevokedApiKeys());
+        if (!res.ok) throw new Error(res.error);
+      }}
+    />
   );
 }
