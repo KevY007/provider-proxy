@@ -509,6 +509,11 @@ async function completeUsage(ctx: Ctx, usage: Usage | null, outputText: string, 
   return applyToolPolicy(ctx, u);
 }
 
+/** The upstream itself reported token usage (not just our estimate). */
+function hasReportedUsage(u: Usage | null): boolean {
+  return !!u && (u.inputTokens > 0 || u.outputTokens > 0 || u.cachedTokens > 0 || u.cacheWriteTokens > 0);
+}
+
 /** web_search_2026* / web_fetch_2026* in the request: Anthropic runs code execution for free next to them (dynamic filtering). */
 function declaresFreeCodeExecution(body: JsonObject | null): boolean {
   const tools = body && Array.isArray(body.tools) ? body.tools : [];
@@ -870,9 +875,14 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   const path = ctx.path!;
   const reported = processor.usage();
   let usage = await completeUsage(ctx, reported, processor.outputText(), path.op, processor.reasoningText?.() ?? "");
-  // a stream that did not reach its end has no final usage (Anthropic reports output_tokens: 1 in message_start and
-  // the real count only in message_delta): bill at least what the client received
-  if (info.reason !== "completed" && TOKEN_OPS.has(path.op)) {
+  const delivered = processor.outputText().trim() !== "" || (processor.reasoningText?.() ?? "").trim() !== "";
+  // failed / cancelled before the client received anything, and the upstream reported no usage: nothing is billed (no
+  // estimate - the upstream does not bill a request that produced nothing either)
+  if (info.reason !== "completed" && info.reason !== "budget" && !delivered && !hasReportedUsage(reported) && TOKEN_OPS.has(path.op)) {
+    usage = emptyUsage();
+  } else if (info.reason !== "completed" && TOKEN_OPS.has(path.op)) {
+    // a stream that did not reach its end has no final usage (Anthropic reports output_tokens: 1 in message_start and
+    // the real count only in message_delta): bill at least what the client received
     const seen = await countTokens(processor.outputText());
     if (seen > usage.outputTokens) usage = { ...usage, outputTokens: seen, estimated: true };
   }
@@ -919,13 +929,14 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else if (info.inband && err) {
     // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
     recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
+    const unbilled = providerSettings(cand.route.provider).unbilledStreamErrors && !hasReportedUsage(reported);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: err.status >= 400 ? err.status : 502,
       errorCode: err.status === 429 ? "rate_limited" : err.status === 529 ? "upstream_overloaded" : "upstream_error",
       errorMessage: "The upstream provider returned an error.",
-      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}`,
-      usage,
+      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}${unbilled ? " (not billed: the upstream does not bill a stream it ends with an error)" : ""}`,
+      usage: unbilled ? emptyUsage() : usage,
       ttftMs: info.firstOutputMs,
     });
   } else {

@@ -18,6 +18,7 @@ import { createGroup, deleteGroup, setDefaultGroup, updateGroup } from "@/server
 import type { GroupRow } from "@/server/admin/groups-queries";
 import { EFFORT_MATCHES, EFFORTS, type EffortMatch, type EffortRoute } from "@/gateway/effort-route";
 import { slugify } from "@/lib/utils";
+import { describePercent, multiplierToPercent, percentToMultiplier } from "@/lib/percent";
 
 interface Options {
   models: Array<{ value: string; label: string; hint?: string }>;
@@ -52,7 +53,7 @@ export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Optio
         </button>
       ),
     },
-    { accessorKey: "priceMultiplier", header: "Multiplier", cell: ({ row }) => <span className="tabular-nums">{Number(row.original.priceMultiplier)}×</span> },
+    { accessorKey: "priceMultiplier", header: "Customers pay", cell: ({ row }) => <span className="tabular-nums" title="of each model's price (model prices default to the official list price)">{multiplierToPercent(row.original.priceMultiplier)}%</span> },
     {
       id: "visibility",
       header: "Visibility",
@@ -137,7 +138,7 @@ export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Optio
     <>
       <PageHeader
         title="Groups"
-        description="Pools / pricing tiers. A group's multiplier scales model sell prices, and it can restrict models, provider tags and rate limits."
+        description="Pools / pricing tiers. Customers in a pool pay a percentage of each model's price (model prices default to the official list price, what OpenAI / Anthropic charge directly). A pool can also restrict models, provider tags and rate limits."
         actions={
           <Button size="sm" onClick={() => setEditing("new")}>
             <Plus className="size-4" /> New group
@@ -204,6 +205,8 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
     effortRoutes: group?.effortRoutes ?? ([] as EffortRoute[]),
   });
   const set = <K extends keyof typeof f>(k: K, v: (typeof f)[K]) => setF((s) => ({ ...s, [k]: v }));
+  const [pct, setPct] = useState(multiplierToPercent(f.priceMultiplier)); // stored as a factor (0.5), typed as a percentage (50)
+  const data = { ...f, priceMultiplier: percentToMultiplier(pct) };
 
   return (
     <FormDialog
@@ -214,7 +217,7 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
       description={group ? `${group.users} customers and ${group.apiKeys} API keys use this group.` : "Customers and API keys are assigned to a group (pool)."}
       submitLabel={group ? "Save group" : "Create group"}
       pending={pending}
-      onSubmit={async () => (group ? await run(() => updateGroup(group.id, f)) : await run(() => createGroup(f))).ok}
+      onSubmit={async () => (group ? await run(() => updateGroup(group.id, data)) : await run(() => createGroup(data))).ok}
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <TextField
@@ -237,7 +240,16 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
           error={fieldErrors.slug}
           description={group ? "Renaming updates route pool restrictions." : undefined}
         />
-        <NumberField label="Price multiplier" suffix="×" value={f.priceMultiplier} onChange={(v) => set("priceMultiplier", v)} error={fieldErrors.priceMultiplier} description="Applied to model sell prices (0.8 = 20% off, 1.2 = 20% markup)." min={0} />
+        <NumberField
+          label="Customers pay"
+          suffix="% of the model price"
+          value={pct}
+          onChange={setPct}
+          error={fieldErrors.priceMultiplier}
+          min={0}
+          step="1"
+          description={`${describePercent(Number(pct))} of each model's price. Model prices default to 100% of the official list price, so ${Number(pct)}% here = ${Number(pct)}% of what OpenAI / Anthropic charge directly.`}
+        />
         <NumberField label="Sort order" step="1" value={f.sortOrder} onChange={(v) => set("sortOrder", v)} error={fieldErrors.sortOrder} />
         <NumberField label="RPM limit" step="1" min={1} value={f.rpmLimit} onChange={(v) => set("rpmLimit", v)} error={fieldErrors.rpmLimit} placeholder="unlimited" description="Requests per minute per customer key in this group." />
         <NumberField label="Max concurrency" step="1" min={1} value={f.maxConcurrency} onChange={(v) => set("maxConcurrency", v)} error={fieldErrors.maxConcurrency} placeholder="default" description="Concurrent request slots (blank = global default)." />
