@@ -246,5 +246,7 @@ describe.skipIf(!dbOk)("runPriceSync / applyPriceSyncRun (database)", () => {
     expect(log.user?.email).toBe(PRICING_BOT_EMAIL);
     expect(log.price.toString()).toBe("0");
     expect(Number(log.cost.toString())).toBeGreaterThan(0);
+    // the throwaway key is gone again: no standing internal key in the key lists
+    expect(await db.apiKey.count({ where: { userId: log.userId!, name: "Pricing fetch AI run" } })).toBe(0);
   });
 });
