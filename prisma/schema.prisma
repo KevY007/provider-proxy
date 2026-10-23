@@ -280,6 +280,8 @@ model Provider {
   routes   ModelRoute[]
   requests RequestLog[]
   checks   HealthCheck[]
+  priceSync     PriceSync?
+  priceSyncRuns PriceSyncRun[]
 }
 
 model ProviderKey {
@@ -650,6 +652,43 @@ model JobRun {
   result    Json?
   error     String?
   updatedAt DateTime  @updatedAt
+}
+
+/// AI price sync of one provider (src/server/pricing/price-sync): the pricing pages to read, how the prices found there
+/// become our route costs (the vendor's own list price, or a reseller pool's % of it) and whether it applies them by itself.
+model PriceSync {
+  providerId       String    @id
+  provider         Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  sources          Json      @default("[]") // [{ url, label? }]
+  basis            String    @default("official") // "official" (the page lists this provider's own prices) | "pool" (a reseller: % of official)
+  poolName         String? // basis "pool": the pool's name as the page writes it ("Pro Pool", "Max Pool")
+  modelSources     Json      @default("{}") // { "<routeId>": "<source url>" | "off" } (default: every source)
+  auto             Boolean   @default(false)
+  intervalHours    Int       @default(10)
+  maxAutoChangePct Int       @default(50) // an automatic run applies no change bigger than this (it waits for review)
+  lastRunAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+}
+
+/// One price sync run: what the AI read, what it proposed and what was applied.
+model PriceSyncRun {
+  id         String    @id @default(cuid())
+  providerId String
+  provider   Provider  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  trigger    String // "manual" | "auto"
+  status     String // "running" | "ok" | "failed"
+  proposals  Json      @default("[]")
+  pool       Json? // basis "pool": { name, percent, chargesCacheWrites, verified }
+  sources    Json      @default("[]") // [{ url, ok, chars, error? }]
+  requestIds String[]  @default([])
+  costUsd    Decimal   @default(0) @db.Decimal(24, 12)
+  applied    Json? // { at, by, items: [...] }
+  error      String?
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([providerId, createdAt])
 }
 
 model Setting {
