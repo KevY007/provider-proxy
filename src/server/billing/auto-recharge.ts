@@ -210,7 +210,7 @@ export async function maybeSendLowBalanceAlert(userId: string): Promise<void> {
         defaultPaymentMethodId: true,
       },
     });
-    if (!user || user.status !== "ACTIVE") return;
+    if (!user || user.status !== "ACTIVE" || user.email.endsWith("@system.internal")) return; // internal customers (Pricing fetch AI)
     const balance = toDecimal(user.balance);
     const exhausted = balance.lte(0);
     const level = user.lowBalanceAlertAt ?? user.autoRechargeThreshold;

@@ -15,7 +15,7 @@ import { getJobRuns } from "@/server/maintenance";
 export const metadata = { title: "Status" };
 export const dynamic = "force-dynamic";
 
-const JOB_LABEL: Record<string, string> = { upkeep: "Upkeep (health from traffic, sweeps, dead letters)", billing: "Billing (auto-recharge, postpaid)", probes: "Uptime pings" };
+const JOB_LABEL: Record<string, string> = { upkeep: "Upkeep (health from traffic, sweeps, dead letters)", billing: "Billing (auto-recharge, postpaid)", probes: "Uptime pings", priceSync: "AI price sync (providers with auto update on)" };
 
 export default async function Page({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   await requireAdmin();
@@ -57,8 +57,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ul className="grid gap-2 text-sm sm:grid-cols-3">
-            {(["upkeep", "billing", "probes"] as const).map((name) => {
+          <ul className="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+            {(["upkeep", "billing", "probes", "priceSync"] as const).map((name) => {
               const j = jobs.find((x) => x.name === name);
               return (
                 <li key={name} className="rounded-md border p-2">

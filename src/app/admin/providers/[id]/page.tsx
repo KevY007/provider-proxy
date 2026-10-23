@@ -9,6 +9,8 @@ import { ProviderSidePanels } from "@/components/admin/providers/provider-side-p
 import { getPreset } from "@/gateway/providers/presets";
 import { requireAdmin } from "@/lib/auth/session";
 import { getProviderDetail } from "@/server/admin/providers-queries";
+import { getPriceSyncPanel } from "@/server/admin/price-sync-queries";
+import { PriceSyncCard } from "@/components/admin/providers/price-sync-card";
 
 export const metadata = { title: "Provider" };
 export const dynamic = "force-dynamic";
@@ -16,8 +18,8 @@ export const dynamic = "force-dynamic";
 export default async function Page({ params }: { params: Promise<{ id: string }> }) {
   const { user } = await requireAdmin();
   const { id } = await params;
-  const detail = await getProviderDetail(id);
-  if (!detail) notFound();
+  const [detail, priceSync] = await Promise.all([getProviderDetail(id), getPriceSyncPanel(id)]);
+  if (!detail || !priceSync) notFound();
   const { provider } = detail;
   const canEdit = user.role === "ADMIN";
   return (
@@ -38,6 +40,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
       <div className="space-y-6">
         <ProviderKeys providerId={provider.id} keys={detail.keys} initialSlots={detail.slots} providerMaxConcurrency={provider.maxConcurrency} canEdit={canEdit} />
         <ProviderEditor provider={provider} canEdit={canEdit} routeCount={detail.routes.length} keyCount={detail.keys.length} presetFormats={provider.preset === "custom" ? null : (getPreset(provider.preset)?.formats.slice() ?? null)} />
+        <PriceSyncCard key={priceSync.run?.id ?? "none"} providerId={provider.id} providerName={provider.name} initial={priceSync} canEdit={canEdit} />
         <ProviderSidePanels checks={detail.checks} routes={detail.routes} />
       </div>
     </>
