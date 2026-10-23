@@ -11,3 +11,12 @@ export async function checkUpstreamUsageAction(input: unknown) {
     return { data: report, message: report.supported ? "Upstream usage loaded" : "This provider does not publish per-key usage" };
   });
 }
+
+/** "Refresh" on the upstream balances card: reads every upstream balance now. */
+export async function refreshUpstreamBalancesAction() {
+  return adminAction<{ at: string | null }>({ adminOnly: false }, async () => {
+    const { refreshUpstreamBalances } = await import("./upstream-balances");
+    const snap = await refreshUpstreamBalances();
+    return { data: { at: snap.at }, message: "Upstream balances refreshed" };
+  });
+}

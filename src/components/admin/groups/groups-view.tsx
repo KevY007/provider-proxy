@@ -18,7 +18,9 @@ import { createGroup, deleteGroup, setDefaultGroup, updateGroup } from "@/server
 import type { GroupRow } from "@/server/admin/groups-queries";
 import { EFFORT_MATCHES, EFFORTS, type EffortMatch, type EffortRoute } from "@/gateway/effort-route";
 import { slugify } from "@/lib/utils";
-import { describePercent, multiplierToPercent, percentToMultiplier } from "@/lib/percent";
+import { multiplierToPercent, percentToMultiplier } from "@/lib/percent";
+import { PoolPricingPanel, type PoolBasis } from "@/components/admin/pricing/pool-pricing-panel";
+import type { PoolSampleModel } from "@/server/admin/groups-queries";
 
 interface Options {
   models: Array<{ value: string; label: string; hint?: string }>;
@@ -29,7 +31,7 @@ interface Options {
 
 const EFFORT_LABELS: Record<EffortMatch, string> = { default: "not set", none: "none", minimal: "minimal", low: "low", medium: "medium", high: "high", xhigh: "xhigh", max: "max" };
 
-export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Options }) {
+export function GroupsView({ rows, options, samples = [] }: { rows: GroupRow[]; options: Options; samples?: PoolSampleModel[] }) {
   const { run } = useAction();
   const [editing, setEditing] = useState<GroupRow | "new" | null>(null);
   const [deleting, setDeleting] = useState<GroupRow | null>(null);
@@ -53,7 +55,15 @@ export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Optio
         </button>
       ),
     },
-    { accessorKey: "priceMultiplier", header: "Customers pay", cell: ({ row }) => <span className="tabular-nums" title="of each model's price (model prices default to the official list price)">{multiplierToPercent(row.original.priceMultiplier)}%</span> },
+    {
+      accessorKey: "priceMultiplier",
+      header: "Customers pay",
+      cell: ({ row }) => (
+        <span className="tabular-nums">
+          {multiplierToPercent(row.original.priceMultiplier)}% <span className="text-xs text-muted-foreground">{row.original.priceBasis === "cost" ? "of upstream cost" : "of model price"}</span>
+        </span>
+      ),
+    },
     {
       id: "visibility",
       header: "Visibility",
@@ -157,7 +167,7 @@ export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Optio
         hideColumnToggle
       />
 
-      {editing && <GroupDialog key={editing === "new" ? "new" : editing.id} group={editing === "new" ? null : editing} options={options} onClose={() => setEditing(null)} />}
+      {editing && <GroupDialog key={editing === "new" ? "new" : editing.id} group={editing === "new" ? null : editing} options={options} samples={samples} onClose={() => setEditing(null)} />}
 
       <ConfirmDialog
         open={!!deleting}
@@ -187,7 +197,7 @@ export function GroupsView({ rows, options }: { rows: GroupRow[]; options: Optio
   );
 }
 
-function GroupDialog({ group, options, onClose }: { group: GroupRow | null; options: Options; onClose: () => void }) {
+function GroupDialog({ group, options, samples, onClose }: { group: GroupRow | null; options: Options; samples: PoolSampleModel[]; onClose: () => void }) {
   const { run, fieldErrors, pending } = useAction();
   const [slugTouched, setSlugTouched] = useState(!!group);
   const [f, setF] = useState({
@@ -195,6 +205,7 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
     slug: group?.slug ?? "",
     description: group?.description ?? "",
     priceMultiplier: group?.priceMultiplier ?? "1",
+    priceBasis: (group?.priceBasis ?? "model") as PoolBasis,
     providerTags: group?.providerTags ?? ([] as string[]),
     allowedModels: group?.allowedModels ?? ([] as string[]),
     isDefault: group?.isDefault ?? false,
@@ -240,21 +251,21 @@ function GroupDialog({ group, options, onClose }: { group: GroupRow | null; opti
           error={fieldErrors.slug}
           description={group ? "Renaming updates route pool restrictions." : undefined}
         />
-        <NumberField
-          label="Customers pay"
-          suffix="% of the model price"
-          value={pct}
-          onChange={setPct}
-          error={fieldErrors.priceMultiplier}
-          min={0}
-          step="1"
-          description={`${describePercent(Number(pct))} of each model's price. Model prices default to 100% of the official list price, so ${Number(pct)}% here = ${Number(pct)}% of what OpenAI / Anthropic charge directly.`}
-        />
         <NumberField label="Sort order" step="1" value={f.sortOrder} onChange={(v) => set("sortOrder", v)} error={fieldErrors.sortOrder} />
         <NumberField label="RPM limit" step="1" min={1} value={f.rpmLimit} onChange={(v) => set("rpmLimit", v)} error={fieldErrors.rpmLimit} placeholder="unlimited" description="Requests per minute per customer key in this group." />
         <NumberField label="Max concurrency" step="1" min={1} value={f.maxConcurrency} onChange={(v) => set("maxConcurrency", v)} error={fieldErrors.maxConcurrency} placeholder="default" description="Concurrent request slots (blank = global default)." />
       </div>
       <TextAreaField label="Description" value={f.description} onChange={(v) => set("description", v)} rows={2} error={fieldErrors.description} />
+      <PoolPricingPanel
+        poolSlug={group?.slug ?? f.slug}
+        basis={f.priceBasis}
+        onBasis={(b) => set("priceBasis", b)}
+        pct={pct}
+        onPct={setPct}
+        error={fieldErrors.priceMultiplier}
+        samples={samples}
+        allowedModels={f.allowedModels}
+      />
       <TagsField
         label="Provider tags"
         values={f.providerTags}

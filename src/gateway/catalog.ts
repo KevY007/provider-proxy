@@ -1,9 +1,12 @@
-import type { Decimal } from "@/lib/money";
+import { Decimal } from "@/lib/money";
 import type { ConfigSnapshot, GroupRec, ModelRec } from "./cache";
 import type { Ctx } from "./context";
 import { GatewayError } from "./errors";
 import { liteLLMMode, modalities, openRouterPricing, plainNumber, priceMatrix } from "./price-view";
-import { effectiveMultiplier } from "./pricing";
+import { effectiveMultiplier, type PriceTable } from "./pricing";
+import { poolPriceTable } from "./pool-prices";
+
+const ONE = new Decimal(1);
 import { eligibleRoutes } from "./select";
 import { ENDPOINT_FORMATS } from "./providers/presets";
 import type { Json } from "./types";
@@ -33,8 +36,8 @@ const created = (m: ModelRec) => Math.floor(m.createdAt / 1000);
  * + our extension `x_pricing` (per-1M-token / per-image / per-second units with official price and savings).
  * Prices are the CALLER's effective prices (model price x group x customer multiplier).
  */
-export function openaiModel(m: ModelRec, mult: Decimal): Json {
-  const matrix = priceMatrix(m.sell, m.official, mult);
+export function openaiModel(m: ModelRec, mult: Decimal, sell: PriceTable = m.sell): Json {
+  const matrix = priceMatrix(sell, m.official, mult);
   return {
     id: m.slug,
     object: "model",
@@ -43,7 +46,7 @@ export function openaiModel(m: ModelRec, mult: Decimal): Json {
     name: m.displayName,
     ...(m.description ? { description: m.description } : {}),
     context_length: m.contextWindow,
-    pricing: openRouterPricing(m.sell, mult),
+    pricing: openRouterPricing(sell, mult),
     top_provider: { context_length: m.contextWindow, max_completion_tokens: m.maxOutput, is_moderated: false },
     architecture: modalities(m.capabilities),
     x_pricing: { unit: "usd_per_1m", currency: "USD", yours: matrix.yours, official: matrix.official, savings_pct: matrix.savings_pct, units: matrix.unit, ...(Object.keys(matrix.tools).length ? { tools: matrix.tools } : {}) },
@@ -73,18 +76,18 @@ function geminiModel(m: ModelRec): Json {
 }
 
 /** LiteLLM `model_info` for one model at the caller's price (USD per token / image / second). */
-export function liteLLMEntry(m: ModelRec, mult: Decimal): Json {
+export function liteLLMEntry(m: ModelRec, mult: Decimal, t: PriceTable = m.sell): Json {
   const per = (v: Decimal | null | undefined) => plainNumber(v ? v.times(mult).div(1_000_000) : null) ?? 0;
   const flat = (v: Decimal | null | undefined) => plainNumber(v ? v.times(mult) : null) ?? 0;
   const caps = m.capabilities;
   const info: Record<string, Json> = {
-    input_cost_per_token: per(m.sell.input),
-    output_cost_per_token: per(m.sell.output),
-    cache_read_input_token_cost: m.sell.cachedInput ? per(m.sell.cachedInput) : null,
-    cache_creation_input_token_cost: m.sell.cacheWrite ? per(m.sell.cacheWrite) : null,
-    output_cost_per_image: m.sell.image ? flat(m.sell.image) : null,
-    output_cost_per_second: m.sell.perSecond ? flat(m.sell.perSecond) : null,
-    input_cost_per_second: m.sell.perMinute ? plainNumber(m.sell.perMinute.times(mult).div(60)) : null,
+    input_cost_per_token: per(t.input),
+    output_cost_per_token: per(t.output),
+    cache_read_input_token_cost: t.cachedInput ? per(t.cachedInput) : null,
+    cache_creation_input_token_cost: t.cacheWrite ? per(t.cacheWrite) : null,
+    output_cost_per_image: t.image ? flat(t.image) : null,
+    output_cost_per_second: t.perSecond ? flat(t.perSecond) : null,
+    input_cost_per_second: t.perMinute ? plainNumber(t.perMinute.times(mult).div(60)) : null,
     max_tokens: m.maxOutput ?? m.contextWindow ?? null,
     max_input_tokens: m.contextWindow,
     max_output_tokens: m.maxOutput,
@@ -119,14 +122,14 @@ export function catalogResponse(ctx: Ctx): { body: Json } {
       if (anthropic) {
         return { body: { data: models.map(anthropicModel), has_more: false, first_id: models[0]?.slug ?? null, last_id: models[models.length - 1]?.slug ?? null } };
       }
-      return { body: { object: "list", data: models.map((m) => openaiModel(m, mult)) } };
+      return { body: { object: "list", data: models.map((m) => openaiModel(m, ONE, poolPriceTable(snap, m, ctx.group, mult))) } };
     }
     case "model_get": {
       const m = lookup(p.model ?? "");
-      return { body: anthropic ? anthropicModel(m) : openaiModel(m, mult) };
+      return { body: anthropic ? anthropicModel(m) : openaiModel(m, ONE, poolPriceTable(snap, m, ctx.group, mult)) };
     }
     case "model_info":
-      return { body: { data: visibleModels(snap, ctx).map((m) => liteLLMEntry(m, mult)) } };
+      return { body: { data: visibleModels(snap, ctx).map((m) => liteLLMEntry(m, ONE, poolPriceTable(snap, m, ctx.group, mult))) } };
     case "gemini_models_list":
       return { body: { models: visibleModels(snap, ctx).map(geminiModel) } };
     case "gemini_model_get":

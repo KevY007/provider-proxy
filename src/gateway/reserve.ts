@@ -6,7 +6,7 @@ import { forceSharedBalance, releaseHold, reserveHold, settleHold, isHoldOpen, t
 import { userMonthlySpend } from "./limits";
 import { fileBytes, getField } from "./multipart";
 import type { StreamProcessor } from "./processor";
-import { computeAmount } from "./pricing";
+import { computeAmount, effectiveOfficial, hasCost } from "./pricing";
 import { eligibleRoutes } from "./select";
 import { collectText, countTokens, roughTokens, warmTokenizer } from "./tokenizer";
 import { emptyUsage, type JsonObject, type Operation, type Usage } from "./types";
@@ -186,7 +186,22 @@ async function planHold(ctx: Ctx): Promise<HoldPlan> {
   return plan;
 }
 
-const priceOf = (ctx: Ctx, u: Usage): Decimal => computeAmount(u, ctx.model!.sell, { multiplier: ctx.multiplier, longContext: ctx.model!.longContext });
+/**
+ * Worst-case price of `u`. A cost-basis pool is charged the serving route's cost x multiplier (the route is not chosen
+ * yet), capped at the official list price: the dearest eligible route's charge (never more than that cap) is the bound.
+ */
+function priceOf(ctx: Ctx, u: Usage): Decimal {
+  const m = ctx.model!;
+  if (ctx.group?.priceBasis !== "cost") return computeAmount(u, m.sell, { multiplier: ctx.multiplier, longContext: m.longContext });
+  const cap = computeAmount(u, effectiveOfficial(m.official, m.sell, ctx.multiplier), { longContext: m.longContext });
+  let worst = ZERO;
+  for (const r of eligibleRoutes(ctx.snap!, m, ctx.group, ctx.path!.wireFormat!)) {
+    const p = hasCost(r.route.cost) ? computeAmount(u, r.route.cost, { multiplier: ctx.multiplier, longContext: m.longContext }) : computeAmount(u, m.sell, { multiplier: ctx.multiplier, longContext: m.longContext });
+    if (p.gt(worst)) worst = p;
+  }
+  if (worst.lte(0)) worst = computeAmount(u, m.sell, { multiplier: ctx.multiplier, longContext: m.longContext });
+  return cap.gt(0) && worst.gt(cap) ? cap : worst;
+}
 
 // ---------------------------------------------------------------- reservation
 function insufficient(ctx: Ctx, args: { reason: "balance" | "monthly" | "key"; amount: Decimal; available: Decimal; affordTokens: number | null; explicit: boolean; internal: string }): GatewayError {

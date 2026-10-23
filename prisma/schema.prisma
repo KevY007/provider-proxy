@@ -234,7 +234,10 @@ model Group {
   name            String
   slug            String   @unique
   description     String?
-  priceMultiplier Decimal  @default(1) @db.Decimal(10, 4) // applied to model sell prices
+  priceMultiplier Decimal  @default(1) @db.Decimal(10, 4) // applied to model sell prices ("model") or to the serving route's cost ("cost")
+  // "model": customers pay priceMultiplier x the model price; "cost": priceMultiplier x the upstream cost of the route
+  // that served the request (never above the official list price)
+  priceBasis      String   @default("model")
   providerTags    String[] @default([]) // if non-empty, only routes whose provider has ANY of these tags are used
   allowedModels   String[] @default([]) // model slugs; empty = all public models
   isDefault       Boolean  @default(false)

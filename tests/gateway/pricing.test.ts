@@ -275,3 +275,28 @@ describe("deriveSellUpdates: server tools", () => {
     expect(deriveSellUpdates({ officialToolPrices: { web_search_request: "0.01" } }, null, { mode: "FIXED", value: 1 })).toEqual({});
   });
 });
+
+describe("priceRequest: cost-basis pools", () => {
+  const sell = sellTable({ inputPrice: "4", outputPrice: "20" });
+  const cost = costTable({ inputCost: "0.32", outputCost: "1.6" });
+  const off = officialTable({ officialInputPrice: "4", officialOutputPrice: "20" });
+  const u = usage({ inputTokens: 1_000_000, outputTokens: 1_000_000 });
+
+  it("charges the serving route's cost x the multiplier", () => {
+    const b = priceRequest(u, sell, cost, "1.5", null, true, off, null, "cost");
+    expect(b.cost.toString()).toBe("1.92");
+    expect(b.price.toString()).toBe("2.88"); // 1.92 x 1.5
+    expect(b.profit.toString()).toBe("0.96");
+    expect(b.official.toString()).toBe("24");
+  });
+
+  it("never above the official list price, and falls back to the model price when the route has no costs", () => {
+    expect(priceRequest(u, sell, cost, "100", null, true, off, null, "cost").price.toString()).toBe("24");
+    const zero = costTable({ inputCost: "0", outputCost: "0" });
+    expect(priceRequest(u, sell, zero, "0.5", null, true, off, null, "cost").price.toString()).toBe("12");
+  });
+
+  it("model basis is unchanged", () => {
+    expect(priceRequest(u, sell, cost, "0.3", null, true, off).price.toString()).toBe("7.2");
+  });
+});

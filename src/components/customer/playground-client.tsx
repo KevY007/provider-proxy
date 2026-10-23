@@ -2,14 +2,13 @@
 
 import { ImageIcon, MessageSquare } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatMultiplier } from "@/server/customer/pricing";
 import { ChatTab } from "./chat-tab";
 import { ImageTab } from "./image-tab";
 import { usePlaygroundKey } from "./playground-api";
 import type { PlaygroundModel } from "./playground-shared";
 import { VerifyBanner } from "./verify-banner";
 
-export function PlaygroundClient({ chatModels, imageModels, poolName, multiplier, emailVerified, email }: { chatModels: PlaygroundModel[]; imageModels: PlaygroundModel[]; poolName: string; multiplier: string; emailVerified: boolean; email: string }) {
+export function PlaygroundClient({ chatModels, imageModels, poolName, savings, emailVerified, email }: { chatModels: PlaygroundModel[]; imageModels: PlaygroundModel[]; poolName: string; savings: string; emailVerified: boolean; email: string }) {
   const keyApi = usePlaygroundKey();
   // Hidden playground key: rotated each page load, held only in this component's memory.
   const keyError = emailVerified ? keyApi.error : null;
@@ -26,7 +25,7 @@ export function PlaygroundClient({ chatModels, imageModels, poolName, multiplier
           </TabsTrigger>
         </TabsList>
         <p className="text-xs text-muted-foreground">
-          Billed at your {poolName} pool price ({formatMultiplier(multiplier)}). Playground requests appear in your logs and usage.
+          Billed at your {poolName} pool prices{savings ? ` (${savings})` : ""}. Playground requests appear in your logs and usage.
         </p>
       </div>
       <TabsContent value="chat">

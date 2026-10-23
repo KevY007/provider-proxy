@@ -5,6 +5,8 @@
 //               uptime-history pruning. No provider is contacted unless a video job or batch is actually open.
 //  - "billing": auto-recharge, postpaid settlement, stale payment reconciliation (Stripe).
 //  - "probes":  uptime pings of every upstream key (free model-list request). Only with the activeHealthChecks setting.
+//  - "balances": reads the account balance of every upstream that publishes one (the relay /v1/usage) every
+//               `upstreamBalanceIntervalMin` (default 60) and stores the snapshot for the admin pages.
 //  - "priceSync": AI price sync of the providers whose automatic sync is on (each at its own interval, e.g. 10 h);
 //               checked hourly. Nothing at all happens while no provider has it on.
 //
@@ -22,7 +24,7 @@ import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { getSettings, type SettingValues } from "@/lib/settings";
 
-export type JobName = "upkeep" | "billing" | "probes" | "priceSync";
+export type JobName = "upkeep" | "billing" | "probes" | "priceSync" | "balances";
 export type JobSource = "traffic" | "admin" | "timer" | "cron" | "boot";
 
 const MIN = 60_000;
@@ -36,7 +38,7 @@ const ACTIVITY_CHECK_MS = 60_000;
 /** Timer tick: re-reads the (cached) settings and runs whatever is due. */
 const TICK_MS = 30_000;
 
-type Settings = Pick<SettingValues, "activeHealthChecks" | "healthCheckIntervalMin" | "backgroundJobs" | "maintenanceIntervalMin"> & Partial<Pick<SettingValues, "priceSyncAuto">>;
+type Settings = Pick<SettingValues, "activeHealthChecks" | "healthCheckIntervalMin" | "backgroundJobs" | "maintenanceIntervalMin"> & Partial<Pick<SettingValues, "priceSyncAuto" | "upstreamBalanceIntervalMin">>;
 
 const g = globalThis as unknown as {
   __ppMaint?: { lastActivityCheck: number; running: Set<JobName>; timer: ReturnType<typeof setInterval> | null; timerFor: string };
@@ -53,6 +55,11 @@ export function jobInterval(job: JobName, source: JobSource, s: Settings): numbe
     return null; // never pinged because of traffic
   }
   if (job === "priceSync" && s.priceSyncAuto === false) return null;
+  if (job === "balances") {
+    const min = s.upstreamBalanceIntervalMin ?? 60;
+    if (!min) return null; // 0 = off (refresh button only)
+    return source === "cron" ? CRON_GAP_MS : min * MIN;
+  }
   if (source === "cron") return CRON_GAP_MS;
   if (job === "billing" || job === "priceSync") return BILLING_MS;
   if (source === "timer") return s.backgroundJobs ? s.maintenanceIntervalMin * MIN : null;
@@ -106,6 +113,11 @@ async function work(job: JobName): Promise<unknown> {
       const { runDuePriceSyncs } = await import("@/server/pricing/price-sync/engine");
       return runDuePriceSyncs();
     }
+    case "balances": {
+      const { refreshUpstreamBalances } = await import("@/server/admin/upstream-balances");
+      const snap = await refreshUpstreamBalances();
+      return { accounts: snap.accounts.length, at: snap.at };
+    }
   }
 }
 
@@ -120,7 +132,7 @@ export interface JobOutcome {
 export async function runDueJobs(source: JobSource, opts: { only?: JobName[]; settings?: Settings } = {}): Promise<JobOutcome[]> {
   const s = opts.settings ?? (await getSettings());
   const out: JobOutcome[] = [];
-  for (const job of opts.only ?? (["upkeep", "billing", "probes", "priceSync"] as JobName[])) {
+  for (const job of opts.only ?? (["upkeep", "billing", "probes", "priceSync", "balances"] as JobName[])) {
     const interval = jobInterval(job, source, s);
     if (interval === null || state.running.has(job)) {
       out.push({ job, ran: false });

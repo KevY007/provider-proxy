@@ -22,7 +22,7 @@ describe("requestEffort", () => {
 });
 
 describe("routeByEffort", () => {
-  const g = (o: Partial<GroupRec>): GroupRec => ({ id: "x", slug: "x", name: "x", priceMultiplier: new Decimal(1), providerTags: [], allowedModels: null, isDefault: false, isPublic: true, rpmLimit: null, maxConcurrency: null, effortRoutes: [], ...o });
+  const g = (o: Partial<GroupRec>): GroupRec => ({ id: "x", slug: "x", name: "x", priceMultiplier: new Decimal(1), providerTags: [], allowedModels: null, isDefault: false, isPublic: true, rpmLimit: null, maxConcurrency: null, priceBasis: "model", effortRoutes: [], ...o });
   const official = g({ id: "off", slug: "standard" });
   const studio = g({ id: "st", slug: "studio", priceMultiplier: new Decimal("0.3"), effortRoutes: parseEffortRoutes([{ models: ["gpt-6*"], minEffort: "xhigh", groupId: "off" }]) });
   const snap = { groupsById: new Map([["off", official], ["st", studio]]), providers: new Map([["p1", {}]]) } as unknown as ConfigSnapshot;

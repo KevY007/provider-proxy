@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { SubmitButton, TextField } from "@/components/common/form-fields";
 import { createKeyAction, updateKeyAction, type CreatedKey } from "@/server/customer/keys";
 import { parseIpList } from "@/server/customer/key-schemas";
-import { formatMultiplier } from "@/server/customer/pricing";
+import { poolSavingsLabel } from "@/server/customer/pricing";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { ModelMultiSelect } from "./model-multi-select";
 import type { ModelOption } from "./snippet-tabs";
@@ -147,16 +147,16 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={DEFAULT_POOL}>
-                  {currentPool ? `Account default - ${currentPool.name} ${formatMultiplier(currentPool.multiplier)}` : "Account default"}
+                  {currentPool ? `Account default - ${currentPool.name}${poolSavingsLabel(currentPool.savingsPct) ? `, ${poolSavingsLabel(currentPool.savingsPct)}` : ""}` : "Account default"}
                 </SelectItem>
                 {pools.map((p) => (
                   <SelectItem key={p.id} value={p.id}>
-                    {p.name} pool - {formatMultiplier(p.multiplier)}
+                    {p.name} pool{poolSavingsLabel(p.savingsPct) ? ` - ${poolSavingsLabel(p.savingsPct)}` : ""}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            <FieldDescription>Pools set the price multiplier applied to this key&apos;s usage.</FieldDescription>
+            <FieldDescription>The pool decides which models this key can use and what it pays for them (see Models &amp; Pricing).</FieldDescription>
             {errors.groupId && <FieldError>{errors.groupId}</FieldError>}
           </Field>
 

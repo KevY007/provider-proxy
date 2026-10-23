@@ -358,7 +358,7 @@ export async function finishVideoCreate(a: { ctx: Ctx; cand: Candidate; up: Json
   // jobs the upstream already rejected at creation are never charged
   const usage = emptyUsage();
   if (status !== "failed") usage.videoSeconds = seconds;
-  const b = priceRequest(usage, model.sell, cand.route.cost, ctx.multiplier, model.longContext, true);
+  const b = priceRequest(usage, model.sell, cand.route.cost, ctx.multiplier, model.longContext, true, model.official, null, ctx.group?.priceBasis);
 
   const id = newVideoId();
   const job = { id, modelId: model.id, modelSlug: model.slug, upstreamModel: cand.route.upstreamModel };

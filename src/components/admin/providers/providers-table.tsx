@@ -33,7 +33,7 @@ export function ProvidersTable({
   initialSlots: SlotSnapshot;
   canEdit: boolean;
   /** money left on the upstream account, by provider id (only providers that publish it) */
-  balances?: Record<string, { balance: number | null; error?: string }>;
+  balances?: Record<string, { balance: number | null; account: string; error?: string }>;
 }) {
   const { snapshot } = useSlotSnapshot(initialSlots);
   const slotByProvider = useMemo(() => new Map(snapshot.providers.map((p) => [p.id, p])), [snapshot]);
@@ -118,7 +118,12 @@ export function ProvidersTable({
         const b = balances[row.original.id];
         if (!b) return <span className="text-muted-foreground">-</span>;
         if (b.balance == null) return <span className="text-xs text-amber-500" title={b.error}>unavailable</span>;
-        return <span className={`tabular-nums ${b.balance < 5 ? "font-medium text-red-500" : ""}`}>${b.balance.toFixed(2)}</span>;
+        return (
+          <span className={`tabular-nums ${b.balance < 5 ? "font-medium text-red-500" : ""}`}>
+            ${b.balance.toFixed(2)}
+            <span className="block text-[10px] font-normal text-muted-foreground">{b.account}</span>
+          </span>
+        );
       },
     },
   ];
