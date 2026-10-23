@@ -177,7 +177,6 @@ export async function getCustomerDetail(id: string) {
       billingMode: user.billingMode,
       monthlySpendLimit: dstr(user.monthlySpendLimit),
       maxConcurrency: user.maxConcurrency,
-      balanceMirrorProviderId: user.balanceMirrorProviderId,
       stripeCustomerId: user.stripeCustomerId,
       autoRechargeEnabled: user.autoRechargeEnabled,
       signupIp: user.signupIp,

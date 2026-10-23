@@ -17,8 +17,6 @@ import { adminAction, ActionFail, parseInput } from "./action";
 import { adjustBalanceSchema, canManageTarget, createCustomerSchema, customerSettingsSchema, deletedEmail, deletionMode, updateProfileSchema } from "./customers-calc";
 import { addCreditSchema, creditDescription, CREDIT_KIND_INFO, grantCreditsSchema, type CreditKind } from "./credits";
 import { credit, debit, LedgerError } from "@/server/billing/ledger";
-import { syncMirroredBalances } from "@/server/billing/balance-mirror";
-import { usageEndpoint } from "./upstream-usage";
 
 async function loadTarget(userId: string) {
   const u = await db.user.findUnique({
@@ -96,10 +94,6 @@ export async function updateCustomerSettings(input: unknown) {
       const found = await db.group.count({ where: { id: { in: d.extraGroupIds } } });
       if (found !== d.extraGroupIds.length) throw new ActionFail("Pool not found", { extraGroupIds: "Pool not found" });
     }
-    if (d.balanceMirrorProviderId) {
-      const p = await db.provider.findUnique({ where: { id: d.balanceMirrorProviderId }, select: { preset: true, baseUrl: true, settings: true } });
-      if (!p || !usageEndpoint(p)) throw new ActionFail("That provider does not publish its account balance", { balanceMirrorProviderId: "Not supported for this provider" });
-    }
     await db.user.update({
       where: { id: d.userId },
       data: {
@@ -110,18 +104,12 @@ export async function updateCustomerSettings(input: unknown) {
         creditLimit: d.creditLimit,
         monthlySpendLimit: d.monthlySpendLimit,
         maxConcurrency: d.maxConcurrency,
-        ...(d.balanceMirrorProviderId !== undefined ? { balanceMirrorProviderId: d.balanceMirrorProviderId } : {}),
       },
     });
     const { userId: _u, ...changes } = d;
     void _u;
     await audit(admin.id, "customer.update", { type: "User", id: d.userId }, { email: target.email, ...changes }, ip);
     await invalidateGatewayConfig("users", d.userId);
-    if (d.balanceMirrorProviderId) {
-      // mirror at once (not only at the next upkeep)
-      const r = await syncMirroredBalances({ userId: d.userId }).catch((err: unknown) => ({ errors: [err instanceof Error ? err.message : String(err)], updated: 0 }));
-      if (r.errors.length) return { message: `Customer settings saved; the balance could not be mirrored yet: ${r.errors[0]}` };
-    }
     return { message: "Customer settings saved" };
   });
 }
