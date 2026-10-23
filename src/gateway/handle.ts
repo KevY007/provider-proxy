@@ -388,7 +388,14 @@ async function dispatch(ctx: Ctx): Promise<Response> {
   if (path.op === "messages_count_tokens") {
     const native = routes.filter((r) => r.plan.mode === "native");
     if (!native.length) return localCountTokens(ctx);
-    routes = native;
+    // a relay without count_tokens (404 / 5xx ...) gets the local estimate instead: counting is informational, never
+    // worth failing a client (Claude Code calls it); a request the client got wrong still gets its error
+    try {
+      return await execute(ctx, native, { pinKeyId });
+    } catch (e) {
+      if (e instanceof GatewayError && ![400, 413, 499].includes(e.status)) return localCountTokens(ctx);
+      throw e;
+    }
   }
   return execute(ctx, routes, { pinKeyId });
 }
