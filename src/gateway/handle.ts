@@ -1,4 +1,5 @@
 import { getClientIp } from "@/lib/http";
+import { db } from "@/lib/db";
 import { noteActivity } from "@/server/maintenance";
 import { logger } from "@/lib/logger";
 import { authenticate } from "./auth";
@@ -92,6 +93,7 @@ async function run(ctx: Ctx): Promise<Response> {
   await acquireCustomerSlots(ctx);
 
   const path = ctx.path;
+  if (path.op === "request_get") return requestLookup(ctx);
   if (path.format === "catalog") {
     const { body } = catalogResponse(ctx);
     logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage: emptyUsage() });
@@ -112,6 +114,45 @@ async function run(ctx: Ctx): Promise<Response> {
   await checkLimits(ctx);
   await reserveFunds(ctx);
   return dispatch(ctx);
+}
+
+// ------------------------------------------------------------------ billing lookup
+/**
+ * GET /v1/requests/{id}: one of the caller's own calls as it was metered - the pool that served and billed it, the
+ * usage and the exact amount charged. Not logged itself. Metering is written asynchronously, so a call that ended a
+ * moment ago can 404 (with retry-after) for a second or two.
+ */
+async function requestLookup(ctx: Ctx): Promise<Response> {
+  const id = ctx.path!.responseId ?? "";
+  const row = id ? await db.requestLog.findFirst({ where: { id, userId: ctx.auth!.user.id } }) : null;
+  if (!row) throw new GatewayError("not_found", `No request found with id '${id}' (a call that just ended may take a few seconds to appear).`, { param: "id", retryAfterSec: 2 });
+  const body = {
+    object: "request",
+    id: row.id,
+    created_at: Math.floor(row.createdAt.getTime() / 1000),
+    endpoint: row.endpoint,
+    model: row.modelSlug,
+    pool: row.groupSlug,
+    stream: row.stream,
+    status: row.status.toLowerCase(),
+    http_status: row.httpStatus,
+    error_code: row.errorCode,
+    usage: {
+      input_tokens: row.inputTokens,
+      cached_tokens: row.cachedTokens,
+      cache_write_tokens: row.cacheWriteTokens,
+      output_tokens: row.outputTokens,
+      reasoning_tokens: row.reasoningTokens,
+      images: row.imageCount,
+      estimated: row.usageEstimated,
+    },
+    // USD charged for this call, and the same usage at official list prices
+    charged_usd: Number(row.price),
+    list_usd: Number(row.officialPrice),
+    latency_ms: row.latencyMs,
+    ttft_ms: row.ttftMs,
+  };
+  return withCommon(ctx, new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
 }
 
 // ------------------------------------------------------------------ customer concurrency

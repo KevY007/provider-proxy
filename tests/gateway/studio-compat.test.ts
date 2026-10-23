@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { dbOk, createHarness, sseBlocks } from "./harness";
 import { parseInbandError } from "@/gateway/inband-error";
+import { db } from "@/lib/db";
 import { ResponsesStreamPassthrough } from "@/gateway/stream-processors";
 import type { SseEvent } from "@/gateway/sse";
 
@@ -61,6 +62,10 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     await mk("ceflaky", {});
     await mk("tier", { serviceTiers: ["auto", "default"] });
     await mk("cap", { enforceMaxOutputTokens: true });
+    // one relay key serving two models, one of them over its per-model rate limit
+    const relay = await h.makeProvider("relay", { formats: ["openai_responses"], settings: { noCooldown: true }, keys: [{ s: "relay1" }] });
+    M.limited = (await h.makeModel("limited", { caps: ["responses"], providerId: relay.id, upstream: "up-rpm429" })).slug;
+    M.other = (await h.makeModel("other", { caps: ["responses"], providerId: relay.id })).slug;
     const u = await h.makeUser("u", { balance: "50" });
     key = (await h.makeKey("k", u.id)).key;
   });
@@ -128,5 +133,37 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     expect(deltas).toBeLessThan(40);
     const row = await h.logOf(res);
     expect(row.status).toBe("SUCCESS");
+  });
+
+  it("a per-model 429 on a noCooldown relay cools only that model; the key keeps serving others", async () => {
+    const r1 = await responses(M.limited);
+    expect(r1.status).toBe(429);
+    expect(r1.headers.get("retry-after")).toBeTruthy();
+    const r2 = await responses(M.limited);
+    expect(r2.status).toBe(429); // answered from the model cooldown
+    const ok = await responses(M.other);
+    expect(ok.status).toBe(200);
+    expect(sseBlocks(await ok.text()).at(-1)?.event).toBe("response.completed");
+  });
+
+  it("billing visibility: x-pool / x-price-multiplier headers and GET /v1/requests/{id}", async () => {
+    const res = await responses(M.tier);
+    expect(res.status).toBe(200);
+    const pool = res.headers.get("x-pool");
+    expect(pool).toBeTruthy();
+    expect(Number(res.headers.get("x-price-multiplier"))).toBe(1);
+    await res.text();
+    const row = await h.logOf(res);
+    const look = await h.call(`/v1/requests/${row.id}`, key);
+    expect(look.status).toBe(200);
+    const body = (await look.json()) as Record<string, unknown>;
+    expect(body).toMatchObject({ object: "request", id: row.id, pool, model: M.tier, status: "success", http_status: 200 });
+    expect(body.charged_usd).toBe(Number(row.price));
+    expect((body.usage as Record<string, number>).output_tokens).toBe(row.outputTokens);
+    // another customer's request id is not visible
+    const u2 = await h.makeUser("u2", { balance: "5" });
+    const other = (await h.makeKey("k2", u2.id)).key;
+    expect((await h.call(`/v1/requests/${row.id}`, other)).status).toBe(404);
+    expect(await db.requestLog.count({ where: { id: row.id } })).toBe(1);
   });
 });
