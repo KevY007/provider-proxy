@@ -45,6 +45,8 @@ export interface Outcome {
   responseBody?: Json;
   /** Charge the usage even though the status is not a normally billable one (e.g. a stream cut off by the funds guard). */
   billable?: boolean;
+  /** The upstream does not bill this request (e.g. OpenAI after a client cancel): the customer price stands, our cost is 0. */
+  upstreamUnbilled?: boolean;
   /** Batch API result: the upstream batch id. Token prices are discounted by Model.batchDiscountPct / ModelRoute.batchCostDiscountPct. */
   batchId?: string | null;
   /** Who the row belongs to when there is no request (cron sweep of ended batches). */
@@ -79,6 +81,7 @@ export function recordOutcome(o: Outcome): Charge {
     const batch = o.batchId ? { sellPct: o.model.batchDiscountPct ?? null, costPct: o.route?.batchCostDiscountPct ?? null } : null;
     const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official, batch);
     charge = { price: b.price, cost: b.cost, profit: b.profit, official: b.official };
+    if (o.upstreamUnbilled) charge = { ...charge, cost: ZERO, profit: b.price };
   }
 
   const u = usage;
