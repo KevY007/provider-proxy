@@ -64,6 +64,12 @@ export function KeysTable({
       { accessorKey: "groupName", header: "Group", cell: ({ row }) => row.original.groupName ?? <span className="text-muted-foreground">inherit</span> },
       { accessorKey: "spent", header: "Spent", cell: ({ row }) => <MoneyText value={row.original.spent} />, meta: { className: "text-right" } },
       {
+        accessorKey: "listPrice",
+        header: "At list price",
+        cell: ({ row }) => (row.original.listPrice && Number(row.original.listPrice) > 0 ? <MoneyText value={row.original.listPrice} className="text-muted-foreground" /> : <span className="text-muted-foreground">-</span>),
+        meta: { className: "text-right" },
+      },
+      {
         accessorKey: "spendLimit",
         header: "Limit",
         cell: ({ row }) => (row.original.spendLimit ? <MoneyText value={row.original.spendLimit} /> : <span className="text-muted-foreground">none</span>),
