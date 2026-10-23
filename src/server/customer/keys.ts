@@ -123,3 +123,28 @@ export async function revokeKeyAction(input: unknown): Promise<ActionResult> {
     return { ok: true, message: "Key revoked. Requests using it will now fail." };
   });
 }
+
+/** Permanently delete one of the customer's REVOKED keys (the request log keeps its rows, without the key link). */
+export async function deleteRevokedKeyAction(input: unknown): Promise<ActionResult> {
+  const parsed = keyIdSchema.safeParse(input);
+  if (!parsed.success) return fail("Invalid request");
+  return withUser("deleteRevokedKey", async (s) => {
+    const key = await db.apiKey.findFirst({ where: { id: parsed.data.id, userId: s.user.id, isPlayground: false } });
+    if (!key) return fail("Key not found");
+    if (key.status !== "REVOKED") return fail("Only revoked keys can be deleted. Revoke the key first.");
+    await db.apiKey.delete({ where: { id: key.id } });
+    await audit(s.user.id, "apikey.delete", { type: "ApiKey", id: key.id }, { name: key.name, prefix: key.prefix }, getClientIp(await headers()));
+    revalidatePath("/dashboard/keys");
+    return { ok: true, message: "Key deleted" };
+  });
+}
+
+/** Permanently delete all of the customer's REVOKED keys ("Empty bin"). */
+export async function emptyRevokedKeysAction(): Promise<ActionResult> {
+  return withUser("emptyRevokedKeys", async (s) => {
+    const r = await db.apiKey.deleteMany({ where: { userId: s.user.id, isPlayground: false, status: "REVOKED" } });
+    await audit(s.user.id, "apikey.delete_revoked", { type: "User", id: s.user.id }, { count: r.count }, getClientIp(await headers()));
+    revalidatePath("/dashboard/keys");
+    return { ok: true, message: r.count ? `Deleted ${r.count} revoked key${r.count === 1 ? "" : "s"}` : "No revoked keys to delete" };
+  });
+}

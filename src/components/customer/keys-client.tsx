@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, KeyRound, MoreHorizontal, Pencil, Plus, Power, PowerOff, Terminal, TriangleAlert } from "lucide-react";
+import { Ban, KeyRound, MoreHorizontal, Pencil, Plus, Power, PowerOff, Terminal, Trash2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -10,6 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Progress } from "@/components/ui/progress";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { CopyButton } from "@/components/common/copy-button";
 import { DataTable } from "@/components/common/data-table";
@@ -17,7 +18,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
 import { formatCompact } from "@/lib/utils";
-import { revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
+import { deleteRevokedKeyAction, emptyRevokedKeysAction, revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
 import { formatMultiplier } from "@/server/customer/pricing";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { KeyFormDialog } from "./key-form-dialog";
@@ -43,6 +44,11 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
   const [created, setCreated] = useState<(CreatedKey & { name: string; allowedModels: string[] }) | null>(null);
   const [useKey, setUseKey] = useState<{ name: string; apiKey: string | null; allowedModels: string[] } | null>(null);
   const [revoking, setRevoking] = useState<KeyRow | null>(null);
+  const [deleting, setDeleting] = useState<KeyRow | null>(null);
+  const [emptying, setEmptying] = useState(false);
+  // revoked keys no longer work: they live in their own "Revoked" tab instead of cluttering the list
+  const activeKeys = useMemo(() => keys.filter((k) => k.status !== "REVOKED"), [keys]);
+  const revokedKeys = useMemo(() => keys.filter((k) => k.status === "REVOKED"), [keys]);
 
   function openCreate() {
     setEditing(null);
@@ -225,6 +231,25 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
     [],
   );
 
+  const revokedColumns = useMemo<ColumnDef<KeyRow>[]>(
+    () => [
+      ...columns.filter((c) => ["name", "pool", "spent", "lastUsed", "created"].includes((c.id ?? (c as { accessorKey?: string }).accessorKey) as string)),
+      {
+        id: "delete",
+        header: "",
+        enableSorting: false,
+        enableHiding: false,
+        meta: { noExport: true, className: "w-10" },
+        cell: ({ row }) => (
+          <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-500" onClick={() => setDeleting(row.original)} aria-label={`Delete ${row.original.name}`}>
+            <Trash2 className="size-4" /> Delete
+          </Button>
+        ),
+      },
+    ],
+    [columns],
+  );
+
   return (
     <>
       {!emailVerified && <VerifyBanner email={email} />}
@@ -233,26 +258,84 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
           <Plus className="size-4" /> Create key
         </Button>
       </div>
-      {keys.length === 0 ? (
-        <EmptyState
-          icon={KeyRound}
-          title="No API keys yet"
-          description="Create a key, then point any OpenAI, Anthropic or Gemini compatible client at our base URL."
-          action={
-            <Button onClick={openCreate} disabled={!emailVerified}>
-              <Plus className="size-4" /> Create your first key
-            </Button>
-          }
-        />
-      ) : (
-        <DataTable columns={columns} data={keys} searchKey="name" searchPlaceholder="Search keys..." exportFilename="api-keys" getRowId={(k) => k.id} hideColumnToggle initialSorting={[{ id: "created", desc: true }]} />
-      )}
+      <Tabs defaultValue="active">
+        <TabsList>
+          <TabsTrigger value="active">Active ({activeKeys.length})</TabsTrigger>
+          <TabsTrigger value="revoked">Revoked ({revokedKeys.length})</TabsTrigger>
+        </TabsList>
+        <TabsContent value="active" className="mt-4">
+          {activeKeys.length === 0 ? (
+            <EmptyState
+              icon={KeyRound}
+              title="No API keys yet"
+              description="Create a key, then point any OpenAI, Anthropic or Gemini compatible client at our base URL."
+              action={
+                <Button onClick={openCreate} disabled={!emailVerified}>
+                  <Plus className="size-4" /> Create your first key
+                </Button>
+              }
+            />
+          ) : (
+            <DataTable columns={columns} data={activeKeys} searchKey="name" searchPlaceholder="Search keys..." exportFilename="api-keys" getRowId={(k) => k.id} hideColumnToggle initialSorting={[{ id: "created", desc: true }]} />
+          )}
+        </TabsContent>
+        <TabsContent value="revoked" className="mt-4 space-y-3">
+          {revokedKeys.length === 0 ? (
+            <EmptyState icon={Trash2} title="No revoked keys" description="Keys you revoke show up here until you delete them." />
+          ) : (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">Revoked keys no longer work. Delete them to clear them out for good; their usage history stays in your logs.</p>
+                <Button variant="outline" size="sm" className="shrink-0 text-red-500 hover:text-red-500" onClick={() => setEmptying(true)}>
+                  <Trash2 className="size-4" /> Empty bin
+                </Button>
+              </div>
+              <DataTable columns={revokedColumns} data={revokedKeys} searchKey="name" searchPlaceholder="Search revoked keys..." exportFilename="revoked-api-keys" getRowId={(k) => k.id} hideColumnToggle initialSorting={[{ id: "created", desc: true }]} />
+            </>
+          )}
+        </TabsContent>
+      </Tabs>
 
       <KeyFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} pools={pools} currentPool={currentPool} models={models} onCreated={(k, meta) => setCreated({ ...k, ...meta })} />
 
       <RevealKeyDialog created={created} onClose={() => setCreated(null)} onUse={(k) => { setCreated(null); setUseKey({ name: k.name, apiKey: k.key, allowedModels: k.allowedModels }); }} />
 
       <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={useKey?.allowedModels.length ? models.filter((m) => useKey.allowedModels.includes(m.slug)) : models} keyName={useKey?.name} apiKey={useKey?.apiKey} />
+
+      <ConfirmDialog
+        open={!!deleting}
+        onOpenChange={(o) => !o && setDeleting(null)}
+        title={`Delete "${deleting?.name ?? "key"}" permanently?`}
+        description="The revoked key is removed for good. Its usage history stays in your logs."
+        confirmLabel="Delete key"
+        destructive
+        onConfirm={async () => {
+          if (!deleting) return;
+          const r = await deleteRevokedKeyAction({ id: deleting.id });
+          if (r.ok) toast.success(r.message);
+          else {
+            toast.error(r.error);
+            throw new Error(r.error);
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={emptying}
+        onOpenChange={setEmptying}
+        title={`Delete all ${revokedKeys.length} revoked key${revokedKeys.length === 1 ? "" : "s"}?`}
+        description="They are removed for good. Their usage history stays in your logs."
+        confirmLabel="Delete all"
+        destructive
+        onConfirm={async () => {
+          const r = await emptyRevokedKeysAction();
+          if (r.ok) toast.success(r.message);
+          else {
+            toast.error(r.error);
+            throw new Error(r.error);
+          }
+        }}
+      />
 
       <ConfirmDialog
         open={!!revoking}
