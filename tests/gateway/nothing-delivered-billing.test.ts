@@ -11,6 +11,7 @@ const h = createHarness("ndb");
 describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
   let key = "";
   let slug = "";
+  let unbilledSlug = "";
   const before = { hold: 0, beat: 0 };
 
   beforeAll(async () => {
@@ -21,6 +22,8 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     await setSettings({ streamStartHoldSec: 1, streamHeartbeatSec: 1 }); // commit the response after ~1 s of silence
     const p = await h.makeProvider("p", { formats: ["openai_chat"], keys: [{ s: "k1" }] });
     slug = (await h.makeModel("m", { caps: ["chat"], providerId: p.id })).slug;
+    const relay = await h.makeProvider("relay", { formats: ["openai_chat"], settings: { unbilledStreamErrors: true, noCooldown: true }, keys: [{ s: "r1" }] });
+    unbilledSlug = (await h.makeModel("u", { caps: ["chat"], providerId: relay.id })).slug;
     const u = await h.makeUser("u", { balance: "50" });
     key = (await h.makeKey("k", u.id)).key;
   });
@@ -68,4 +71,20 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     expect(log.outputTokens).toBeGreaterThan(0);
     expect(Number(log.price)).toBeGreaterThan(0);
   });
+  it("unbilledStreamErrors: a stream the upstream ends with its own error event is not billed, even after output", async () => {
+    const run = async (model: string) => {
+      const res = await h.call("/v1/chat/completions", key, { model, stream: true, messages: [{ role: "user", content: "write [[words:200]]" }] }, { headers: { "x-mock-mode": "error-after:8" } });
+      const text = await res.text();
+      expect(text).toMatch(/"content":"[^"]+"/); // output reached the client before the error
+      return h.logOf(res);
+    };
+    const billed = await run(slug);
+    expect(billed.status).toBe("UPSTREAM_ERROR");
+    expect(Number(billed.price)).toBeGreaterThan(0);
+    const unbilled = await run(unbilledSlug);
+    expect(unbilled.status).toBe("UPSTREAM_ERROR");
+    expect(Number(unbilled.price)).toBe(0);
+    expect(Number(unbilled.cost)).toBe(0);
+    expect(unbilled.internalError).toMatch(/not billed/);
+  }, 30_000);
 });

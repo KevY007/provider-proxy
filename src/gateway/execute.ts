@@ -929,13 +929,14 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else if (info.inband && err) {
     // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
     recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
+    const unbilled = providerSettings(cand.route.provider).unbilledStreamErrors && !hasReportedUsage(reported);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: err.status >= 400 ? err.status : 502,
       errorCode: err.status === 429 ? "rate_limited" : err.status === 529 ? "upstream_overloaded" : "upstream_error",
       errorMessage: "The upstream provider returned an error.",
-      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}`,
-      usage,
+      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}${unbilled ? " (not billed: the upstream does not bill a stream it ends with an error)" : ""}`,
+      usage: unbilled ? emptyUsage() : usage,
       ttftMs: info.firstOutputMs,
     });
   } else {
