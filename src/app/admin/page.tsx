@@ -247,15 +247,6 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
                   <span className="text-muted-foreground">Queued requests</span>
                   <span className={`tabular-nums ${slots.queued > 0 ? "font-medium text-amber-500" : ""}`}>{slots.queued}</span>
                 </div>
-                {slots.providers
-                  .filter((s) => s.inUse > 0)
-                  .slice(0, 4)
-                  .map((s) => (
-                    <div key={s.id} className="space-y-1">
-                      <span className="text-xs text-muted-foreground">{s.label}</span>
-                      <SlotBar inUse={s.inUse} max={s.max} compact />
-                    </div>
-                  ))}
               </>
             )}
           </CardContent>

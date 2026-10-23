@@ -15,6 +15,11 @@ export interface MoneyTextProps extends FormatUSDOptions {
  */
 export function MoneyText({ value, colorize, className, ...fmt }: MoneyTextProps) {
   const d = toDecimal(value);
+  const shown = formatUSD(d, fmt);
+  const full = (d.isNegative() ? "-$" : "$") + d.abs().toFixed(12).replace(/\.?0+$/, "");
+  // Only show a tooltip when the visible value is rounded or abbreviated.
+  const numeric = shown.replace(/[$,+]/g, "");
+  const exact = /^-?\d+(\.\d+)?$/.test(numeric) && toDecimal(numeric).eq(d);
   return (
     <span
       className={cn(
@@ -23,9 +28,9 @@ export function MoneyText({ value, colorize, className, ...fmt }: MoneyTextProps
         colorize && fmt.signed && d.isPositive() && !d.isZero() && "text-emerald-500",
         className,
       )}
-      title={d.toFixed(12).replace(/\.?0+$/, "")}
+      title={exact ? undefined : full}
     >
-      {formatUSD(d, fmt)}
+      {shown}
     </span>
   );
 }

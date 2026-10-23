@@ -190,10 +190,10 @@ export default async function DashboardPage() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Balance" icon={Wallet} value={<MoneyText value={user.balance.toString()} />} hint={<Link href="/dashboard/billing" className="hover:text-foreground hover:underline">Manage billing</Link>} />
         <StatCard label="Spend today" icon={Coins} value={<MoneyText value={today.spend} />} hint={`${formatCompact(today.requests)} requests`} />
-        <StatCard label="Spend, 7 days" icon={BarChart3} value={<MoneyText value={week.spend} />} hint={`${formatCompact(week.requests)} requests`} />
+        <StatCard label="Spend, 7 days" icon={BarChart3} value={<MoneyText value={week.spend} />} />
         <StatCard label="Tokens, 7 days" icon={Hash} value={formatCompact(tokens7)} hint={`${formatCompact(week.inputTokens)} in / ${formatCompact(week.outputTokens)} out`} />
-        <StatCard label="Requests, 7 days" icon={Activity} value={formatCompact(week.requests)} hint={`${formatCompact(today.requests)} today`} />
-        <StatCard label="Error rate" icon={Gauge} value={formatPercent(errorRate)} hint={`${formatCompact(week.errors)} failed of ${formatCompact(week.requests)}`} />
+        <StatCard label="Requests, 7 days" icon={Activity} value={formatCompact(week.requests)} />
+        <StatCard label="Error rate" icon={Gauge} value={formatPercent(errorRate)} hint={`${formatCompact(week.errors)} failed`} />
         <StatCard label="Avg latency" icon={Clock} value={week.requests ? formatDuration(week.avgLatencyMs) : "-"} hint="last 7 days" />
         <StatCard label="Active keys" icon={KeyRound} value={String(keyCount)} hint={<Link href="/dashboard/keys" className="hover:text-foreground hover:underline">Manage keys</Link>} />
       </div>

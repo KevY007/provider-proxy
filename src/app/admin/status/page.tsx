@@ -35,7 +35,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<Rec
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Active providers" value={active.length} hint={`${data.providers.length} total`} icon={Server} />
         <StatCard label="Operational" value={ok} hint={degraded ? `${degraded} degraded` : "none degraded"} icon={CheckCircle2} />
-        <StatCard label="Down" value={down} icon={AlertTriangle} invertTrend hint={down ? "needs attention" : "all clear"} />
+        <StatCard label="Down" value={down} icon={AlertTriangle} invertTrend />
         <StatCard label="Keys needing attention" value={badKeys} icon={Activity} hint="cooldown / invalid / exhausted" />
       </div>
       <Card className="mb-6">
