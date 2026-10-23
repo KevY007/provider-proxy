@@ -36,7 +36,7 @@ const ACTIVITY_CHECK_MS = 60_000;
 /** Timer tick: re-reads the (cached) settings and runs whatever is due. */
 const TICK_MS = 30_000;
 
-type Settings = Pick<SettingValues, "activeHealthChecks" | "healthCheckIntervalMin" | "backgroundJobs" | "maintenanceIntervalMin">;
+type Settings = Pick<SettingValues, "activeHealthChecks" | "healthCheckIntervalMin" | "backgroundJobs" | "maintenanceIntervalMin"> & Partial<Pick<SettingValues, "priceSyncAuto">>;
 
 const g = globalThis as unknown as {
   __ppMaint?: { lastActivityCheck: number; running: Set<JobName>; timer: ReturnType<typeof setInterval> | null; timerFor: string };
@@ -52,6 +52,7 @@ export function jobInterval(job: JobName, source: JobSource, s: Settings): numbe
     if (source === "cron") return CRON_GAP_MS;
     return null; // never pinged because of traffic
   }
+  if (job === "priceSync" && s.priceSyncAuto === false) return null;
   if (source === "cron") return CRON_GAP_MS;
   if (job === "billing" || job === "priceSync") return BILLING_MS;
   if (source === "timer") return s.backgroundJobs ? s.maintenanceIntervalMin * MIN : null;
@@ -91,6 +92,7 @@ async function work(job: JobName): Promise<unknown> {
         metering: await step("dead letters", () => replayDeadLetters()),
         pruned: await step("prune health history", () => pruneHealthChecks()),
         sealedKeys: await step("seal plain upstream keys", async () => (await import("@/server/admin/seal-secrets")).sealPendingProviderSecrets()),
+        mirroredBalances: await step("mirror upstream balances", async () => (await import("@/server/billing/balance-mirror")).syncMirroredBalances()),
       };
     }
     case "billing": {

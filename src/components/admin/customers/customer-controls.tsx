@@ -16,11 +16,13 @@ import type { CustomerDetail } from "@/server/admin/customers-queries";
 export function CustomerControls({
   user,
   groups,
+  mirrorProviders = [],
   isAdmin,
   isSelf,
 }: {
   user: CustomerDetail["user"];
   groups: Array<{ id: string; name: string; isDefault: boolean; isPublic?: boolean; priceMultiplier?: string }>;
+  mirrorProviders?: Array<{ id: string; name: string }>;
   isAdmin: boolean;
   isSelf: boolean;
 }) {
@@ -35,6 +37,7 @@ export function CustomerControls({
   const [creditLimit, setCreditLimit] = useState(user.creditLimit === "0" ? "" : user.creditLimit);
   const [monthlyLimit, setMonthlyLimit] = useState(user.monthlySpendLimit ?? "");
   const [maxConc, setMaxConc] = useState(user.maxConcurrency?.toString() ?? "");
+  const [mirror, setMirror] = useState(user.balanceMirrorProviderId ?? "");
   const staff = user.role !== "CUSTOMER";
   const suspended = user.status === "SUSPENDED";
   const unverified = !user.emailVerifiedAt || user.status === "PENDING_VERIFICATION";
@@ -93,7 +96,7 @@ export function CustomerControls({
           onSubmit={(e) => {
             e.preventDefault();
             void run(() =>
-              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc }),
+              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc, balanceMirrorProviderId: mirror }),
             );
           }}
         >
@@ -139,6 +142,19 @@ export function CustomerControls({
             <NumberField label="Credit limit" suffix="USD" value={creditLimit} onChange={setCreditLimit} placeholder="0" min={0} description="How far below $0 the balance may go." error={fieldErrors.creditLimit} disabled={!isAdmin} />
             <NumberField label="Monthly spend limit" suffix="USD" value={monthlyLimit} onChange={setMonthlyLimit} placeholder="no limit" min={0} error={fieldErrors.monthlySpendLimit} disabled={!isAdmin} />
             <NumberField label="Max concurrency" value={maxConc} onChange={setMaxConc} placeholder="default" step="1" min={1} description="Concurrent in-flight requests across all their keys." error={fieldErrors.maxConcurrency} disabled={!isAdmin} />
+            {(mirrorProviders.length > 0 || mirror) && (
+              <SelectField
+                label="Balance mirrors"
+                value={mirror}
+                onChange={setMirror}
+                allowNone
+                noneLabel="Off (normal balance)"
+                options={mirrorProviders.map((p) => ({ value: p.id, label: `${p.name} account balance` }))}
+                description="Upkeep keeps this balance equal to the upstream account's remaining balance (each change is a ledger adjustment)."
+                error={fieldErrors.balanceMirrorProviderId}
+                disabled={!isAdmin}
+              />
+            )}
           </div>
           <div className="space-y-2">
             <p className="text-sm font-medium">Extra pools for API keys</p>

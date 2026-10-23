@@ -1,4 +1,3 @@
-import "server-only";
 // Upstream usage check: what a provider says each of our upstream keys spent (its own usage API), next to the cost we
 // recorded for that key, day by day. A difference shows requests the upstream billed that we did not (or the other way
 // round): e.g. a generation the upstream finished and billed after the client had gone.
@@ -66,6 +65,24 @@ export function parseUsageDoc(doc: unknown): { balance: number | null; total: nu
       .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof (x as Record<string, unknown>).date === "string")
       .map((x) => ({ date: String(x.date), requests: num(x.requests), cost: num(x.actual_cost ?? x.cost) })),
   };
+}
+
+/** The upstream account balance (USD) a provider reports, read with its first active key; null when it publishes none. */
+export async function fetchUpstreamBalance(providerId: string): Promise<{ balance: number | null; error?: string }> {
+  const provider = await db.provider.findUnique({ where: { id: providerId }, include: { keys: { where: { status: "ACTIVE" }, orderBy: [{ priority: "desc" }, { createdAt: "asc" }], take: 1 } } });
+  if (!provider) return { balance: null, error: "provider not found" };
+  const ep = usageEndpoint(provider);
+  if (!ep) return { balance: null, error: "the provider publishes no account balance" };
+  const key = provider.keys[0];
+  if (!key) return { balance: null, error: "the provider has no active key" };
+  try {
+    await assertPublicUrl(ep.url, [new URL(provider.baseUrl).hostname]);
+    const res = await fetch(ep.url, { headers: { authorization: `Bearer ${decrypt(key.secretEncrypted)}`, accept: "application/json" }, signal: AbortSignal.timeout(TIMEOUT_MS) });
+    if (!res.ok) return { balance: null, error: `HTTP ${res.status}` };
+    return { balance: parseUsageDoc(await res.json()).balance };
+  } catch (err) {
+    return { balance: null, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 export async function checkUpstreamUsage(providerId: string): Promise<UpstreamUsageReport> {

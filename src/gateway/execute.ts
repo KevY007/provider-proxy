@@ -83,6 +83,8 @@ export function upstreamPools(c: Candidate, settings: Pick<SettingValues, "defau
   const pools: SlotPool[] = [{ kind: "pkey", id: c.key.id, max: c.key.maxConcurrency ?? settings.defaultKeyConcurrency }];
   const pm = c.route.provider.maxConcurrency;
   if (pm && pm > 0) pools.push({ kind: "provider", id: c.route.provider.id, max: pm });
+  const shared = providerSettings(c.route.provider).sharedConcurrency;
+  if (shared) pools.push({ kind: "provider", id: `shared:${shared.group}`, max: shared.max });
   return pools;
 }
 

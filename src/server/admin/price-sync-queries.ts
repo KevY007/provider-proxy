@@ -21,6 +21,8 @@ export interface PriceSyncRunView {
 export interface PriceSyncPanel {
   config: PriceSyncConfig;
   ai: { pool: string; model: string };
+  /** global automatic-update schedule (Settings > Monitoring) */
+  schedule: { enabled: boolean; hours: number };
   routes: Array<{ id: string; modelSlug: string; upstreamModel: string; enabled: boolean }>;
   run: PriceSyncRunView | null;
   history: Array<{ id: string; trigger: string; status: string; createdAt: string; changes: number; applied: number; costUsd: number }>;
@@ -64,6 +66,7 @@ export async function getPriceSyncPanel(providerId: string): Promise<PriceSyncPa
   return {
     config,
     ai: { pool: s.priceSyncPool, model: s.priceSyncModel },
+    schedule: { enabled: s.priceSyncAuto, hours: s.priceSyncIntervalHours },
     routes: routes.map((r) => ({ id: r.id, modelSlug: r.model.slug, upstreamModel: r.upstreamModel, enabled: r.enabled })),
     run,
     history: runs.map((r) => {

@@ -15,6 +15,8 @@ import { requireAdmin } from "@/lib/auth/session";
 import { formatUSD } from "@/lib/money";
 import { formatCompact, formatDuration, formatPercent } from "@/lib/utils";
 import { getCustomerDetail, listGroupOptions } from "@/server/admin/customers-queries";
+import { usageEndpoint } from "@/server/admin/upstream-usage";
+import { db } from "@/lib/db";
 import { parseAnalyticsParams } from "@/server/analytics/params";
 import { getBreakdown, getTimeSeries, getTotals } from "@/server/analytics/queries";
 
@@ -35,12 +37,15 @@ export default async function Page({
 
   const detail = await getCustomerDetail(id);
   if (!detail) notFound();
-  const [groups, totals, series, models] = await Promise.all([
+  const [groups, totals, series, models, providers] = await Promise.all([
     listGroupOptions(),
     getTotals(filter),
     getTimeSeries(filter, gran),
     getBreakdown("model", filter, { limit: 15 }),
+    db.provider.findMany({ select: { id: true, name: true, preset: true, baseUrl: true, settings: true }, orderBy: { name: "asc" } }),
   ]);
+  // providers whose account balance can be read: candidates for mirroring into this customer's balance
+  const mirrorProviders = providers.filter((p) => usageEndpoint(p)).map((p) => ({ id: p.id, name: p.name }));
 
   const { user } = detail;
   const isAdmin = me.role === "ADMIN";
@@ -72,7 +77,7 @@ export default async function Page({
       </div>
 
       <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_340px]">
-        <CustomerControls user={user} groups={groups} isAdmin={isAdmin} isSelf={user.id === me.id} />
+        <CustomerControls user={user} groups={groups} mirrorProviders={mirrorProviders} isAdmin={isAdmin} isSelf={user.id === me.id} />
         <BalanceCard user={user} isAdmin={isAdmin} spend30d={totals.revenue} />
       </div>
 

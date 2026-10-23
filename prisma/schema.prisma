@@ -150,6 +150,9 @@ model User {
   signupIp               String?
   lastLoginAt            DateTime?
   maxConcurrency         Int? // §9b customer-side concurrent request slots
+  // the balance mirrors this provider's upstream account balance (refreshed by upkeep, ADJUSTMENT ledger entries);
+  // for an internal account that spends the upstream credit directly, e.g. the studio on the relay
+  balanceMirrorProviderId String?
   createdAt              DateTime    @default(now())
   updatedAt              DateTime    @updatedAt
 
