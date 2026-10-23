@@ -45,8 +45,9 @@ export function finalError(f: Failure, settings: Pick<SettingValues, "passUpstre
       return new GatewayError(code, "Rate limit exceeded. Please retry later.", opts);
     case "timeout":
       return new GatewayError("upstream_timeout", undefined, opts);
-    case "auth":
     case "payment":
+      return new GatewayError("upstream_insufficient_balance", undefined, { ...opts, retryAfterSec: 60 });
+    case "auth":
     case "forbidden":
       return new GatewayError("no_available_provider", undefined, { ...opts, retryAfterSec: 30 });
     default:

@@ -1,7 +1,7 @@
 import { logger } from "@/lib/logger";
 import type { SettingValues } from "@/lib/settings";
-import type { ConfigSnapshot } from "./cache";
-import { getKeySecret } from "./cache";
+import type { ConfigSnapshot, KeyRec } from "./cache";
+import { effectiveKeyState, getKeyRuntime, getKeySecret } from "./cache";
 import { logOutcome, releaseAll, releaseUpstream, withCommon, type Ctx } from "./context";
 import { GatewayError, streamErrorEvent } from "./errors";
 import { handleFilesOk, prepareRawUpstream, registerGeneratedFiles } from "./files";
@@ -213,6 +213,16 @@ function noProviderError(snap: ConfigSnapshot, routes: RoutePlan[]): GatewayErro
     }
   }
   const retry = Number.isFinite(soonest) ? Math.min(60, Math.max(1, Math.ceil(soonest / 1000))) : 30;
+  // every key is cooling down because its upstream account is out of credit: say so instead of "no provider"
+  const keys = routes.flatMap((rp) => snap.keysByProvider.get(rp.route.providerId) ?? []);
+  const noCredit = (k: KeyRec) => {
+    const st = effectiveKeyState(k);
+    const last = getKeyRuntime(k.id)?.lastError ?? "";
+    const m = /^(\d+): ([\s\S]*)$/.exec(last);
+    return st.status === "COOLDOWN" && (st.cooldownUntil ?? 0) > now && !!m && classifyStatus(Number(m[1]), m[2]) === "payment";
+  };
+  if (keys.length && keys.every(noCredit))
+    return new GatewayError("upstream_insufficient_balance", undefined, { retryAfterSec: 60, internal: "every upstream key is cooling down: its upstream account is out of credit" });
   return new GatewayError("no_available_provider", undefined, { retryAfterSec: retry, internal: "no usable upstream key (all disabled, invalid, cooling down or missing)" });
 }
 
