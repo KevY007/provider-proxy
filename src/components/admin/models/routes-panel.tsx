@@ -237,6 +237,7 @@ export function RoutesPanel({
           route={editing === "new" ? null : editing}
           sell={sell}
           sellTools={sellTools}
+          official={model}
           providers={providers}
           groups={groups}
           onClose={() => setEditing(null)}
@@ -290,6 +291,7 @@ function RouteDialog({
   route,
   sell,
   sellTools,
+  official,
   providers,
   groups,
   onClose,
@@ -299,6 +301,8 @@ function RouteDialog({
   route: RouteRow | null;
   sell: SellValues;
   sellTools: Record<string, number | null>;
+  /** the model form: its official list prices show each cost as a % of official */
+  official: Record<string, unknown>;
   providers: ProviderOption[];
   groups: GroupOption[];
   onClose: () => void;
@@ -449,7 +453,9 @@ function RouteDialog({
             </span>
           </div>
         </div>
-        <p className="text-xs text-muted-foreground">Margin = (sell − cost) / sell, before group and customer multipliers. Blank cached / cache-write fall back to the input price on both sides.</p>
+        <p className="text-xs text-muted-foreground">
+          Cost = what this supplier charges us. Official = the vendor&apos;s list price (what OpenAI / Anthropic charge anyone directly). Sell = the model price before the pool&apos;s percentage. Margin = (sell − cost) / sell. Blank cached / cache-write fall back to the input price on both sides.
+        </p>
         <div className="overflow-hidden rounded-lg border">
           <Table>
             <TableHeader className="bg-muted/40">
@@ -481,6 +487,7 @@ function RouteDialog({
                       className="h-7 tabular-nums"
                     />
                     {fieldErrors[p.cost] && <span className="text-xs text-destructive">{fieldErrors[p.cost]}</span>}
+                    <OfficialShare cost={costs[p.cost]} official={p.official ? (official[p.official] as string | null | undefined) : null} />
                   </TableCell>
                   <TableCell className="text-right text-xs">
                     <Margin v={pairMargin(p, sell, costs)} />
@@ -521,4 +528,13 @@ function RouteDialog({
       </section>
     </FormDialog>
   );
+}
+
+/** "= 5% of official" under a route cost (the supplier's discount, at a glance). */
+function OfficialShare({ cost, official }: { cost: string | undefined; official: string | null | undefined }) {
+  const c = toNum(cost ?? null);
+  const o = toNum(official ?? null);
+  if (c === null || o === null || o === 0) return null;
+  const pct = Math.round((c / o) * 10000) / 100;
+  return <span className="block text-[10px] text-muted-foreground">= {pct}% of official</span>;
 }

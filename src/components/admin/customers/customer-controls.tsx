@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { CheckField, NumberField, SelectField } from "@/components/admin/fields";
 import { useAction } from "@/components/admin/use-action";
 import { fmtDateTime } from "@/components/admin/format";
+import { describePercent, multiplierToPercent, percentToMultiplier } from "@/lib/percent";
 import { setCustomerRole, setCustomerStatus, updateCustomerSettings, verifyCustomerEmail } from "@/server/admin/customers-actions";
 import type { CustomerDetail } from "@/server/admin/customers-queries";
 
@@ -19,7 +20,7 @@ export function CustomerControls({
   isSelf,
 }: {
   user: CustomerDetail["user"];
-  groups: Array<{ id: string; name: string; isDefault: boolean; isPublic?: boolean }>;
+  groups: Array<{ id: string; name: string; isDefault: boolean; isPublic?: boolean; priceMultiplier?: string }>;
   isAdmin: boolean;
   isSelf: boolean;
 }) {
@@ -29,7 +30,7 @@ export function CustomerControls({
   const [extraGroupIds, setExtraGroupIds] = useState<string[]>(user.extraGroupIds ?? []);
   // private pools that are not already the customer's own pool: the ones an admin can additionally allow
   const privatePools = groups.filter((g) => g.isPublic === false && g.id !== groupId);
-  const [multiplier, setMultiplier] = useState(user.priceMultiplier ?? "");
+  const [pct, setPct] = useState(multiplierToPercent(user.priceMultiplier)); // stored as a factor, typed as a percentage
   const [billingMode, setBillingMode] = useState(user.billingMode);
   const [creditLimit, setCreditLimit] = useState(user.creditLimit === "0" ? "" : user.creditLimit);
   const [monthlyLimit, setMonthlyLimit] = useState(user.monthlySpendLimit ?? "");
@@ -92,7 +93,7 @@ export function CustomerControls({
           onSubmit={(e) => {
             e.preventDefault();
             void run(() =>
-              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: multiplier, billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc }),
+              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc }),
             );
           }}
         >
@@ -108,12 +109,20 @@ export function CustomerControls({
               disabled={!isAdmin}
             />
             <NumberField
-              label="Price multiplier"
-              value={multiplier}
-              onChange={setMultiplier}
-              placeholder="blank = group only"
-              step="0.01"
-              description="Stacks on top of the group multiplier."
+              label="Customer price adjustment"
+              suffix="% of the pool price"
+              value={pct}
+              onChange={setPct}
+              placeholder="blank = pool price"
+              step="1"
+              min={0}
+              description={(() => {
+                const pool = groups.find((g) => g.id === groupId) ?? groups.find((g) => g.isDefault);
+                const poolPct = Number(multiplierToPercent(pool?.priceMultiplier ?? "1"));
+                const own = pct.trim() === "" ? 100 : Number(pct);
+                const total = Math.round(poolPct * own) / 100;
+                return `They pay ${describePercent(total)} of each model's price: pool ${pool?.name ?? "default"} ${poolPct}%${own !== 100 ? ` x this customer ${own}%` : ""}. Model prices default to the official list price (what OpenAI / Anthropic charge directly).`;
+              })()}
               error={fieldErrors.priceMultiplier}
               disabled={!isAdmin}
             />

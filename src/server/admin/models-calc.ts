@@ -69,24 +69,24 @@ export const PRICING_MODES = ["FIXED", "PERCENT_OF_OFFICIAL", "MARKUP_OVER_COST"
 export type PricingModeId = (typeof PRICING_MODES)[number];
 
 export const PRICING_MODE_LABELS: Record<PricingModeId, { label: string; hint: string; valueLabel: string; valueHint: string }> = {
-  FIXED: { label: "Fixed prices", hint: "You type the customer price for every unit.", valueLabel: "", valueHint: "" },
+  FIXED: { label: "Fixed prices", hint: "You type the model price for every unit. The pool's percentage still applies on top.", valueLabel: "", valueHint: "" },
   PERCENT_OF_OFFICIAL: {
-    label: "% of official price",
-    hint: "Customer price = Official price × value%. 70 means 30% cheaper than the provider's own list price.",
-    valueLabel: "Percent of official",
-    valueHint: "70 = customers pay 70% of the official price (30% off). 100 = same as official.",
+    label: "% of official list price",
+    hint: "Model price = the official list price (what OpenAI / Anthropic / Google charge anyone directly) × value%. The pool's percentage applies on top: 100% here + a 50% pool = customers pay 50% of official.",
+    valueLabel: "Percent of the official list price",
+    valueHint: "100 = the official list price (recommended; set discounts on the pool). 70 = 30% below official.",
   },
   MARKUP_OVER_COST: {
     label: "Markup over our cost",
-    hint: "Customer price = Our cost × (1 + value%). Follows your cost automatically when it changes.",
+    hint: "Model price = our cost (what our supplier charges us for this model, on the route) × (1 + value%). Follows our cost when it changes.",
     valueLabel: "Markup over our cost",
     valueHint: "30 = we charge 30% more than we pay our supplier.",
   },
   PERCENT_OF_COST: {
     label: "% of our cost",
-    hint: "Customer price = Our cost × value%. With an auto-updated route cost, the price follows the provider's own price.",
+    hint: "Model price = our cost (what our supplier charges us, on the route) × value%. With an auto-updated route cost, the price follows the supplier's own price.",
     valueLabel: "Percent of our cost",
-    valueHint: "50 = customers pay half of what the provider charges us. 100 = the provider's price as it is.",
+    valueHint: "50 = customers pay half of what the supplier charges us. 100 = the supplier's price as it is.",
   },
 };
 
