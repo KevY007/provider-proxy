@@ -305,5 +305,8 @@ export function providerSettings(p: { settings: JsonObject }) {
     serviceTiers: Array.isArray(s.serviceTiers) ? (s.serviceTiers as unknown[]).filter((x): x is string => typeof x === "string") : null,
     // the upstream ignores max_output_tokens: the gateway enforces it on the streamed output and ends with response.incomplete
     enforceMaxOutputTokens: s.enforceMaxOutputTokens === true,
+    // the upstream does not bill a stream it ends with its own error event (the relay: its ~900 s cap, "Upstream
+    // service temporarily unavailable"): such a stream is not billed to the customer either, even if output was delivered
+    unbilledStreamErrors: s.unbilledStreamErrors === true,
   };
 }

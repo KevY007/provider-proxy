@@ -178,10 +178,29 @@ export type AiResult = z.infer<typeof aiSchema>;
 
 /** The JSON object in an AI answer (tolerates code fences and prose around it). */
 export function parseAiJson(text: string): AiResult {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new Error("the AI answer contains no JSON object");
-  return aiSchema.parse(JSON.parse(text.slice(start, end + 1)));
+  // the first balanced {...} that parses and has "models" (string-aware: braces inside strings do not count)
+  for (let start = text.indexOf("{"); start >= 0; start = text.indexOf("{", start + 1)) {
+    let depth = 0;
+    let inStr = false;
+    for (let i = start; i < text.length; i++) {
+      const ch = text[i];
+      if (inStr) {
+        if (ch === "\\") i++;
+        else if (ch === '"') inStr = false;
+      } else if (ch === '"') inStr = true;
+      else if (ch === "{") depth++;
+      else if (ch === "}" && --depth === 0) {
+        try {
+          const doc = JSON.parse(text.slice(start, i + 1)) as unknown;
+          if (doc && typeof doc === "object" && "models" in doc) return aiSchema.parse(doc);
+        } catch {
+          /* not JSON: try the next "{" */
+        }
+        break;
+      }
+    }
+  }
+  throw new Error("the AI answer contains no JSON object with the prices");
 }
 
 interface RouteRow {
@@ -302,6 +321,7 @@ export function buildProposals(input: ProposalInput): { proposals: Proposal[]; p
         const cur = toNum(r[u.cost]);
         if (page === null || page === undefined) continue;
         const verified = onPage(page, pageNums);
+        if (page === 0 && !verified) continue; // "$0" for a unit the page does not price (audio models ...): not a price
         if (!verified) reasons.push(`${u.label} $${page} is not written on the page`);
         const ch: UnitChange = { unit: u.unit, current: fmt(r[u.cost]), next: cur !== null && round(cur) === round(page) ? null : dec(page), verified, changePct: pct(cur, page) };
         if (updatesOfficial && u.official) {

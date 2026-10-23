@@ -468,7 +468,8 @@ export async function bulkApplyPricingRule(modelIds: string[], rule: { mode: str
     let value: number | null = null;
     if (mode !== "FIXED") {
       value = Number(rule.value);
-      if (!Number.isFinite(value) || value <= 0) {
+      // a 0% markup (sell at cost) is valid; 0% of official / of cost would make the model free
+      if (!Number.isFinite(value) || value < 0 || (value === 0 && mode !== "MARKUP_OVER_COST")) {
         throw new ActionFail(mode === "PERCENT_OF_OFFICIAL" ? "Enter a percent of the official price, e.g. 70" : "Enter a markup percent, e.g. 30", { value: "Enter a number above 0" });
       }
     }
