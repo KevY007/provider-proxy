@@ -23,7 +23,8 @@ import { getOverview } from "@/server/customer/analytics";
 import { explainError } from "@/server/customer/log-status";
 import { getOnboarding } from "@/server/customer/onboarding-data";
 import { summarizeSavings, type SavingsSummary } from "@/server/customer/savings";
-import { getSavingsTotals } from "@/server/customer/savings-totals";
+import { getSavingsTotals, getSpendByPool } from "@/server/customer/savings-totals";
+import { savingsPctOf } from "@/server/customer/savings";
 
 export const metadata = { title: "Overview" };
 export const dynamic = "force-dynamic";
@@ -56,12 +57,13 @@ function SavingsFigure({ label, s }: { label: string; s: SavingsSummary & { hasD
 
 export default async function DashboardPage() {
   const { user } = await requireUser();
-  const [ov, announcements, siteName, onboarding, totals] = await Promise.all([
+  const [ov, announcements, siteName, onboarding, totals, byPool] = await Promise.all([
     getOverview(user.id),
     db.announcement.findMany({ where: { active: true }, orderBy: { createdAt: "desc" }, take: 3 }),
     getSetting("siteName"),
     getOnboarding(user),
     getSavingsTotals(user.id),
+    getSpendByPool(user.id),
   ]);
   const { today, week, series, models, errors, keyCount } = ov;
   const savings = summarizeSavings(week.official, week.comparable);
@@ -138,6 +140,51 @@ export default async function DashboardPage() {
           <SavingsFigure label="Last 7 days" s={{ ...savings, hasData: hasSavings }} />
           <SavingsFigure label="All time" s={totals.allTime} />
         </CardContent>
+        {byPool.length > 0 && (
+          <CardContent className="border-t pt-4">
+            <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">By pool, all time</p>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="py-1.5 pr-4 font-medium">Pool</th>
+                    <th className="py-1.5 pr-4 text-right font-medium">Requests</th>
+                    <th className="py-1.5 pr-4 text-right font-medium">Spent</th>
+                    <th className="py-1.5 pr-4 text-right font-medium">At list price</th>
+                    <th className="py-1.5 text-right font-medium">Saved</th>
+                  </tr>
+                </thead>
+                <tbody className="tabular-nums">
+                  {byPool.map((p) => {
+                    const pct = savingsPctOf(p.listPrice, p.comparablePaid);
+                    const saved = p.listPrice - p.comparablePaid;
+                    return (
+                      <tr key={p.slug ?? "none"} className="border-t">
+                        <td className="py-1.5 pr-4 font-medium">{p.name}</td>
+                        <td className="py-1.5 pr-4 text-right">{formatCompact(p.requests)}</td>
+                        <td className="py-1.5 pr-4 text-right">
+                          <MoneyText value={p.spent} />
+                        </td>
+                        <td className="py-1.5 pr-4 text-right text-muted-foreground">{p.listPrice > 0 ? <MoneyText value={p.listPrice} /> : "-"}</td>
+                        <td className={`py-1.5 text-right ${saved > 0 ? "text-emerald-600 dark:text-emerald-400" : saved < 0 ? "text-amber-600 dark:text-amber-400" : ""}`}>
+                          {p.listPrice > 0 ? (
+                            <>
+                              {saved < 0 ? "+" : ""}
+                              <MoneyText value={Math.abs(saved)} />
+                              {pct !== null && <span className="ml-1 text-xs">({Math.abs(Math.round(pct))}%)</span>}
+                            </>
+                          ) : (
+                            "-"
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

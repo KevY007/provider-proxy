@@ -20,6 +20,7 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { formatCompact } from "@/lib/utils";
 import { deleteRevokedKeyAction, emptyRevokedKeysAction, revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
 import { formatMultiplier } from "@/server/customer/pricing";
+import { savingsPctOf } from "@/server/customer/savings";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { KeyFormDialog } from "./key-form-dialog";
 import { LocalTime } from "./local-time";
@@ -164,6 +165,31 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
         },
       },
       {
+        id: "listPrice",
+        header: () => (
+          <Tooltip>
+            <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4">At list price</TooltipTrigger>
+            <TooltipContent className="max-w-xs">What this key&apos;s requests would have cost at the providers&apos; official prices.</TooltipContent>
+          </Tooltip>
+        ),
+        accessorFn: (k) => Number(k.listPrice ?? 0),
+        cell: ({ row }) => {
+          const k = row.original;
+          if (!k.listPrice || Number(k.listPrice) <= 0) return <span className="text-muted-foreground">-</span>;
+          const pct = savingsPctOf(k.listPrice, k.listComparablePaid ?? "0");
+          return (
+            <div className="space-y-0.5 whitespace-nowrap text-sm">
+              <MoneyText value={k.listPrice} className="text-muted-foreground" />
+              {pct !== null && Math.round(pct) !== 0 && (
+                <p className={`text-xs ${pct > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
+                  {pct > 0 ? `saved ${Math.round(pct)}%` : `+${Math.abs(Math.round(pct))}% vs list`}
+                </p>
+              )}
+            </div>
+          );
+        },
+      },
+      {
         id: "lastUsed",
         header: "Last used",
         accessorFn: (k) => k.lastUsedAt ?? "",
@@ -233,7 +259,7 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
 
   const revokedColumns = useMemo<ColumnDef<KeyRow>[]>(
     () => [
-      ...columns.filter((c) => ["name", "pool", "spent", "lastUsed", "created"].includes((c.id ?? (c as { accessorKey?: string }).accessorKey) as string)),
+      ...columns.filter((c) => ["name", "pool", "spent", "listPrice", "lastUsed", "created"].includes((c.id ?? (c as { accessorKey?: string }).accessorKey) as string)),
       {
         id: "delete",
         header: "",

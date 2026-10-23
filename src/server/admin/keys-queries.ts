@@ -53,6 +53,11 @@ export async function listApiKeys(p: KeyListParams) {
       include: { user: { select: { id: true, email: true } }, group: { select: { name: true } } },
     }),
   ]);
+  // the same usage at official list prices, for the keys on this page
+  const listed = rows.length
+    ? await db.requestLog.groupBy({ by: ["apiKeyId"], where: { apiKeyId: { in: rows.map((k) => k.id) }, officialPrice: { gt: 0 } }, _sum: { officialPrice: true } })
+    : [];
+  const listOf = new Map(listed.map((r) => [r.apiKeyId, r._sum.officialPrice]));
   return {
     total,
     rows: rows.map((k) => ({
@@ -64,6 +69,7 @@ export async function listApiKeys(p: KeyListParams) {
       status: k.status as string,
       groupName: k.group?.name ?? null,
       spent: dstr0(k.spent),
+      listPrice: dstr(listOf.get(k.id) ?? null),
       spendLimit: dstr(k.spendLimit),
       rpmLimit: k.rpmLimit,
       lastUsedAt: iso(k.lastUsedAt),
