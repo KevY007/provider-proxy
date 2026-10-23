@@ -21,7 +21,20 @@ import { formatNumber, formatPercent } from "@/lib/utils";
 import { emptyProviderForm, ProviderFormFields, providerPayload, type ProviderFormState } from "./provider-form";
 import { ProviderProbe } from "./provider-probe";
 
-export function ProvidersTable({ rows, presets, initialSlots, canEdit }: { rows: ProviderListRow[]; presets: ProviderPreset[]; initialSlots: SlotSnapshot; canEdit: boolean }) {
+export function ProvidersTable({
+  rows,
+  presets,
+  initialSlots,
+  canEdit,
+  balances = {},
+}: {
+  rows: ProviderListRow[];
+  presets: ProviderPreset[];
+  initialSlots: SlotSnapshot;
+  canEdit: boolean;
+  /** money left on the upstream account, by provider id (only providers that publish it) */
+  balances?: Record<string, { balance: number | null; error?: string }>;
+}) {
   const { snapshot } = useSlotSnapshot(initialSlots);
   const slotByProvider = useMemo(() => new Map(snapshot.providers.map((p) => [p.id, p])), [snapshot]);
   const keySlotSum = useMemo(() => {
@@ -97,6 +110,17 @@ export function ProvidersTable({ rows, presets, initialSlots, canEdit }: { rows:
       },
     },
     { accessorKey: "cost24h", header: "Cost 24h", meta: { className: "text-right" }, cell: ({ row }) => <MoneyText value={row.original.cost24h} /> },
+    {
+      id: "balance",
+      header: "Upstream balance",
+      meta: { className: "text-right" },
+      cell: ({ row }) => {
+        const b = balances[row.original.id];
+        if (!b) return <span className="text-muted-foreground">-</span>;
+        if (b.balance == null) return <span className="text-xs text-amber-500" title={b.error}>unavailable</span>;
+        return <span className={`tabular-nums ${b.balance < 5 ? "font-medium text-red-500" : ""}`}>${b.balance.toFixed(2)}</span>;
+      },
+    },
   ];
 
   return (
