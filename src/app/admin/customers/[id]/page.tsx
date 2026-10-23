@@ -73,7 +73,7 @@ export default async function Page({
 
       <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_340px]">
         <CustomerControls user={user} groups={groups} isAdmin={isAdmin} isSelf={user.id === me.id} />
-        <BalanceCard user={user} isAdmin={isAdmin} spend30d={totals.revenue} />
+        <BalanceCard user={user} isAdmin={isAdmin} />
       </div>
 
       <Tabs defaultValue="usage">
