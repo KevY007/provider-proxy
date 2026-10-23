@@ -51,8 +51,16 @@ export function encrypt(plain: string): string {
   return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
 }
 
+/**
+ * A secret written straight into the database (`plain:<secret>`, e.g. an upstream key inserted by SQL by an operator
+ * who has no access to ENCRYPTION_KEY): usable at once, and sealed into the normal encrypted form by the next upkeep
+ * run (sealPendingProviderSecrets).
+ */
+export const PENDING_SECRET_PREFIX = "plain:";
+
 /** Inverse of {@link encrypt}. Throws if the payload was tampered with or the key is wrong. */
 export function decrypt(payload: string): string {
+  if (payload.startsWith(PENDING_SECRET_PREFIX)) return payload.slice(PENDING_SECRET_PREFIX.length);
   const [v, iv, tag, ct] = payload.split(":");
   if (v !== "v1" || !iv || !tag || !ct) throw new Error("Invalid encrypted payload");
   const decipher = createDecipheriv("aes-256-gcm", getKey(), Buffer.from(iv, "base64"));

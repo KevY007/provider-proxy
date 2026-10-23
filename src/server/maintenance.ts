@@ -88,6 +88,7 @@ async function work(job: JobName): Promise<unknown> {
         batches: await step("batch sweep", () => sweepBatches()),
         metering: await step("dead letters", () => replayDeadLetters()),
         pruned: await step("prune health history", () => pruneHealthChecks()),
+        sealedKeys: await step("seal plain upstream keys", async () => (await import("@/server/admin/seal-secrets")).sealPendingProviderSecrets()),
       };
     }
     case "billing": {
