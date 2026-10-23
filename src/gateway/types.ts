@@ -36,6 +36,7 @@ export type Operation =
   | "models_list"
   | "model_get"
   | "model_info"
+  | "request_get"
   | "gemini_models_list"
   | "gemini_model_get"
   // Files APIs (PLAN 5c): OpenAI /v1/files + /v1/uploads, Anthropic /v1/files, Gemini /upload/v1beta/files + /v1beta/files

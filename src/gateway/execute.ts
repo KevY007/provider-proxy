@@ -8,7 +8,7 @@ import { handleFilesOk, prepareRawUpstream, registerGeneratedFiles } from "./fil
 import { generatedFilesOfAnthropicMessage, generatedFilesOfResponsesOutput } from "./generated-files";
 import { finalError, type Failure } from "./failure";
 import { forwardUpstreamHeaders } from "./headers";
-import { classifyStatus, providerNoCooldown, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
+import { classifyStatus, modelCooldownLeftSec, providerNoCooldown, recordKeyFailure, recordKeySuccess, type FailureKind } from "./keyhealth";
 import { checkRpm, checkTpm, providerKeyDailyCost } from "./limits";
 import { fileBytes } from "./multipart";
 import type { StreamProcessor } from "./processor";
@@ -135,7 +135,7 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       if (signal.aborted) throw new GatewayError("client_closed");
       const built = buildCandidates(snap, routes, { failures, pinKeyId: opts.pinKeyId, preferKeyId: opts.preferKeyId });
       const cands = forbidden.size ? built.filter((c) => !forbidden.has(`${c.route.id}:${c.key.id}`)) : built;
-      if (!cands.length) throw lastFailure ? finalError(lastFailure, settings) : noProviderError(snap, routes);
+      if (!cands.length) throw lastFailure ? finalError(lastFailure, settings) : (modelRateLimitedError(snap, routes) ?? noProviderError(snap, routes));
 
       const pick = await pickSlot(cands, settings);
       if (!pick) {
@@ -181,7 +181,7 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       if (f.fk === "auth" && !getKeySecret(pick.cand.key)) {
         recordKeyFailure(pick.cand.key, "auth", { status: f.status, message: f.message }, settings);
       } else {
-        recordKeyFailure(pick.cand.key, f.fk, { status: f.status, message: f.message, retryAfterSec: f.retryAfterSec, startedAt: f.startedAt, noCooldown: providerNoCooldown(pick.cand.route.provider) }, settings);
+        recordKeyFailure(pick.cand.key, f.fk, { status: f.status, message: f.message, retryAfterSec: f.retryAfterSec, startedAt: f.startedAt, noCooldown: providerNoCooldown(pick.cand.route.provider), model: pick.cand.route.upstreamModel }, settings);
       }
       if (attemptsMade >= maxAttempts) throw finalError(f, settings);
     }
@@ -191,6 +191,15 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       if (queueStart !== null && !queueRecorded) ctx.queueMs = Date.now() - queueStart;
     }
   }
+}
+
+/** Every usable key is rate-limited for this model (a relay's per-model limit): a 429 the client can retry. */
+function modelRateLimitedError(snap: ConfigSnapshot, routes: RoutePlan[]): GatewayError | null {
+  const pairs: Array<[string, string]> = [];
+  for (const rp of routes) for (const k of snap.keysByProvider.get(rp.route.providerId) ?? []) pairs.push([k.id, rp.route.upstreamModel]);
+  const left = modelCooldownLeftSec(pairs);
+  if (left === null) return null;
+  return new GatewayError("rate_limited", `Rate limit reached for this model upstream. Please retry in ${left}s.`, { retryAfterSec: left, internal: "every key is cooling down for this model after an upstream 429" });
 }
 
 function noProviderError(snap: ConfigSnapshot, routes: RoutePlan[]): GatewayError {

@@ -1058,6 +1058,8 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
   const model = asStr(b.model);
   if (!model) return sendError(ctx, "invalid_request", "Missing required parameter: 'model'.");
   if (b.input === undefined) return sendError(ctx, "invalid_request", "Missing required parameter: 'input'.");
+  // a relay's per-model limit: upstream models named "...rpm429..." are always over their rate limit (other models fine)
+  if (model.includes("rpm429")) return sendError(ctx, "rate_limit", "Model rate limit exceeded.");
   const ex = extractResponses(b);
   const p = plan(ex, "openai", undefined, outputCap(b));
   const delay = resolveDelay(ctx.req, b, p.markers);

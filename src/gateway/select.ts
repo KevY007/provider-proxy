@@ -1,5 +1,6 @@
 import type { ConfigSnapshot, GroupRec, KeyRec, ModelRec, RouteRec } from "./cache";
 import { isKeyUsable } from "./cache";
+import { isModelCooling } from "./keyhealth";
 import { planTranslation, type FormatPlan } from "./translate";
 import type { InboundFormat } from "./types";
 import { weightedShuffle } from "./util";
@@ -86,7 +87,7 @@ export function buildCandidates(
   for (const rp of routes) {
     const keys = snap.keysByProvider.get(rp.route.providerId) ?? [];
     const pool = opts.pinKeyId ? keys.filter((k) => k.id === opts.pinKeyId) : keys;
-    for (const key of orderKeys(pool, now, opts.rand)) out.push({ ...rp, key });
+    for (const key of orderKeys(pool, now, opts.rand)) if (!isModelCooling(key.id, rp.route.upstreamModel, now)) out.push({ ...rp, key });
   }
   // affinity (not a pin): a customer's new uploads go to the account that already holds their other files
   if (opts.preferKeyId && out.some((c) => c.key.id === opts.preferKeyId)) {

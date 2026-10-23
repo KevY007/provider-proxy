@@ -28,6 +28,40 @@ export interface FailureInfo {
   startedAt?: number;
   /** The provider opted out of cooling keys down on transient errors (`settings.noCooldown`). */
   noCooldown?: boolean;
+  /** The upstream model the request used: with `noCooldown`, a 429 cools only this (key, model) pair. */
+  model?: string;
+}
+
+// ------------------------------------------------------------------ per-model rate limits
+/**
+ * A relay limits each model separately on one account ("Luna model rate limit exceeded"). Cooling the whole key on
+ * such a 429 would block every other model behind it (a burst of small Luna calls stopping all Astra drawings), so for
+ * `noCooldown` providers a 429 cools only the (key, model) pair. Per instance and short-lived on purpose.
+ */
+const modelCooldowns = new Map<string, number>();
+const MODEL_COOLDOWN_DEFAULT_SEC = 15;
+const mk = (keyId: string, model: string) => `${keyId}|${model}`;
+
+export function isModelCooling(keyId: string, model: string, now = Date.now()): boolean {
+  const until = modelCooldowns.get(mk(keyId, model));
+  if (until === undefined) return false;
+  if (until > now) return true;
+  modelCooldowns.delete(mk(keyId, model));
+  return false;
+}
+
+/** Seconds until the soonest of these (key, model) pairs is usable again; null when none is cooling. */
+export function modelCooldownLeftSec(pairs: Array<[string, string]>, now = Date.now()): number | null {
+  let soonest = Infinity;
+  for (const [k, m] of pairs) {
+    const until = modelCooldowns.get(mk(k, m));
+    if (until !== undefined && until > now) soonest = Math.min(soonest, until);
+  }
+  return soonest === Infinity ? null : Math.max(1, Math.ceil((soonest - now) / 1000));
+}
+
+export function __resetModelCooldownsForTests(): void {
+  modelCooldowns.clear();
 }
 
 /**
@@ -105,6 +139,13 @@ export function recordKeyFailure(
   let cooldownUntil: number | null = cur.cooldownUntil && cur.cooldownUntil > now ? cur.cooldownUntil : null;
   let failures = cur.consecutiveFailures;
   let authStreak = rt?.authFailStreak ?? 0;
+
+  if (kind === "rate_limit" && info.noCooldown && info.model) {
+    const secs = Math.min(MAX_COOLDOWN_MS / 1000, Math.max(1, info.retryAfterSec ?? Math.min(settings.keyCooldownSeconds, MODEL_COOLDOWN_DEFAULT_SEC)));
+    modelCooldowns.set(mk(key.id, info.model), Math.max(modelCooldowns.get(mk(key.id, info.model)) ?? 0, now + secs * 1000));
+    if (modelCooldowns.size > 10_000) for (const [k, until] of modelCooldowns) if (until <= now) modelCooldowns.delete(k);
+    return { status: cur.status, cooldownUntil: cur.cooldownUntil, consecutiveFailures: cur.consecutiveFailures };
+  }
 
   switch (kind) {
     case "rate_limit": {

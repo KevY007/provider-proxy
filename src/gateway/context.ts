@@ -129,7 +129,7 @@ export function releaseAll(ctx: Ctx): void {
   }
 }
 
-export const EXPOSE_HEADERS = "x-request-id, retry-after, retry-after-ms, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens, anthropic-ratelimit-requests-limit, anthropic-ratelimit-requests-remaining, anthropic-ratelimit-requests-reset, anthropic-ratelimit-tokens-limit, anthropic-ratelimit-tokens-remaining, anthropic-ratelimit-tokens-reset";
+export const EXPOSE_HEADERS = "x-request-id, x-pool, x-price-multiplier, retry-after, retry-after-ms, x-ratelimit-limit-requests, x-ratelimit-limit-tokens, x-ratelimit-remaining-requests, x-ratelimit-remaining-tokens, x-ratelimit-reset-requests, x-ratelimit-reset-tokens, anthropic-ratelimit-requests-limit, anthropic-ratelimit-requests-remaining, anthropic-ratelimit-requests-reset, anthropic-ratelimit-tokens-limit, anthropic-ratelimit-tokens-remaining, anthropic-ratelimit-tokens-reset";
 
 export function corsHeaders(): Record<string, string> {
   return {
@@ -138,10 +138,17 @@ export function corsHeaders(): Record<string, string> {
   };
 }
 
-/** Add x-request-id + CORS to a response we constructed. */
+/**
+ * Add x-request-id + CORS to a response we constructed, and on billable calls the pool that served (and bills) it
+ * plus the price multiplier applied to list prices (pool x customer). The exact charge: GET /v1/requests/{x-request-id}.
+ */
 export function withCommon(ctx: Ctx, res: Response): Response {
   try {
     res.headers.set("x-request-id", ctx.requestId);
+    if (ctx.model && ctx.group) {
+      res.headers.set("x-pool", ctx.group.slug);
+      res.headers.set("x-price-multiplier", ctx.multiplier.toString());
+    }
     for (const [k, v] of Object.entries(corsHeaders())) res.headers.set(k, v);
   } catch {
     /* immutable headers: ignore */
