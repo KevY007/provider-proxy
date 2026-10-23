@@ -308,7 +308,17 @@ export function providerSettings(p: { settings: JsonObject }) {
     // the upstream does not bill a stream it ends with its own error event (Codex Everywhere: its ~900 s cap, "Upstream
     // service temporarily unavailable"): such a stream is not billed to the customer either, even if output was delivered
     unbilledStreamErrors: s.unbilledStreamErrors === true,
+    // several providers on ONE upstream account share its concurrency limit (Codex Everywhere: 20 per account, over
+    // all its pools): { group: "<any id>", max: 20 }. Requests beyond it wait in the queue.
+    sharedConcurrency: sharedConcurrencyOf(s.sharedConcurrency),
   };
+}
+
+function sharedConcurrencyOf(v: unknown): { group: string; max: number } | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  const max = Number(o.max);
+  return typeof o.group === "string" && o.group.trim() && Number.isInteger(max) && max > 0 ? { group: o.group.trim(), max } : null;
 }
 
 /**

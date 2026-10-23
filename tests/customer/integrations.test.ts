@@ -27,6 +27,12 @@ describe("integration guides", () => {
       ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5-5",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     });
+    // optional "this terminal only" alternative: the same variables per shell
+    const temp = cc.steps.find((s) => s.title.startsWith("Optional"))!.os!;
+    expect(temp.unix[0].code).toContain('export ANTHROPIC_AUTH_TOKEN="sk-pp-SECRET"');
+    expect(temp.windows[0].code).toContain('$env:ANTHROPIC_BASE_URL="https://p.example.com"');
+    expect(temp.windows[1].code).toContain("set ANTHROPIC_AUTH_TOKEN=sk-pp-SECRET");
+    expect(temp.windows[1].code.endsWith("\nclaude")).toBe(true);
     expect(cc.warning).toBeUndefined();
     // the Codex guide warns: no GPT models in this pool
     expect(guide(gs, "codex").warning).toMatch(/Coding pool has no OpenAI models/);

@@ -274,7 +274,9 @@ export function effectiveOfficial(official: OptTable | null | undefined, sell: P
     output: o.output ?? sell.output.times(m),
     cachedInput: o.cachedInput ?? scaled(sell.cachedInput, m),
     cacheWrite: o.cacheWrite ?? scaled(sell.cacheWrite, m),
-    cacheWrite1h: o.cacheWrite1h ?? scaled(sell.cacheWrite1h, m),
+    // no official 1h column: scale the official 5m write by the model's own 1h:5m ratio (Anthropic 2x : 1.25x of input),
+    // else the 1h tokens fell back to what the customer pays and showed no savings
+    cacheWrite1h: o.cacheWrite1h ?? (o.cacheWrite && sell.cacheWrite1h && sell.cacheWrite?.gt(0) ? o.cacheWrite.times(sell.cacheWrite1h).div(sell.cacheWrite) : scaled(sell.cacheWrite1h, m)),
     image: sell.image ? (o.image ?? sell.image.times(m)) : null,
     request: o.request ?? scaled(sell.request, m),
     audioInput: o.audioInput ?? scaled(sell.audioInput, m),

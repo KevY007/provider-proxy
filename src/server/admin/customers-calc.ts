@@ -87,6 +87,8 @@ export const customerSettingsSchema = z.object({
   groupId: z.string().nullable().optional().transform((v) => v || null),
   /** Private pools this customer may also put keys in. */
   extraGroupIds: z.array(z.string().min(1)).max(50).optional().transform((v) => [...new Set(v ?? [])]),
+  /** The balance mirrors this provider's upstream account balance (null = off; omitted = unchanged). */
+  balanceMirrorProviderId: z.string().nullable().optional().transform((v) => (v === undefined ? undefined : v || null)),
   priceMultiplier: z
     .union([z.string(), z.number(), z.null(), z.undefined()])
     .transform((v, ctx) => {
