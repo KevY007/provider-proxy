@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Activity, AlertTriangle, Coins, DollarSign, Gauge, Percent, TrendingUp, Users, Zap } from "lucide-react";
+import { Activity, AlertTriangle, Coins, DollarSign, Gauge, Percent, TrendingUp, Users, Wallet, Zap } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/components/common/stat-card";
@@ -19,6 +19,7 @@ import { formatCompact, formatDuration, formatNumber, formatPercent, truncate } 
 import { getSlotSnapshot, type SlotSnapshot } from "@/gateway/slots";
 import { getBreakdown, getRecentErrors, getTimeSeries, getTotals } from "@/server/analytics/queries";
 import { parseAnalyticsParams, previousRange, trendPct } from "@/server/analytics/params";
+import { byAccount, getUpstreamBalances } from "@/server/admin/upstream-balances";
 
 export const metadata = { title: "Overview" };
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
   const { range, gran, filter } = parseAnalyticsParams(sp, { defaultRange: "7d" });
   const prev = previousRange(range);
 
-  const [quickStart, totals, prevTotals, series, topModels, topCustomers, errors, providers, slots] = await Promise.all([
+  const [quickStart, totals, prevTotals, series, topModels, topCustomers, errors, providers, slots, upstreamBalances] = await Promise.all([
     getQuickStart(),
     getTotals(filter),
     getTotals({ ...filter, ...prev }),
@@ -58,7 +59,11 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
       },
     }),
     safeSlots(),
+    getUpstreamBalances().catch(() => []),
   ]);
+  // one balance per upstream account (providers sharing an account report the same money)
+  const accounts = byAccount(upstreamBalances);
+  const knownBalances = accounts.filter((a) => a.balance != null);
 
   const providerName = new Map(providers.map((p) => [p.id, p.name]));
   const totalInUse = slots?.providerKeys.reduce((a, k) => a + k.inUse, 0) ?? 0;
@@ -84,6 +89,14 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
         <StatCard label="Active customers" icon={Users} value={formatNumber(totals.activeCustomers)} trend={trendPct(totals.activeCustomers, prevTotals.activeCustomers)} hint="with requests" />
         <StatCard label="Latency p50" icon={Gauge} value={formatDuration(totals.p50LatencyMs)} hint={`avg ${formatDuration(totals.avgLatencyMs)}`} />
         <StatCard label="Latency p95" icon={Gauge} value={formatDuration(totals.p95LatencyMs)} hint="successful requests" />
+        {accounts.length > 0 && (
+          <StatCard
+            label="Upstream balance"
+            icon={Wallet}
+            value={knownBalances.length ? formatUSD(knownBalances.reduce((a, b) => a + (b.balance ?? 0), 0)) : "unavailable"}
+            hint={accounts.map((a) => `${a.names.join(" + ")}: ${a.balance != null ? formatUSD(a.balance) : "n/a"}`).join(" · ")}
+          />
+        )}
         <StatCard label="Tokens" icon={Zap} value={formatCompact(totals.totalTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
       </div>
 

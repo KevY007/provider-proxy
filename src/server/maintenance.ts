@@ -92,7 +92,6 @@ async function work(job: JobName): Promise<unknown> {
         metering: await step("dead letters", () => replayDeadLetters()),
         pruned: await step("prune health history", () => pruneHealthChecks()),
         sealedKeys: await step("seal plain upstream keys", async () => (await import("@/server/admin/seal-secrets")).sealPendingProviderSecrets()),
-        mirroredBalances: await step("mirror upstream balances", async () => (await import("@/server/billing/balance-mirror")).syncMirroredBalances()),
       };
     }
     case "billing": {
