@@ -26,6 +26,8 @@ import { formatCompact, formatPercent } from "@/lib/utils";
 import { ModelExplainer } from "./explainer";
 import { PriceExplainer, PriceGrid, RuleSelector, ToolPriceTable, usePricingPreview } from "./pricing-editor";
 import { RoutesPanel, type GroupOption, type ProviderOption } from "./routes-panel";
+import { ModelEconomics } from "@/components/admin/pricing/model-economics";
+import { toNum } from "@/server/admin/models-calc";
 
 type Usage = { requests: number; revenue: number; cost: number; profit: number; errorRate: number } | null;
 
@@ -220,6 +222,14 @@ export function ModelWorkspace({
                 errors={fieldErrors}
                 cols={{ official: "edit", cost: "show", customer: "edit", savings: true, margin: true }}
                 focusUnits={focusUnits}
+              />
+              <ModelEconomics
+                customer={{ input: toNum(effectiveSell.inputPrice) ?? 0, output: toNum(effectiveSell.outputPrice) ?? 0, cached: toNum(effectiveSell.cachedInputPrice) }}
+                cost={costRoute ? { input: toNum(costRoute.inputCost) ?? 0, output: toNum(costRoute.outputCost) ?? 0, cached: toNum(costRoute.cachedInputCost) } : null}
+                official={toNum(f.officialInputPrice) !== null && toNum(f.officialOutputPrice) !== null ? { input: toNum(f.officialInputPrice)!, output: toNum(f.officialOutputPrice)!, cached: toNum(f.officialCachedPrice) } : null}
+                pools={groups}
+                ruleBasis={f.pricingMode === "PERCENT_OF_OFFICIAL" ? { kind: "official" } : f.pricingMode === "PERCENT_OF_COST" ? { kind: "cost" } : f.pricingMode === "MARKUP_OVER_COST" ? { kind: "markup" } : null}
+                onRuleValue={(v) => set("pricingValue", v)}
               />
               {f.pricingMode !== "FIXED" && (
                 <p className="text-xs text-muted-foreground">Customer prices follow the rule and are recomputed whenever the official price or a route cost changes. Switch to Fixed prices to type them yourself.</p>

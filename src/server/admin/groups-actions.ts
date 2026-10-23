@@ -13,6 +13,7 @@ const groupSchema = z.object({
   slug: slugSchema.transform((s) => s.toLowerCase()),
   description: z.string().max(500).nullish().transform((v) => (v?.trim() ? v.trim() : null)),
   priceMultiplier: optDecimal.default("1").refine((v) => v !== null && Number(v) > 0 && Number(v) <= 1000, "Must be greater than 0"),
+  priceBasis: z.enum(["model", "cost"]).default("model"),
   providerTags: stringList.default([]),
   allowedModels: stringList.default([]),
   isDefault: z.boolean().default(false),

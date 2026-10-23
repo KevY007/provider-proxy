@@ -3,7 +3,8 @@ import { getConfig, type GroupRec, type ModelRec } from "./cache";
 import { effectiveGroup } from "./auth";
 import type { AuthRecord } from "./cache";
 import { modalities, plainNumber, priceMatrix } from "./price-view";
-import { effectiveMultiplier } from "./pricing";
+import { effectiveMultiplier, type PriceTable } from "./pricing";
+import { poolPriceTable } from "./pool-prices";
 
 /**
  * Price list (`GET /api/pricing`, public or with an API key): every ACTIVE model that can actually be served, with the
@@ -25,8 +26,8 @@ const cache = new Map<string, { at: number; body: PublicPricing }>();
 
 const groupView = (g: GroupRec) => ({ slug: g.slug, name: g.name, multiplier: plainNumber(g.priceMultiplier) ?? 1 });
 
-function modelView(m: ModelRec, mult: Decimal): Record<string, unknown> {
-  const matrix = priceMatrix(m.sell, m.official, mult);
+function modelView(m: ModelRec, sell: PriceTable): Record<string, unknown> {
+  const matrix = priceMatrix(sell, m.official, new Decimal(1));
   return {
     id: m.slug,
     name: m.displayName,
@@ -96,7 +97,7 @@ function buildPricing(snap: Awaited<ReturnType<typeof getConfig>>, group: GroupR
       usd_per_minute: "US dollars per audio minute",
       usd_per_1m_characters: "US dollars per one million input characters",
     },
-    data: models.map((m) => modelView(m, mult)),
+    data: models.map((m) => modelView(m, poolPriceTable(snap, m, group, mult))),
   };
 }
 

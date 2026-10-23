@@ -19,7 +19,7 @@ import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
 import { formatCompact } from "@/lib/utils";
 import { deleteRevokedKeyAction, emptyRevokedKeysAction, revealOwnKeyAction, revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
-import { formatMultiplier } from "@/server/customer/pricing";
+import { poolSavingsLabel } from "@/server/customer/pricing";
 import { savingsPctOf } from "@/server/customer/savings";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { KeyFormDialog } from "./key-form-dialog";
@@ -87,11 +87,11 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
       {
         id: "pool",
         header: "Pool",
-        accessorFn: (k) => (k.groupName ? `${k.groupName} ${formatMultiplier(k.groupMultiplier ?? 1)}` : "Account default"),
+        accessorFn: (k) => (k.groupName ? `${k.groupName} ${poolSavingsLabel(k.groupSavingsPct)}`.trim() : "Account default"),
         cell: ({ row }) =>
           row.original.groupName ? (
             <span className="whitespace-nowrap">
-              {row.original.groupName} <span className="text-muted-foreground">{formatMultiplier(row.original.groupMultiplier ?? 1)}</span>
+              {row.original.groupName} {poolSavingsLabel(row.original.groupSavingsPct) && <span className="text-muted-foreground">{poolSavingsLabel(row.original.groupSavingsPct)}</span>}
             </span>
           ) : (
             <span className="whitespace-nowrap text-muted-foreground">Account default</span>

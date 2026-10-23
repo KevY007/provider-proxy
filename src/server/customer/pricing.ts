@@ -109,7 +109,15 @@ export function groupAllowsModel(group: Pick<GroupLike, "allowedModels">, slug: 
   return group.allowedModels.includes(slug) || aliases.some((a) => group.allowedModels.includes(a));
 }
 
-/** Format a multiplier for UI: 0.8 -> "0.8x". */
+/** Customer-facing pool label: "about 70% below list price" (never the raw multiplier). */
+export function poolSavingsLabel(pct: number | null | undefined): string {
+  if (pct === null || pct === undefined || Number.isNaN(pct)) return "";
+  if (pct >= 1) return `about ${Math.round(pct)}% below list price`;
+  if (pct <= -1) return `about ${Math.round(-pct)}% above list price`;
+  return "list price";
+}
+
+/** Format a multiplier for UI: 0.8 -> "0.8x" (admin only). */
 export function formatMultiplier(m: MoneyLike): string {
   return `${toDecimal(m, 1).toDecimalPlaces(4).toString()}×`;
 }

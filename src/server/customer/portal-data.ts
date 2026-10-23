@@ -3,6 +3,10 @@ import { db } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth/types";
 import { getCatalogModels, getDefaultGroup, getPublicGroups, type CatalogGroup, type CatalogModel } from "./catalog";
 import { effectiveMultiplier, effectivePrices, groupAllowsModel, type EffectivePrices } from "./pricing";
+import { Decimal } from "@/lib/money";
+import { getConfig } from "@/gateway/cache";
+import { poolPriceTable } from "@/gateway/pool-prices";
+import type { PriceTable } from "@/gateway/pricing";
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
@@ -15,6 +19,8 @@ export interface KeyRow {
   groupId: string | null;
   groupName: string | null;
   groupMultiplier: string | null;
+  /** saving of the key's pool vs the official list price (shown instead of the multiplier) */
+  groupSavingsPct: number | null;
   allowedModels: string[];
   ipAllowlist: string[];
   rpmLimit: number | null;
@@ -36,8 +42,10 @@ export interface PoolOption {
   slug: string;
   name: string;
   description: string | null;
-  /** Group multiplier x the customer's personal multiplier. */
+  /** Group multiplier x the customer's personal multiplier (internal: customer pages show `savingsPct`, never this). */
   multiplier: string;
+  /** Typical saving vs the official list price across the pool's models (input:output 3:1), null when unknown. */
+  savingsPct?: number | null;
   isDefault: boolean;
   /** model slugs the pool allows (empty = all) */
   allowedModels: string[];
@@ -76,10 +84,16 @@ export async function getSelectablePools(user: SessionUser): Promise<{ pools: Po
   return { pools, current };
 }
 
+/** Pools with their typical saving vs the official list price (what the customer pages show instead of multipliers). */
+export async function getSelectablePoolsWithSavings(user: SessionUser): Promise<{ pools: PoolOption[]; current: PoolOption | null }> {
+  const { pools, currentPool } = await getModelsForUser(user);
+  return { pools, current: currentPool };
+}
+
 export async function getKeysPageData(user: SessionUser) {
   const [rows, { pools, current }, models, list] = await Promise.all([
     db.apiKey.findMany({ where: { userId: user.id, isPlayground: false }, include: { group: { select: { name: true, priceMultiplier: true } } }, orderBy: { createdAt: "desc" } }),
-    getSelectablePools(user),
+    getSelectablePoolsWithSavings(user),
     getCatalogModels(),
     db.requestLog.groupBy({ by: ["apiKeyId"], where: { userId: user.id, apiKeyId: { not: null }, officialPrice: { gt: 0 } }, _sum: { officialPrice: true, price: true } }),
   ]);
@@ -94,6 +108,7 @@ export async function getKeysPageData(user: SessionUser) {
     groupId: k.groupId,
     groupName: k.group?.name ?? null,
     groupMultiplier: k.group ? effectiveMultiplier(k.group.priceMultiplier, user.priceMultiplier).toString() : null,
+    groupSavingsPct: k.groupId ? (pools.find((p) => p.id === k.groupId)?.savingsPct ?? null) : null,
     allowedModels: k.allowedModels,
     ipAllowlist: k.ipAllowlist,
     rpmLimit: k.rpmLimit,
@@ -120,18 +135,56 @@ export interface UserModel extends CatalogModel {
   prices: Record<string, EffectivePrices>;
 }
 
-/** Models the customer can use, priced for every pool they could pick. */
+/** Models the customer can use, priced for every pool they could pick (exactly what the gateway charges). */
 export async function getModelsForUser(user: SessionUser) {
-  const [models, { pools, current }] = await Promise.all([getCatalogModels(), getSelectablePools(user)]);
+  const [models, { pools, current }, snap] = await Promise.all([getCatalogModels(), getSelectablePools(user), getConfig()]);
   const groups = await db.group.findMany({ where: { id: { in: pools.map((p) => p.id) } }, select: { id: true, allowedModels: true } });
   const allowed = new Map(groups.map((g) => [g.id, g.allowedModels]));
   const out: UserModel[] = [];
+  const blends = new Map<string, { off: Decimal; ours: Decimal }>();
   for (const m of models) {
     const prices: Record<string, EffectivePrices> = {};
+    const rec = snap.modelsById.get(m.id);
     for (const p of pools) {
-      if (groupAllowsModel({ allowedModels: allowed.get(p.id) ?? [] }, m.slug, m.aliases)) prices[p.slug] = effectivePrices(m, p.multiplier);
+      if (!groupAllowsModel({ allowedModels: allowed.get(p.id) ?? [] }, m.slug, m.aliases)) continue;
+      const group = snap.groupsById.get(p.id) ?? null;
+      const ep = rec && group?.priceBasis === "cost" ? fromTable(poolPriceTable(snap, rec, group, new Decimal(p.multiplier))) : effectivePrices(m, p.multiplier);
+      prices[p.slug] = ep;
+      // pool saving: blend input:output 3:1 over the models that have an official price
+      if (m.officialInputPrice && m.officialOutputPrice) {
+        const b = blends.get(p.slug) ?? { off: new Decimal(0), ours: new Decimal(0) };
+        b.off = b.off.plus(new Decimal(m.officialInputPrice).times(3)).plus(m.officialOutputPrice);
+        b.ours = b.ours.plus(new Decimal(ep.input).times(3)).plus(ep.output);
+        blends.set(p.slug, b);
+      }
     }
     if (Object.keys(prices).length) out.push({ ...m, prices });
   }
+  applySavings(pools, blends);
+  if (current) current.savingsPct = pools.find((p) => p.id === current.id)?.savingsPct ?? null;
   return { models: out, pools, currentPool: current };
+}
+
+function applySavings(pools: PoolOption[], blends: Map<string, { off: Decimal; ours: Decimal }>) {
+  for (const p of pools) {
+    const b = blends.get(p.slug);
+    p.savingsPct = b && b.off.gt(0) ? Math.round(new Decimal(1).minus(b.ours.div(b.off)).times(100).toNumber()) : null;
+  }
+}
+
+const ds = (d: Decimal | null | undefined) => (d ? d.toString() : null);
+function fromTable(t: PriceTable): EffectivePrices {
+  return {
+    input: t.input.toString(),
+    output: t.output.toString(),
+    cachedInput: ds(t.cachedInput),
+    cacheWrite: ds(t.cacheWrite),
+    image: ds(t.image),
+    request: ds(t.request),
+    audioInput: ds(t.audioInput),
+    audioOutput: ds(t.audioOutput),
+    perMinute: ds(t.perMinute),
+    perMillionChars: ds(t.perMillionChars),
+    perSecond: ds(t.perSecond),
+  };
 }

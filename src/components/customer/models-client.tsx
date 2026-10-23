@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { buildPriceRows, PriceTable, type PriceModel } from "@/components/marketing/price-table";
 import { CAPABILITY_LABELS, vendorLabel } from "@/server/customer/labels";
-import { formatMultiplier } from "@/server/customer/pricing";
+import { poolSavingsLabel } from "@/server/customer/pricing";
 import type { PoolOption, UserModel } from "@/server/customer/portal-data";
 
 const ALL = "__all";
@@ -54,7 +54,8 @@ export function ModelsClient({ models, pools, currentPoolSlug }: { models: UserM
             <TabsList className="h-auto flex-wrap">
               {pools.map((p) => (
                 <TabsTrigger key={p.slug} value={p.slug}>
-                  {p.name} {formatMultiplier(p.multiplier)}
+                  {p.name}
+                  {poolSavingsLabel(p.savingsPct) && <span className="ml-1 text-xs text-muted-foreground">{poolSavingsLabel(p.savingsPct)}</span>}
                   {p.slug === currentPoolSlug && <Badge className="ml-1.5 h-4 px-1.5 text-[10px]">Yours</Badge>}
                 </TabsTrigger>
               ))}
@@ -96,9 +97,7 @@ export function ModelsClient({ models, pools, currentPoolSlug }: { models: UserM
         </Select>
       </div>
       <PriceTable rows={rows} showCapabilities />
-      <p className="text-xs text-muted-foreground">
-        Your price already includes your pool multiplier{poolInfo ? ` (${formatMultiplier(poolInfo.multiplier)})` : ""}.
-      </p>
+      <p className="text-xs text-muted-foreground">These are the prices you pay. The saving column compares them with each maker&apos;s own list price.</p>
     </div>
   );
 }

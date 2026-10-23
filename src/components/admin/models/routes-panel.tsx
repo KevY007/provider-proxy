@@ -35,6 +35,11 @@ export interface ProviderOption {
 export interface GroupOption {
   slug: string;
   name: string;
+  /** pool pricing, for the model page's economics preview */
+  multiplier?: number;
+  basis?: "model" | "cost";
+  /** the pool lets this model through */
+  allowed?: boolean;
 }
 
 function Margin({ v }: { v: number | null }) {

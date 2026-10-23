@@ -14,6 +14,8 @@ import type { Usage } from "./types";
  *   flat$         = images x imagePrice + requestPrice + minutes x perMinute + chars x perMillionChars / 1e6
  *                   + videoSeconds x perSecond + sum(toolUsage[k] x tools[k])    (server tools: searches, container hours, calls)
  *   price         = multiplier x (tokens$ + flat$)        <- the group/user multiplier applies to everything the customer pays
+ *                   (a pool with priceBasis "cost" prices from the serving route's COST table instead of the model price:
+ *                   see chargeTable)
  *   cost          = same formula with route cost fields, NO multiplier
  *   profit        = price - cost
  *
@@ -133,6 +135,26 @@ export function costTable(r: {
 export function longContextFactor(inputTokens: number, lc: LongContext | null | undefined, part: "input" | "output" = "input"): Decimal {
   if (!lc || !lc.threshold || !lc.multiplier || inputTokens <= lc.threshold) return new Decimal(1);
   return part === "output" && lc.outputMultiplier ? lc.outputMultiplier : lc.multiplier;
+}
+
+/** What a pool's multiplier applies to: the model price ("model") or the upstream cost of the serving route ("cost"). */
+export type PriceBasis = "model" | "cost";
+
+export const asPriceBasis = (v: unknown): PriceBasis => (v === "cost" ? "cost" : "model");
+
+/** True when a cost table has any non-zero price (a route without costs cannot be the basis of a customer price). */
+export function hasCost(t: PriceTable | null | undefined): t is PriceTable {
+  if (!t) return false;
+  const units = [t.input, t.output, t.cachedInput, t.cacheWrite, t.cacheWrite1h, t.image, t.request, t.audioInput, t.audioOutput, t.perMinute, t.perMillionChars, t.perSecond];
+  return units.some((d) => !!d && d.gt(0)) || Object.values(t.tools ?? {}).some((d) => d.gt(0));
+}
+
+/**
+ * The table a customer is charged from (before the multiplier): the model price, or for a cost-basis pool the cost of
+ * the route that served the request. A route without costs falls back to the model price (never bills $0 by accident).
+ */
+export function chargeTable(basis: PriceBasis | null | undefined, sell: PriceTable, routeCost: PriceTable | null | undefined): PriceTable {
+  return basis === "cost" && hasCost(routeCost) ? routeCost : sell;
 }
 
 export function effectiveMultiplier(userMultiplier: MoneyLike, groupMultiplier: MoneyLike): Decimal {
@@ -323,15 +345,25 @@ export function priceRequest(
   billRequest = true,
   official?: OptTable | null,
   batch?: BatchDiscounts | null,
+  basis?: PriceBasis | null,
 ): PriceBreakdown {
   const mult = toDecimal(multiplier, 1);
   const sellPct = batch ? (batch.sellPct === null || batch.sellPct === undefined ? DEFAULT_BATCH_DISCOUNT_PCT : batch.sellPct) : undefined;
   const costPct = batch ? (batch.costPct === null || batch.costPct === undefined ? DEFAULT_BATCH_DISCOUNT_PCT : batch.costPct) : undefined;
-  const price = computeAmount(usage, sell, { multiplier: mult, longContext, billRequest, tokenDiscountPct: sellPct });
   const c = cost ? computeAmount(usage, cost, { longContext, billRequest, tokenDiscountPct: costPct }) : ZERO;
   // the official equivalent of a batch result is the vendor's own batch price (the vendors discount their list price by 50%)
-  const off = official ? computeAmount(usage, effectiveOfficial(official, sell, mult), { longContext, billRequest, tokenDiscountPct: batch ? DEFAULT_BATCH_DISCOUNT_PCT : undefined }) : price;
-  return { price, cost: c, profit: roundDb(price.minus(c)), multiplier: mult, official: off };
+  const offTable = official ? effectiveOfficial(official, sell, mult) : null;
+  const off = offTable ? computeAmount(usage, offTable, { longContext, billRequest, tokenDiscountPct: batch ? DEFAULT_BATCH_DISCOUNT_PCT : undefined }) : null;
+  let price: Decimal;
+  if (basis === "cost" && hasCost(cost)) {
+    // cost-basis pool: the upstream cost of THIS request x the multiplier (batch: the supplier's own batch discount
+    // is already in the cost), never above what the same usage costs at the official list price
+    price = roundDb(c.times(mult));
+    if (off && off.gt(0) && price.gt(off)) price = off;
+  } else {
+    price = computeAmount(usage, sell, { multiplier: mult, longContext, billRequest, tokenDiscountPct: sellPct });
+  }
+  return { price, cost: c, profit: roundDb(price.minus(c)), multiplier: mult, official: off ?? price };
 }
 
 /**
