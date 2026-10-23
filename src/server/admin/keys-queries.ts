@@ -12,6 +12,8 @@ export interface KeyListParams {
   status: (typeof KEY_STATUSES)[number] | "";
   group: string;
   page: number;
+  /** "revoked" = the bin (revoked keys only); otherwise revoked keys are left out */
+  view: "active" | "revoked";
 }
 
 type SP = Record<string, string | string[] | undefined>;
@@ -29,6 +31,7 @@ export function parseKeyListParams(sp: SP): KeyListParams {
     status: (KEY_STATUSES as readonly string[]).includes(status) ? (status as KeyListParams["status"]) : "",
     group: one(sp, "group"),
     page: Number.isFinite(page) && page > 0 ? page : 0,
+    view: one(sp, "view") === "revoked" ? "revoked" : "active",
   };
 }
 
@@ -36,7 +39,8 @@ export async function listApiKeys(p: KeyListParams) {
   const and: Prisma.ApiKeyWhereInput[] = [];
   if (p.q) and.push({ OR: [{ user: { email: { contains: p.q, mode: "insensitive" } } }, { name: { contains: p.q, mode: "insensitive" } }] });
   if (p.prefix) and.push({ prefix: { startsWith: p.prefix } });
-  if (p.status) and.push({ status: p.status });
+  if (p.view === "revoked") and.push({ status: "REVOKED" });
+  else and.push(p.status && p.status !== "REVOKED" ? { status: p.status } : { status: { not: "REVOKED" } });
   if (p.group) and.push(p.group === "none" ? { groupId: null } : { groupId: p.group });
   const where: Prisma.ApiKeyWhereInput = and.length ? { AND: and } : {};
   const [total, rows] = await Promise.all([
@@ -68,6 +72,10 @@ export async function listApiKeys(p: KeyListParams) {
       isPlayground: k.isPlayground,
     })),
   };
+}
+
+export async function countRevokedApiKeys(): Promise<number> {
+  return db.apiKey.count({ where: { status: "REVOKED" } });
 }
 
 export type ApiKeyRow = Awaited<ReturnType<typeof listApiKeys>>["rows"][number];

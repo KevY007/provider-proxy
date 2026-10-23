@@ -180,6 +180,27 @@ describe.skipIf(!up)("low balance alert", () => {
     expect(await db.emailOutbox.count({ where: { to: (await db.user.findUniqueOrThrow({ where: { id: fine.id } })).email } })).toBe(0);
   });
 
+  it("a balance that runs out gets its own 'has run out' email, even after the low-balance one", async () => {
+    const u = await makeUser({ balance: "1", autoRechargeThreshold: "5" });
+    const email = (await db.user.findUniqueOrThrow({ where: { id: u.id } })).email;
+    await maybeSendLowBalanceAlert(u.id);
+    await db.user.update({ where: { id: u.id }, data: { balance: "-0.25" } });
+    await maybeSendLowBalanceAlert(u.id);
+    await maybeSendLowBalanceAlert(u.id);
+    __resetLocks();
+    await maybeSendLowBalanceAlert(u.id);
+    const sent = await db.emailOutbox.findMany({ where: { to: email }, orderBy: { createdAt: "asc" }, select: { subject: true } });
+    expect(sent.map((m) => m.subject)).toEqual([expect.stringMatching(/running low/), expect.stringMatching(/has run out/)]);
+  });
+
+  it("a zero balance is emailed even with auto-recharge on", async () => {
+    const u = await makeUser({ balance: "0", autoRechargeThreshold: "5" });
+    await db.user.update({ where: { id: u.id }, data: { autoRechargeEnabled: true, defaultPaymentMethodId: "pm_x" } });
+    await maybeSendLowBalanceAlert(u.id);
+    const sent = await db.emailOutbox.findMany({ where: { to: (await db.user.findUniqueOrThrow({ where: { id: u.id } })).email }, select: { subject: true } });
+    expect(sent.map((m) => m.subject)).toEqual([expect.stringMatching(/has run out/)]);
+  });
+
   it("uses lowBalanceAlertAt when set and never throws for unknown users", async () => {
     const u = await makeUser({ balance: "8" });
     await db.user.update({ where: { id: u.id }, data: { lowBalanceAlertAt: "10" } });
