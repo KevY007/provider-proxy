@@ -310,3 +310,14 @@ export function providerSettings(p: { settings: JsonObject }) {
     unbilledStreamErrors: s.unbilledStreamErrors === true,
   };
 }
+
+/**
+ * The upstream does not bill a stream the client cancelled (it stops generating): verified for OpenAI (Responses and
+ * Chat Completions, 2026-10-23), so it is the default there; `settings.unbilledCancels` overrides it for any provider.
+ * The customer still pays for the output delivered before the cancel (else cancelling just before the end would make
+ * any answer free); only our recorded cost becomes 0.
+ */
+export function unbilledCancels(p: { preset: string; settings: JsonObject }): boolean {
+  const v = p.settings.unbilledCancels;
+  return typeof v === "boolean" ? v : p.preset === "openai";
+}

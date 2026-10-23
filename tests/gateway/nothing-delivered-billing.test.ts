@@ -12,6 +12,7 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
   let key = "";
   let slug = "";
   let unbilledSlug = "";
+  let openaiSlug = "";
   const before = { hold: 0, beat: 0 };
 
   beforeAll(async () => {
@@ -24,6 +25,8 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     slug = (await h.makeModel("m", { caps: ["chat"], providerId: p.id })).slug;
     const relay = await h.makeProvider("relay", { formats: ["openai_chat"], settings: { unbilledStreamErrors: true, noCooldown: true }, keys: [{ s: "r1" }] });
     unbilledSlug = (await h.makeModel("u", { caps: ["chat"], providerId: relay.id })).slug;
+    const oa = await h.makeProvider("oa", { formats: ["openai_chat"], preset: "openai", keys: [{ s: "o1" }] });
+    openaiSlug = (await h.makeModel("o", { caps: ["chat"], providerId: oa.id })).slug;
     const u = await h.makeUser("u", { balance: "50" });
     key = (await h.makeKey("k", u.id)).key;
   });
@@ -86,5 +89,29 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     expect(Number(unbilled.price)).toBe(0);
     expect(Number(unbilled.cost)).toBe(0);
     expect(unbilled.internalError).toMatch(/not billed/);
+  }, 30_000);
+  it("OpenAI does not bill a cancelled stream: the customer pays the delivered output, our cost is 0", async () => {
+    const cancelAfterText = async (model: string) => {
+      const ac = new AbortController();
+      const res = await h.call("/v1/chat/completions", key, { model, stream: true, messages: [{ role: "user", content: "write [[words:400]]" }] }, { headers: { "x-mock-delay-ms": "5" }, signal: ac.signal });
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      let text = "";
+      while (!/"content":"[^"]+"/.test(text)) {
+        const r = await reader.read();
+        if (r.done) break;
+        text += dec.decode(r.value, { stream: true });
+      }
+      ac.abort();
+      await reader.cancel().catch(() => undefined);
+      return h.logOf(res);
+    };
+    const oa = await cancelAfterText(openaiSlug);
+    expect(oa.status).toBe("CANCELLED");
+    expect(Number(oa.price)).toBeGreaterThan(0);
+    expect(Number(oa.cost)).toBe(0);
+    expect(Number(oa.profit)).toBe(Number(oa.price));
+    const other = await cancelAfterText(slug); // a relay that may keep generating: our cost stays
+    expect(Number(other.cost)).toBeGreaterThan(0);
   }, 30_000);
 });
