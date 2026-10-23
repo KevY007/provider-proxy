@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Ban, KeyRound, MoreHorizontal, Pencil, Plus, Power, PowerOff, Terminal, Trash2, TriangleAlert } from "lucide-react";
+import { Ban, Eye, KeyRound, MoreHorizontal, Pencil, Plus, Power, PowerOff, Terminal, Trash2, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,7 +18,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { MoneyText } from "@/components/common/money-text";
 import { StatusBadge } from "@/components/common/status-badge";
 import { formatCompact } from "@/lib/utils";
-import { deleteRevokedKeyAction, emptyRevokedKeysAction, revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
+import { deleteRevokedKeyAction, emptyRevokedKeysAction, revealOwnKeyAction, revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
 import { formatMultiplier } from "@/server/customer/pricing";
 import { savingsPctOf } from "@/server/customer/savings";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
@@ -42,14 +42,23 @@ export interface KeysClientProps {
 export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName, emailVerified, email }: KeysClientProps) {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<KeyRow | null>(null);
-  const [created, setCreated] = useState<(CreatedKey & { name: string; allowedModels: string[] }) | null>(null);
-  const [useKey, setUseKey] = useState<{ name: string; apiKey: string | null; allowedModels: string[] } | null>(null);
+  const [created, setCreated] = useState<RevealedKey | null>(null);
+  const [useKey, setUseKey] = useState<UseKeyTarget | null>(null);
   const [revoking, setRevoking] = useState<KeyRow | null>(null);
   const [deleting, setDeleting] = useState<KeyRow | null>(null);
   const [emptying, setEmptying] = useState(false);
   // revoked keys no longer work: they live in their own "Revoked" tab instead of cluttering the list
   const activeKeys = useMemo(() => keys.filter((k) => k.status !== "REVOKED"), [keys]);
   const revokedKeys = useMemo(() => keys.filter((k) => k.status === "REVOKED"), [keys]);
+
+  async function reveal(k: KeyRow) {
+    const r = await revealOwnKeyAction({ id: k.id });
+    if (!r.ok || !r.data) {
+      toast.error(r.ok ? "Could not show the key" : r.error);
+      return;
+    }
+    setCreated({ id: k.id, key: r.data.key, prefix: k.prefix, name: k.name, allowedModels: k.allowedModels, groupId: k.groupId, existing: true });
+  }
 
   function openCreate() {
     setEditing(null);
@@ -218,11 +227,14 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => setUseKey({ name: k.name, apiKey: null, allowedModels: k.allowedModels })}>
+                <DropdownMenuItem onSelect={() => setUseKey({ id: k.id, name: k.name, apiKey: null, allowedModels: k.allowedModels, groupId: k.groupId })}>
                   <Terminal className="size-4" /> Use key
                 </DropdownMenuItem>
                 {!revoked && (
                   <>
+                    <DropdownMenuItem onSelect={() => void reveal(k)}>
+                      <Eye className="size-4" /> Reveal key
+                    </DropdownMenuItem>
                     <DropdownMenuItem
                       onSelect={() => {
                         setEditing(k);
@@ -324,9 +336,9 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
 
       <KeyFormDialog open={formOpen} onOpenChange={setFormOpen} editing={editing} pools={pools} currentPool={currentPool} models={models} onCreated={(k, meta) => setCreated({ ...k, ...meta })} />
 
-      <RevealKeyDialog created={created} onClose={() => setCreated(null)} onUse={(k) => { setCreated(null); setUseKey({ name: k.name, apiKey: k.key, allowedModels: k.allowedModels }); }} />
+      <RevealKeyDialog created={created} onClose={() => setCreated(null)} onUse={(k) => { setCreated(null); setUseKey({ id: k.id, name: k.name, apiKey: k.key, allowedModels: k.allowedModels, groupId: k.groupId }); }} />
 
-      <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={useKey?.allowedModels.length ? models.filter((m) => useKey.allowedModels.includes(m.slug)) : models} keyName={useKey?.name} apiKey={useKey?.apiKey} />
+      <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={useKey ? keyModels(useKey, pools, currentPool, models) : []} poolName={useKey ? (pools.find((p) => p.id === useKey.groupId) ?? currentPool)?.name : null} keyId={useKey?.id} keyName={useKey?.name} apiKey={useKey?.apiKey} />
 
       <ConfirmDialog
         open={!!deleting}
@@ -384,15 +396,30 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
   );
 }
 
-type RevealedKey = CreatedKey & { name: string; allowedModels: string[] };
+/** `existing`: a key revealed again from its menu (not just created). */
+type RevealedKey = CreatedKey & { name: string; allowedModels: string[]; groupId: string | null; existing?: boolean };
+
+interface UseKeyTarget {
+  id: string;
+  name: string;
+  apiKey: string | null;
+  allowedModels: string[];
+  groupId: string | null;
+}
+
+/** The models a key can call: its pool's models (empty list = all), narrowed by the key's own model list. */
+function keyModels(k: UseKeyTarget, pools: PoolOption[], currentPool: PoolOption | null, models: ModelOption[]): ModelOption[] {
+  const pool = pools.find((p) => p.id === k.groupId) ?? currentPool;
+  return models.filter((m) => (!pool?.allowedModels.length || pool.allowedModels.includes(m.slug)) && (!k.allowedModels.length || k.allowedModels.includes(m.slug)));
+}
 
 function RevealKeyDialog({ created, onClose, onUse }: { created: RevealedKey | null; onClose: () => void; onUse: (k: RevealedKey) => void }) {
   return (
     <Dialog open={!!created} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
         <DialogHeader>
-          <DialogTitle>Your new API key</DialogTitle>
-          <DialogDescription>Copy it now and store it somewhere safe.</DialogDescription>
+          <DialogTitle>{created?.existing ? `API key "${created.name}"` : "Your new API key"}</DialogTitle>
+          <DialogDescription>Copy it and store it somewhere safe.</DialogDescription>
         </DialogHeader>
         {created && (
           <div className="space-y-3">
@@ -404,7 +431,7 @@ function RevealKeyDialog({ created, onClose, onUse }: { created: RevealedKey | n
             </div>
             <p className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
               <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
-              This is the only time the full key is shown. We store only a hash, so it can&apos;t be recovered. If you lose it, create a new key.
+              Keep it secret: anyone with this key can spend your balance. You can view it again from the key&apos;s menu; if it leaks, revoke it and create a new one.
             </p>
           </div>
         )}
@@ -414,7 +441,7 @@ function RevealKeyDialog({ created, onClose, onUse }: { created: RevealedKey | n
               <Terminal className="size-4" /> Use this key
             </Button>
           )}
-          <Button onClick={onClose}>I&apos;ve saved it</Button>
+          <Button onClick={onClose}>{created?.existing ? "Done" : "I've saved it"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

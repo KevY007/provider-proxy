@@ -164,20 +164,26 @@ console.log(resp.choices[0].message.content);`,
           title: "Provider config",
           filename: "~/.codex/config.toml",
           lang: "toml",
-          code: `model = "${model}"
+          code: `# at the very top of the file, before any [section]
 model_provider = "${providerId}"
+model = "${model}"
+model_reasoning_effort = "high"
+disable_response_storage = true
+supports_websockets = false
 
 [model_providers.${providerId}]
 name = "${name}"
 base_url = "${base}"
-env_key = "PROVIDERPROXY_API_KEY"
-wire_api = "responses"`,
+wire_api = "responses"
+requires_openai_auth = true`,
         },
         {
-          title: "Environment variable",
-          filename: "~/.bashrc or ~/.zshrc",
-          lang: "bash",
-          code: `export PROVIDERPROXY_API_KEY="${key}"`,
+          title: "API key (also used by the Codex app and VS Code extension)",
+          filename: "~/.codex/auth.json",
+          lang: "json",
+          code: `{
+  "OPENAI_API_KEY": "${key}"
+}`,
         },
       ],
     },
@@ -191,18 +197,21 @@ wire_api = "responses"`,
           lang: "bash",
           code: `export ANTHROPIC_BASE_URL="${origin}"
 export ANTHROPIC_AUTH_TOKEN="${key}"
-# optional: pin the default model
-export ANTHROPIC_MODEL="${claude}"`,
+export ANTHROPIC_MODEL="${claude}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+export CLAUDE_CODE_ATTRIBUTION_HEADER=0`,
         },
         {
-          title: "Or in settings",
+          title: "Or in settings (all sessions and the IDE extensions)",
           filename: "~/.claude/settings.json",
           lang: "json",
           code: `{
   "env": {
     "ANTHROPIC_BASE_URL": "${origin}",
     "ANTHROPIC_AUTH_TOKEN": "${key}",
-    "ANTHROPIC_MODEL": "${claude}"
+    "ANTHROPIC_MODEL": "${claude}",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
   }
 }`,
         },
