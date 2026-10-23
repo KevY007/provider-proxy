@@ -26,13 +26,17 @@ describe("config snippet generation", () => {
     expect(text(t, "claude-code")).toContain(KEY_PLACEHOLDER);
   });
 
-  it("Codex CLI config.toml has provider table with env key and responses wire api", () => {
+  it("Codex config.toml has the provider table (responses over HTTP, OpenAI auth) and auth.json carries the key", () => {
     const toml = find(tabs, "codex").blocks[0];
     expect(toml.filename).toBe("~/.codex/config.toml");
     expect(toml.code).toContain("[model_providers.providerproxy]");
     expect(toml.code).toContain('base_url = "https://api.example.com/v1"');
-    expect(toml.code).toContain('env_key = "PROVIDERPROXY_API_KEY"');
+    expect(toml.code).toContain("requires_openai_auth = true");
+    expect(toml.code).toContain("supports_websockets = false");
     expect(toml.code).toContain('wire_api = "responses"');
+    const auth = find(tabs, "codex").blocks[1];
+    expect(auth.filename).toBe("~/.codex/auth.json");
+    expect(JSON.parse(auth.code)).toEqual({ OPENAI_API_KEY: "sk-pp-SECRET123" });
   });
 
   it("Claude Code points ANTHROPIC_BASE_URL at the origin (no /v1) with ANTHROPIC_AUTH_TOKEN", () => {

@@ -509,7 +509,7 @@ For images: if `imagePrice` set bill per image, else bill token usage returned b
 
 ## 9. Security & correctness checklist
 - Upstream secrets encrypted at rest; never sent to the client (admin UI shows `secretHint` only).
-- Customer API keys: `sk-pp-` + 40 random base62 chars; stored as sha256; shown once.
+- Customer API keys: `sk-pp-` + 40 random base62 chars; authenticated by sha256, plus an AES-256-GCM copy so the owner (Reveal key / Use key > Fill in my key) and admins can view it again (audited).
 - Sessions: httpOnly, secure in prod, sameSite=lax, 30-day rolling; admin routes require 2FA if enabled for that admin.
 - All server actions re-check role; all admin mutations write AuditLog.
 - Login/signup/reset rate-limited per IP + email; generic error messages; email verification required before keys work (setting).

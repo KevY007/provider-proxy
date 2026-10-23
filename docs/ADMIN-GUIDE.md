@@ -189,7 +189,7 @@ account can always sign up). The detail page shows:
 - **Revoke sessions**, **Send password reset**, **Impersonate**. Impersonation works on ACTIVE customers only and is
   audited. The session ends after 1 hour (it never rolls) or as soon as the staff member is no longer active staff.
 
-`/admin/keys` lists every customer API key (enable / disable / revoke). Admins can **Reveal** a key in full: keys are stored as a sha256 fingerprint for authentication plus an AES-256-GCM copy (encrypted with `ENCRYPTION_KEY`) for this view, and every reveal is written to the audit log. Keys created before this feature only have the fingerprint and cannot be revealed; playground keys rotate on every use and are never stored.
+`/admin/keys` lists every customer API key (enable / disable / revoke). Admins can **Reveal** a key in full: keys are stored as a sha256 fingerprint for authentication plus an AES-256-GCM copy (encrypted with `ENCRYPTION_KEY`) for this view, and every reveal is written to the audit log. Customers can reveal their own keys too (key menu > Reveal key, or Use key > Fill in my key; audited as apikey.reveal_own). Keys created before this feature only have the fingerprint and cannot be revealed; playground keys rotate on every use and are never stored.
 
 ## Logs and analytics
 
