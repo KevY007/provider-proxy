@@ -38,6 +38,9 @@ describe("page text", () => {
     const r = parseAiJson('Here you go:\n```json\n{"models":[{"id":"m1","found":true,"input":"$2.00","output":10}]}\n```');
     expect(r.models[0]).toMatchObject({ id: "m1", input: 2, output: 10 });
     expect(() => parseAiJson("no json")).toThrow();
+    // trailing notes with braces after the answer (seen live) and braces inside strings
+    const r2 = parseAiJson('{"models":[{"id":"m2","found":true,"note":"tier {standard}","input":1}]}\n\nNotes: {pool} uses {x}');
+    expect(r2.models[0]).toMatchObject({ id: "m2", input: 1, note: "tier {standard}" });
   });
 });
 
