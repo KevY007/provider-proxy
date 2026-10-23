@@ -5,6 +5,8 @@
 //               uptime-history pruning. No provider is contacted unless a video job or batch is actually open.
 //  - "billing": auto-recharge, postpaid settlement, stale payment reconciliation (Stripe).
 //  - "probes":  uptime pings of every upstream key (free model-list request). Only with the activeHealthChecks setting.
+//  - "priceSync": AI price sync of the providers whose automatic sync is on (each at its own interval, e.g. 10 h);
+//               checked hourly. Nothing at all happens while no provider has it on.
 //
 // Who triggers them:
 //  - DEFAULT (all monitoring settings off): only activity - a gateway call or an admin page - and at most every
@@ -20,7 +22,7 @@ import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
 import { getSettings, type SettingValues } from "@/lib/settings";
 
-export type JobName = "upkeep" | "billing" | "probes";
+export type JobName = "upkeep" | "billing" | "probes" | "priceSync";
 export type JobSource = "traffic" | "admin" | "timer" | "cron" | "boot";
 
 const MIN = 60_000;
@@ -51,7 +53,7 @@ export function jobInterval(job: JobName, source: JobSource, s: Settings): numbe
     return null; // never pinged because of traffic
   }
   if (source === "cron") return CRON_GAP_MS;
-  if (job === "billing") return BILLING_MS;
+  if (job === "billing" || job === "priceSync") return BILLING_MS;
   if (source === "timer") return s.backgroundJobs ? s.maintenanceIntervalMin * MIN : null;
   return ACTIVITY_UPKEEP_MS;
 }
@@ -99,6 +101,10 @@ async function work(job: JobName): Promise<unknown> {
       const { runAllHealthChecks } = await import("@/gateway/health");
       return runAllHealthChecks();
     }
+    case "priceSync": {
+      const { runDuePriceSyncs } = await import("@/server/pricing/price-sync/engine");
+      return runDuePriceSyncs();
+    }
   }
 }
 
@@ -113,7 +119,7 @@ export interface JobOutcome {
 export async function runDueJobs(source: JobSource, opts: { only?: JobName[]; settings?: Settings } = {}): Promise<JobOutcome[]> {
   const s = opts.settings ?? (await getSettings());
   const out: JobOutcome[] = [];
-  for (const job of opts.only ?? (["upkeep", "billing", "probes"] as JobName[])) {
+  for (const job of opts.only ?? (["upkeep", "billing", "probes", "priceSync"] as JobName[])) {
     const interval = jobInterval(job, source, s);
     if (interval === null || state.running.has(job)) {
       out.push({ job, ran: false });
