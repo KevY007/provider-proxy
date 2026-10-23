@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Activity, AlertTriangle, Coins, DollarSign, Gauge, Percent, TrendingUp, Users, Wallet, Zap } from "lucide-react";
+import { Activity, AlertTriangle, Coins, DollarSign, Gauge, Percent, TrendingUp, Users, Zap } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { PageHeader } from "@/components/common/page-header";
 import { StatCard } from "@/components/common/stat-card";
@@ -19,7 +19,9 @@ import { formatCompact, formatDuration, formatNumber, formatPercent, truncate } 
 import { getSlotSnapshot, type SlotSnapshot } from "@/gateway/slots";
 import { getBreakdown, getRecentErrors, getTimeSeries, getTotals } from "@/server/analytics/queries";
 import { parseAnalyticsParams, previousRange, trendPct } from "@/server/analytics/params";
-import { byAccount, getUpstreamBalances } from "@/server/admin/upstream-balances";
+import { getUpstreamBalances } from "@/server/admin/upstream-balances";
+import { UpstreamBalancesCard } from "@/components/admin/upstream-balances-card";
+import { getSettings } from "@/lib/settings";
 
 export const metadata = { title: "Overview" };
 export const dynamic = "force-dynamic";
@@ -59,11 +61,9 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
       },
     }),
     safeSlots(),
-    getUpstreamBalances().catch(() => []),
+    getUpstreamBalances().catch(() => ({ at: null, accounts: [] })),
   ]);
-  // one balance per upstream account (providers sharing an account report the same money)
-  const accounts = byAccount(upstreamBalances);
-  const knownBalances = accounts.filter((a) => a.balance != null);
+  const settings = await getSettings();
 
   const providerName = new Map(providers.map((p) => [p.id, p.name]));
   const totalInUse = slots?.providerKeys.reduce((a, k) => a + k.inUse, 0) ?? 0;
@@ -79,6 +79,8 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
 
       <QuickStartChecklist state={quickStart} />
 
+      {upstreamBalances.accounts.length > 0 && <UpstreamBalancesCard snapshot={upstreamBalances} lowUsd={settings.upstreamBalanceLowUsd} intervalMin={settings.upstreamBalanceIntervalMin} />}
+
       <div className="mb-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
         <StatCard label="Revenue" icon={DollarSign} value={formatUSD(totals.revenue)} trend={trendPct(totals.revenue, prevTotals.revenue)} hint="vs prev. period" />
         <StatCard label="Cost" icon={Coins} value={formatUSD(totals.cost)} trend={trendPct(totals.cost, prevTotals.cost)} invertTrend hint="vs prev. period" />
@@ -89,14 +91,6 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
         <StatCard label="Active customers" icon={Users} value={formatNumber(totals.activeCustomers)} trend={trendPct(totals.activeCustomers, prevTotals.activeCustomers)} hint="with requests" />
         <StatCard label="Latency p50" icon={Gauge} value={formatDuration(totals.p50LatencyMs)} hint={`avg ${formatDuration(totals.avgLatencyMs)}`} />
         <StatCard label="Latency p95" icon={Gauge} value={formatDuration(totals.p95LatencyMs)} hint="successful requests" />
-        {accounts.length > 0 && (
-          <StatCard
-            label="Upstream balance"
-            icon={Wallet}
-            value={knownBalances.length ? formatUSD(knownBalances.reduce((a, b) => a + (b.balance ?? 0), 0)) : "unavailable"}
-            hint={accounts.map((a) => `${a.names.join(" + ")}: ${a.balance != null ? formatUSD(a.balance) : "n/a"}`).join(" · ")}
-          />
-        )}
         <StatCard label="Tokens" icon={Zap} value={formatCompact(totals.totalTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
       </div>
 

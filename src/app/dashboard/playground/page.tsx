@@ -3,6 +3,7 @@ import { PlaygroundClient } from "@/components/customer/playground-client";
 import type { PlaygroundModel } from "@/components/customer/playground-shared";
 import { requireUser } from "@/lib/auth/session";
 import { getModelsForUser } from "@/server/customer/portal-data";
+import { poolSavingsLabel } from "@/server/customer/pricing";
 
 export const metadata = { title: "Playground" };
 export const dynamic = "force-dynamic";
@@ -23,7 +24,7 @@ export default async function PlaygroundPage() {
         chatModels={chatModels}
         imageModels={imageModels}
         poolName={currentPool?.name ?? "default"}
-        multiplier={currentPool?.multiplier ?? "1"}
+        savings={poolSavingsLabel(currentPool?.savingsPct)}
         emailVerified={!!user.emailVerifiedAt}
         email={user.email}
       />

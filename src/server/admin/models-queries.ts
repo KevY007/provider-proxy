@@ -174,7 +174,9 @@ export async function getModelDetail(id: string) {
   const now = new Date();
   const [providers, groups, totals] = await Promise.all([
     db.provider.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, slug: true, status: true } }),
-    db.group.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { slug: true, name: true } }),
+    db.group.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { slug: true, name: true, priceMultiplier: true, priceBasis: true, allowedModels: true } }).then((gs) =>
+      gs.map((g) => ({ slug: g.slug, name: g.name, multiplier: Number(g.priceMultiplier.toString()), basis: g.priceBasis === "cost" ? ("cost" as const) : ("model" as const), allowed: g.allowedModels.length === 0 || g.allowedModels.includes(model.slug) })),
+    ),
     getTotals({ from: new Date(now.getTime() - 24 * 3600_000), to: now, modelSlug: model.slug }).catch(() => null),
   ]);
   const routes: RouteRow[] = model.routes.map((r) => ({

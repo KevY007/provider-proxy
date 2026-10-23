@@ -3,7 +3,7 @@ import { Decimal, ZERO, toDbString } from "@/lib/money";
 import type { AuthRecord, ModelRec, RouteRec } from "./cache";
 import { addProviderKeyCost, addUserSpend, tpmAdd } from "./limits";
 import { enqueueMeter } from "./meter-writer";
-import { priceRequest } from "./pricing";
+import { priceRequest, type PriceBasis } from "./pricing";
 import type { AttemptRecord, Json, Usage } from "./types";
 import { truncate } from "./util";
 
@@ -29,6 +29,8 @@ export interface Outcome {
   /** key limits needed for TPM bookkeeping */
   providerKeyHasTpm: boolean;
   multiplier: Decimal;
+  /** the pool prices from the serving route's upstream cost instead of the model price */
+  priceBasis?: PriceBasis | null;
 
   status: RequestStatus;
   httpStatus: number;
@@ -79,7 +81,7 @@ export function recordOutcome(o: Outcome): Charge {
   let charge: Charge = { price: ZERO, cost: ZERO, profit: ZERO, official: ZERO };
   if (usage && o.model && (o.billable || o.status === "SUCCESS" || o.status === "CANCELLED" || o.status === "UPSTREAM_ERROR")) {
     const batch = o.batchId ? { sellPct: o.model.batchDiscountPct ?? null, costPct: o.route?.batchCostDiscountPct ?? null } : null;
-    const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official, batch);
+    const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official, batch, o.priceBasis);
     charge = { price: b.price, cost: b.cost, profit: b.profit, official: b.official };
     if (o.upstreamUnbilled) charge = { ...charge, cost: ZERO, profit: b.price };
   }
