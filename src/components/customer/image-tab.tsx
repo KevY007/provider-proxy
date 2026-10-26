@@ -160,7 +160,7 @@ export function ImageTab({ models, keyApi, keyError }: { models: PlaygroundModel
         </div>
         {saved !== null && (
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Saved vs official</span>
+            <span className="text-muted-foreground">Saved</span>
             <SavedNote saved={String(saved)} />
           </div>
         )}

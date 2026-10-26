@@ -206,6 +206,7 @@ function GroupDialog({ group, options, samples, onClose }: { group: GroupRow | n
     description: group?.description ?? "",
     priceMultiplier: group?.priceMultiplier ?? "1",
     priceBasis: (group?.priceBasis ?? "model") as PoolBasis,
+    referenceSavingsPct: group?.referenceSavingsPct ?? "",
     providerTags: group?.providerTags ?? ([] as string[]),
     allowedModels: group?.allowedModels ?? ([] as string[]),
     isDefault: group?.isDefault ?? false,
@@ -265,6 +266,21 @@ function GroupDialog({ group, options, samples, onClose }: { group: GroupRow | n
         error={fieldErrors.priceMultiplier}
         samples={samples}
         allowedModels={f.allowedModels}
+      />
+      <NumberField
+        label="Saving shown to customers"
+        suffix="%"
+        value={f.referenceSavingsPct}
+        onChange={(v) => set("referenceSavingsPct", v)}
+        placeholder="official list price"
+        min={0}
+        step="1"
+        error={fieldErrors.referenceSavingsPct}
+        description={
+          f.referenceSavingsPct
+            ? `Customers see what they paid against a "regular price" of paid / ${(1 - Number(f.referenceSavingsPct) / 100).toFixed(2)}: $80 spent shows as $${(80 / (1 - Number(f.referenceSavingsPct) / 100)).toFixed(0)} regular, $${(80 / (1 - Number(f.referenceSavingsPct) / 100) - 80).toFixed(0)} saved.`
+            : "Blank: customers compare with the model maker's official list price (OpenAI, Anthropic ...)."
+        }
       />
       <TagsField
         label="Provider tags"

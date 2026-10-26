@@ -157,6 +157,15 @@ export function chargeTable(basis: PriceBasis | null | undefined, sell: PriceTab
   return basis === "cost" && hasCost(routeCost) ? routeCost : sell;
 }
 
+/**
+ * What a request "would have cost" for a pool that sets a shown saving: price / (1 - pct/100) (50% -> twice the price).
+ * null pct = keep the official-list-price figure.
+ */
+export function referenceAmount(price: Decimal, official: Decimal, pct: number | null | undefined): Decimal {
+  if (pct === null || pct === undefined || !Number.isFinite(pct) || pct <= 0 || pct >= 100) return official;
+  return roundDb(price.div(1 - pct / 100));
+}
+
 export function effectiveMultiplier(userMultiplier: MoneyLike, groupMultiplier: MoneyLike): Decimal {
   const u = userMultiplier === null || userMultiplier === undefined ? new Decimal(1) : toDecimal(userMultiplier, 1);
   const g = groupMultiplier === null || groupMultiplier === undefined ? new Decimal(1) : toDecimal(groupMultiplier, 1);

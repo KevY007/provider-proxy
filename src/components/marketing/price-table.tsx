@@ -54,10 +54,10 @@ function RetiringBadge({ date }: { date: string }) {
  * Presentational price list: per model, per unit - Official price, Your price, Savings.
  * No hooks, so usable from server and client components. Stacks cleanly at 390px.
  */
-export function PriceTable({ rows, showCapabilities = false, compact = false }: { rows: PriceRow[]; showCapabilities?: boolean; compact?: boolean }) {
+export function PriceTable({ rows, showCapabilities = false, compact = false, referenceLabel = "Official price" }: { rows: PriceRow[]; showCapabilities?: boolean; compact?: boolean; referenceLabel?: string }) {
   return (
     <div className="space-y-3">
-      <PriceExplainer />
+      {referenceLabel === "Official price" && <PriceExplainer />}
       <div className="divide-y overflow-hidden rounded-xl border bg-card/40">
         {rows.length === 0 && <p className="py-10 text-center text-sm text-muted-foreground">No models match your filters.</p>}
         {rows.map(({ model: m, units }) => {
@@ -95,7 +95,7 @@ export function PriceTable({ rows, showCapabilities = false, compact = false }: 
                     <thead>
                       <tr className="text-left text-[11px] uppercase tracking-wide text-muted-foreground">
                         <th className="py-1 pr-3 font-medium">Unit</th>
-                        <th className="px-3 py-1 text-right font-medium">Official price</th>
+                        <th className="px-3 py-1 text-right font-medium">{referenceLabel}</th>
                         <th className="px-3 py-1 text-right font-medium">Your price</th>
                         <th className="py-1 pl-3 text-right font-medium">Savings</th>
                       </tr>
@@ -122,9 +122,11 @@ export function PriceTable({ rows, showCapabilities = false, compact = false }: 
           );
         })}
       </div>
-      <p className="text-xs text-muted-foreground">
-        Prices are in USD. Official prices are the original providers&apos; public list prices, shown for reference; amber means we are more expensive than official for that unit.
-      </p>
+      {referenceLabel === "Official price" && (
+        <p className="text-xs text-muted-foreground">
+          Prices are in USD. Official prices are the original providers&apos; public list prices, shown for reference; amber means we are more expensive than official for that unit.
+        </p>
+      )}
     </div>
   );
 }

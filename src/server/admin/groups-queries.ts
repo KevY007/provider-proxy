@@ -10,6 +10,8 @@ export interface GroupRow {
   description: string;
   priceMultiplier: string;
   priceBasis: "model" | "cost";
+  /** shown saving %, "" = official list price */
+  referenceSavingsPct: string;
   providerTags: string[];
   allowedModels: string[];
   isDefault: boolean;
@@ -34,6 +36,7 @@ export async function getGroupRows(): Promise<GroupRow[]> {
     description: g.description ?? "",
     priceMultiplier: dstr0(g.priceMultiplier),
     priceBasis: g.priceBasis === "cost" ? "cost" : "model",
+    referenceSavingsPct: g.referenceSavingsPct === null ? "" : Number(g.referenceSavingsPct.toString()).toString(),
     providerTags: g.providerTags,
     allowedModels: g.allowedModels,
     isDefault: g.isDefault,

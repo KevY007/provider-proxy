@@ -118,6 +118,8 @@ export interface GroupRec {
   maxConcurrency: number | null;
   /** what priceMultiplier applies to: the model price or the serving route's upstream cost */
   priceBasis: PriceBasis;
+  /** shown saving (%): the "would have cost" figure is price / (1 - pct/100) instead of the official list price */
+  referenceSavingsPct: number | null;
   /** requests at a high reasoning effort served as another pool / by one provider (gateway/effort-route) */
   effortRoutes: EffortRoute[];
   /** set on the pool a request is served as by an effort rule naming a provider: only that provider's routes */
@@ -309,6 +311,7 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       rpmLimit: gr.rpmLimit,
       maxConcurrency: gr.maxConcurrency,
       priceBasis: asPriceBasis(gr.priceBasis),
+      referenceSavingsPct: gr.referenceSavingsPct === null ? null : Number(gr.referenceSavingsPct.toString()),
       effortRoutes: parseEffortRoutes(gr.effortRoutes),
     };
     groupsById.set(gr.id, rec);

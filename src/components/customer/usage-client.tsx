@@ -68,10 +68,9 @@ export function UsageClient(props: UsageClientProps) {
 
   const empty = totals.requests === 0;
   const savings = summarizeSavings(totals.official, totals.comparable);
-  const savingsRows = series.map((p) => ({ x: p.bucket, saved: p.official - p.comparable }));
   const hasSavingsData = totals.official > 0;
   const valueFmt = metric === "cost" ? (v: number) => formatUSD(v) : (v: number) => formatCompact(v);
-  const timeRows = series.map((p) => ({ x: p.bucket, cost: p.spend, input: p.inputTokens, output: p.outputTokens }));
+  const timeRows = series.map((p) => ({ x: p.bucket, cost: p.spend, official: p.official > 0 ? p.official + (p.spend - p.comparable) : p.spend, input: p.inputTokens, output: p.outputTokens }));
   const tokens = (r: UsageBreakdownRow) => r.inputTokens + r.outputTokens;
   const barRows = (rows: UsageBreakdownRow[]) =>
     rows
@@ -91,7 +90,7 @@ export function UsageClient(props: UsageClientProps) {
       { accessorKey: "spend", header: "Cost", cell: ({ row }) => <MoneyText value={row.original.spend} />, meta: { className: "text-right" } },
       {
         id: "saved",
-        header: "Saved vs official",
+        header: "Saved",
         accessorFn: (r) => r.official - r.comparable,
         cell: ({ row }) => (row.original.official > 0 ? <MoneyText value={row.original.official - row.original.comparable} colorize signed /> : <span className="text-muted-foreground">-</span>),
         meta: { className: "text-right" },
@@ -134,10 +133,10 @@ export function UsageClient(props: UsageClientProps) {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Spend" icon={Coins} value={<MoneyText value={totals.spend} />} />
         <StatCard
-          label={savings.kind === "paid_more" ? "Paid more than official" : "Saved vs official prices"}
+          label={savings.kind === "paid_more" ? "Paid more than regular" : "Saved"}
           icon={PiggyBank}
           value={hasSavingsData ? <span className={savings.kind === "saved" ? "text-emerald-600 dark:text-emerald-400" : savings.kind === "paid_more" ? "text-amber-600 dark:text-amber-400" : undefined}>{savings.value}</span> : "-"}
-          hint={hasSavingsData ? (savings.pct === null ? undefined : `${savings.pct >= 0 ? "" : "+"}${Math.abs(savings.pct).toFixed(0)}% ${savings.pct >= 0 ? "below" : "above"} official`) : "No priced requests yet"}
+          hint={hasSavingsData ? <>regular price <MoneyText value={totals.official} /></> : "No priced requests yet"}
         />
         <StatCard label="Requests" icon={Activity} value={formatNumber(totals.requests)} />
         <StatCard label="Tokens" icon={Hash} value={formatCompact(totals.inputTokens + totals.outputTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
@@ -147,9 +146,18 @@ export function UsageClient(props: UsageClientProps) {
         <StatCard label="Avg cost / request" icon={Coins} value={<MoneyText value={totals.requests ? totals.spend / totals.requests : 0} />} />
       </div>
 
-      <ChartCard title={metric === "cost" ? "Spend over time" : "Tokens over time"} action={metricToggle} empty={empty} emptyText="No requests in this period">
+      <ChartCard title={metric === "cost" ? "Spend vs regular price over time" : "Tokens over time"} action={metricToggle} empty={empty} emptyText="No requests in this period">
         {metric === "cost" ? (
-          <AreaChart data={timeRows} xKey="x" series={[{ key: "cost", label: "Spend" }]} valueFormatter={valueFmt} xFormatter={xFmt} />
+          <AreaChart
+            data={timeRows}
+            xKey="x"
+            series={[
+              { key: "official", label: "Regular price", color: "var(--chart-3)" },
+              { key: "cost", label: "You paid", color: "var(--chart-1)" },
+            ]}
+            valueFormatter={valueFmt}
+            xFormatter={xFmt}
+          />
         ) : (
           <AreaChart
             data={timeRows}
@@ -165,14 +173,6 @@ export function UsageClient(props: UsageClientProps) {
         )}
       </ChartCard>
 
-      <ChartCard
-        title={savings.kind === "paid_more" ? "Difference vs official prices over time" : "Savings vs official prices over time"}
-        description="Official price minus what you paid, per period. Negative means we cost more than the official price."
-        empty={empty || !hasSavingsData}
-        emptyText="No priced requests in this period"
-      >
-        <AreaChart data={savingsRows} xKey="x" series={[{ key: "saved", label: "Saved" }]} valueFormatter={(v) => formatUSD(v)} xFormatter={xFmt} />
-      </ChartCard>
 
       <div className="grid gap-4 lg:grid-cols-3">
         {(

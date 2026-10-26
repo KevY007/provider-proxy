@@ -212,6 +212,7 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
     providerKeyHasTpm: !!ctx.chosen?.key.tpmLimit,
     multiplier: ctx.multiplier,
     priceBasis: ctx.group?.priceBasis ?? null,
+    referenceSavingsPct: ctx.group?.referenceSavingsPct ?? null,
     errorCode: null,
     errorMessage: null,
     internalError: null,
