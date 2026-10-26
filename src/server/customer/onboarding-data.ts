@@ -1,13 +1,15 @@
 import "server-only";
 import { db } from "@/lib/db";
+import { getSetting } from "@/lib/settings";
 import { deriveOnboarding, type OnboardingState } from "./onboarding";
 
 /** Reads the DB state that drives the onboarding checklist and derives the steps. */
 export async function getOnboarding(user: { id: string; balance: { toString(): string }; emailVerifiedAt: Date | null }): Promise<OnboardingState> {
-  const [funded, keyCount, request] = await Promise.all([
+  const [funded, keyCount, request, customerBilling] = await Promise.all([
     db.ledgerEntry.findFirst({ where: { userId: user.id, amount: { gt: 0 }, type: { in: ["TOPUP", "AUTO_RECHARGE", "REDEEM", "ADJUSTMENT"] } }, select: { id: true } }),
     db.apiKey.count({ where: { userId: user.id, isPlayground: false, status: { not: "REVOKED" } } }),
     db.requestLog.findFirst({ where: { userId: user.id, status: "SUCCESS" }, select: { id: true } }),
+    getSetting("customerBilling"),
   ]);
   return deriveOnboarding({
     emailVerified: !!user.emailVerifiedAt,
@@ -15,5 +17,6 @@ export async function getOnboarding(user: { id: string; balance: { toString(): s
     everFunded: !!funded,
     keyCount,
     requestCount: request ? 1 : 0,
+    customerBilling,
   });
 }

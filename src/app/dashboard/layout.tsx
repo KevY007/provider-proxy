@@ -10,6 +10,7 @@ export default async function DashboardLayout({ children }: { children: React.Re
       variant="customer"
       user={{ name: user.name, email: user.email, role: user.role }}
       balance={user.balance.toString()}
+      customerBilling={shell.customerBilling}
       siteName={shell.siteName}
       announcements={shell.announcements}
       defaultOpen={shell.defaultOpen}

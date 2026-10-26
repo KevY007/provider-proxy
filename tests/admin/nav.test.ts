@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adminNav, customerNav, navForRole } from "@/components/shell/nav";
+import { adminNav, customerNav, navForBilling, navForRole } from "@/components/shell/nav";
 
 const hrefs = (groups: ReturnType<typeof navForRole>) => groups.flatMap((g) => g.items.map((i) => i.href));
 
@@ -24,5 +24,26 @@ describe("navForRole", () => {
   it("drops groups that end up empty", () => {
     const groups = [{ label: "x", items: [{ title: "A", href: "/a", icon: adminNav[0].items[0].icon, adminOnly: true }] }];
     expect(navForRole(groups, "SUPPORT")).toEqual([]);
+  });
+});
+
+describe("navForBilling", () => {
+  it("keeps Billing when customer billing pages are on", () => {
+    expect(navForBilling(customerNav, true)).toEqual(customerNav);
+  });
+
+  it("hides only the customer Billing page when off", () => {
+    const h = hrefs(navForBilling(customerNav, false));
+    expect(h).not.toContain("/dashboard/billing");
+    expect(h).toEqual(hrefs(customerNav).filter((x) => x !== "/dashboard/billing"));
+  });
+
+  it("does not affect the admin nav (admin billing has no billing flag)", () => {
+    expect(navForBilling(adminNav, false)).toEqual(adminNav);
+  });
+
+  it("drops groups that end up empty", () => {
+    const groups = [{ label: "x", items: [{ title: "B", href: "/b", icon: adminNav[0].items[0].icon, billing: true }] }];
+    expect(navForBilling(groups, false)).toEqual([]);
   });
 });

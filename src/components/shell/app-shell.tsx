@@ -28,7 +28,8 @@ import { MoneyText } from "@/components/common/money-text";
 import { stopImpersonationAction } from "@/lib/auth/actions";
 import { cn } from "@/lib/utils";
 import { AnnouncementsBell, type AnnouncementItem } from "./announcements-bell";
-import { adminNav, customerNav, findNavItem, isNavActive, navForRole, type NavGroup } from "./nav";
+import { CustomerBillingProvider } from "./billing-context";
+import { adminNav, customerNav, findNavItem, isNavActive, navForBilling, navForRole, type NavGroup } from "./nav";
 import { ThemeToggle } from "./theme-toggle";
 import { UserMenu, type ShellUser } from "./user-menu";
 
@@ -38,6 +39,8 @@ export interface AppShellProps {
   user: ShellUser;
   /** Customer balance as a decimal string; shows the balance pill when provided. */
   balance?: string | null;
+  /** Customer billing pages enabled (setting customerBilling); off hides Billing and makes the balance pill read-only. */
+  customerBilling?: boolean;
   siteName?: string;
   announcements?: AnnouncementItem[];
   /** Email of the customer being impersonated (shows a banner with an exit button). */
@@ -55,6 +58,7 @@ export function AppShell({
   variant,
   user,
   balance,
+  customerBilling = true,
   siteName = "ProviderProxy",
   announcements = [],
   impersonating,
@@ -62,7 +66,10 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const pathname = usePathname();
-  const groups: NavGroup[] = navForRole(variant === "admin" ? adminNav : customerNav, user.role);
+  const groups: NavGroup[] = navForBilling(
+    navForRole(variant === "admin" ? adminNav : customerNav, user.role),
+    variant === "admin" || customerBilling,
+  );
   const current = findNavItem(groups, pathname);
   const section = variant === "admin" ? "Admin" : siteName;
   // data-heavy pages (tables, dashboards) use the whole width; forms keep the reading width
@@ -145,7 +152,7 @@ export function AppShell({
             <span className="truncate font-medium">{current?.title ?? "Page"}</span>
           </nav>
           <div className="ml-auto flex items-center gap-1.5">
-            {variant === "customer" && balance != null && <BalancePill balance={balance} />}
+            {variant === "customer" && balance != null && <BalancePill balance={balance} linked={customerBilling} />}
             <AnnouncementsBell items={announcements} />
             <ThemeToggle />
             <UserMenu user={user} variant={variant} />
@@ -153,15 +160,32 @@ export function AppShell({
         </header>
         {/* SidebarInset already renders the page's <main> landmark; don't nest another */}
         <div className="flex-1 p-4 md:p-6 lg:p-8">
-          <div className={cn("mx-auto w-full", fullWidth ? "max-w-none" : "max-w-7xl")}>{children}</div>
+          <div className={cn("mx-auto w-full", fullWidth ? "max-w-none" : "max-w-7xl")}>
+            <CustomerBillingProvider value={customerBilling}>{children}</CustomerBillingProvider>
+          </div>
         </div>
       </SidebarInset>
     </SidebarProvider>
   );
 }
 
-function BalancePill({ balance }: { balance: string }) {
+function BalancePill({ balance, linked }: { balance: string; linked: boolean }) {
   const low = Number(balance) < 1;
+  if (!linked) {
+    // billing pages off: read-only balance chip
+    return (
+      <span
+        aria-label="Balance"
+        className={cn(
+          "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm font-medium",
+          low && "border-amber-500/50 text-amber-500",
+        )}
+      >
+        <Wallet className="size-3.5" />
+        <MoneyText value={balance} />
+      </span>
+    );
+  }
   return (
     <Button asChild variant="outline" size="sm" className={cn("gap-1.5 rounded-full", low && "border-amber-500/50 text-amber-500")}>
       <Link href="/dashboard/billing" aria-label="Balance - open billing">

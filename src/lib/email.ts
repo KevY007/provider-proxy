@@ -217,32 +217,37 @@ export const emailTemplates = {
   },
 
   async lowBalance(p: { name?: string | null; balance: MoneyLike; topUpUrl?: string }): Promise<TemplateResult> {
-    const { siteName } = await getSettings();
+    const { siteName, customerBilling } = await getSettings();
+    // billing pages off: customers cannot top up themselves, so no CTA and point them to the admin
+    const next = customerBilling ? "Add credit to avoid interruptions, or turn on auto-recharge." : "Contact your admin to top up your balance.";
     return {
       subject: `Your ${siteName} balance is running low`,
       html: layout({
         siteName,
         title: "Low balance",
-        body: `${hello(p.name)}<p>Your current balance is <strong>${formatUSD(p.balance)}</strong>. API requests will be rejected when your balance runs out. Add credit to avoid interruptions, or turn on auto-recharge.</p>`,
-        cta: { label: "Add credit", url: p.topUpUrl ?? `${appUrl}/dashboard/billing` },
+        body: `${hello(p.name)}<p>Your current balance is <strong>${formatUSD(p.balance)}</strong>. API requests will be rejected when your balance runs out. ${next}</p>`,
+        cta: customerBilling ? { label: "Add credit", url: p.topUpUrl ?? `${appUrl}/dashboard/billing` } : undefined,
       }),
     };
   },
 
   /** The balance reached zero or below: requests are now rejected (or, with a credit line, running on it). */
   async balanceExhausted(p: { name?: string | null; balance: MoneyLike; creditLeft?: MoneyLike | null; topUpUrl?: string }): Promise<TemplateResult> {
-    const { siteName } = await getSettings();
+    const { siteName, customerBilling } = await getSettings();
     const credit = p.creditLeft !== undefined && p.creditLeft !== null && Number(p.creditLeft) > 0;
     const effect = credit
       ? `You are now using your credit line (<strong>${formatUSD(p.creditLeft!)}</strong> left). API requests will be rejected once it is used up.`
-      : "API requests are being rejected until you add credit.";
+      : customerBilling
+        ? "API requests are being rejected until you add credit."
+        : "API requests are being rejected until your balance is topped up.";
+    const next = customerBilling ? "Add credit to keep your apps running, or turn on auto-recharge." : "Contact your admin to top up your balance.";
     return {
       subject: `Your ${siteName} balance has run out`,
       html: layout({
         siteName,
         title: "Balance used up",
-        body: `${hello(p.name)}<p>Your balance is <strong>${formatUSD(p.balance)}</strong>. ${effect} Add credit to keep your apps running, or turn on auto-recharge.</p>`,
-        cta: { label: "Add credit", url: p.topUpUrl ?? `${appUrl}/dashboard/billing` },
+        body: `${hello(p.name)}<p>Your balance is <strong>${formatUSD(p.balance)}</strong>. ${effect} ${next}</p>`,
+        cta: customerBilling ? { label: "Add credit", url: p.topUpUrl ?? `${appUrl}/dashboard/billing` } : undefined,
       }),
     };
   },

@@ -7,9 +7,10 @@ import { getSetting } from "@/lib/settings";
 import { publicVisibility } from "@/server/customer/visibility";
 
 export default async function MarketingLayout({ children }: { children: React.ReactNode }) {
-  const [siteName, supportEmail, session, vis] = await Promise.all([
+  const [siteName, supportEmail, customerBilling, session, vis] = await Promise.all([
     getSetting("siteName"),
     getSetting("supportEmail"),
+    getSetting("customerBilling"),
     getSession().catch(() => null),
     publicVisibility(),
   ]);
@@ -38,7 +39,7 @@ export default async function MarketingLayout({ children }: { children: React.Re
       links: [
         { href: "/login", label: "Log in" },
         { href: "/signup", label: "Sign up" },
-        { href: "/dashboard/billing", label: "Billing" },
+        ...(customerBilling ? [{ href: "/dashboard/billing", label: "Billing" }] : []),
       ],
     },
   ];

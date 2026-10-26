@@ -44,6 +44,7 @@ export const SETTING_DEFS = {
   portalOnly: def("boolean", "access", "Portal only (no public site)", "For an internal service: visitors who are not signed in get the login page and nothing else. The home page, docs, pricing, status and the /api/pricing feed all require signing in (overrides the three public switches above), the home page sends signed-in users straight to their dashboard and search engines are told to index nothing.", z.boolean(), false),
   defaultGroupSlug: def("string", "access", "Default group slug", "Group (pool) assigned to new customers.", z.string().min(1).max(64), "standard"),
   // --- billing ---
+  customerBilling: def("boolean", "billing", "Customer billing pages", "Off = customers never see Billing, Add funds, top-ups, auto-recharge, payment methods or redeem codes; their balance is still shown and admins set it from the customer page.", z.boolean(), true),
   trialCredit: def("number", "billing", "Trial credit (USD)", "Credit granted when a customer verifies their email (or adds a card when required).", z.number().min(0).max(100000), 0),
   requireCardForTrial: def("boolean", "billing", "Require card for trial", "Only grant the trial credit after a payment method is attached.", z.boolean(), false),
   minTopup: def("number", "billing", "Minimum top-up (USD)", "Smallest amount a customer can add.", z.number().min(0).max(100000), 5),
