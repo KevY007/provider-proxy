@@ -238,6 +238,9 @@ model Group {
   // "model": customers pay priceMultiplier x the model price; "cost": priceMultiplier x the upstream cost of the route
   // that served the request (never above the official list price)
   priceBasis      String   @default("model")
+  // the saving customers of this pool are shown: their "would have cost" figure = price / (1 - pct/100).
+  // null = compare with the official list price of the model maker
+  referenceSavingsPct Decimal? @db.Decimal(5, 2)
   providerTags    String[] @default([]) // if non-empty, only routes whose provider has ANY of these tags are used
   allowedModels   String[] @default([]) // model slugs; empty = all public models
   isDefault       Boolean  @default(false)

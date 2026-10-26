@@ -41,7 +41,7 @@ export function ModelsClient({ models, pools, currentPoolSlug }: { models: UserM
         contextWindow: m.contextWindow,
         retiresAt: m.retiresAt,
         sell: m.prices[pool],
-        official: m.official,
+        official: m.reference[pool] ?? m.official,
       }));
     return buildPriceRows(list, "1");
   }, [models, pool, vendor, cap, q]);
@@ -96,7 +96,7 @@ export function ModelsClient({ models, pools, currentPoolSlug }: { models: UserM
           </SelectContent>
         </Select>
       </div>
-      <PriceTable rows={rows} showCapabilities />
+      <PriceTable rows={rows} showCapabilities referenceLabel={models.some((m) => m.reference[pool]) ? "Regular price" : "Official price"} />
       <p className="text-xs text-muted-foreground">These are the prices you pay. The saving column compares them with each maker&apos;s own list price.</p>
     </div>
   );

@@ -196,7 +196,7 @@ export function ChatTab({ models, keyApi, keyError }: { models: PlaygroundModel[
           </div>
           {anySaved && (
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Saved vs official</span>
+              <span className="text-muted-foreground">Saved</span>
               <SavedNote saved={String(totalSaved)} />
             </div>
           )}

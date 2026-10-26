@@ -24,7 +24,6 @@ import { explainError } from "@/server/customer/log-status";
 import { getOnboarding } from "@/server/customer/onboarding-data";
 import { summarizeSavings, type SavingsSummary } from "@/server/customer/savings";
 import { getSavingsTotals, getSpendByPool } from "@/server/customer/savings-totals";
-import { savingsPctOf } from "@/server/customer/savings";
 
 export const metadata = { title: "Overview" };
 export const dynamic = "force-dynamic";
@@ -46,10 +45,10 @@ function SavingsFigure({ label, s }: { label: string; s: SavingsSummary & { hasD
         {!s.hasData
           ? "No priced requests yet"
           : s.kind === "saved"
-            ? `saved${s.pct !== null ? ` (${Math.round(s.pct)}% below official)` : ""}`
+            ? "saved"
             : s.kind === "paid_more"
-              ? `more than official${s.pct !== null ? ` (${Math.abs(Math.round(s.pct))}% above)` : ""}`
-              : "same as official"}
+              ? "more than regular"
+              : "same as regular"}
       </p>
     </div>
   );
@@ -125,9 +124,9 @@ export default async function DashboardPage() {
         <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2 text-base">
-              <PiggyBank className="size-4 text-emerald-600 dark:text-emerald-400" /> Your savings vs official prices
+              <PiggyBank className="size-4 text-emerald-600 dark:text-emerald-400" /> Your savings
             </CardTitle>
-            <CardDescription>What the same requests would have cost directly at OpenAI, Anthropic, Google and others, minus what you paid us.</CardDescription>
+            <CardDescription>What the same requests would have cost at the regular price, minus what you paid.</CardDescription>
           </div>
           <Button asChild variant="ghost" size="sm">
             <Link href="/dashboard/usage">
@@ -150,13 +149,12 @@ export default async function DashboardPage() {
                     <th className="py-1.5 pr-4 font-medium">Pool</th>
                     <th className="py-1.5 pr-4 text-right font-medium">Requests</th>
                     <th className="py-1.5 pr-4 text-right font-medium">Spent</th>
-                    <th className="py-1.5 pr-4 text-right font-medium">At list price</th>
+                    <th className="py-1.5 pr-4 text-right font-medium">Regular price</th>
                     <th className="py-1.5 text-right font-medium">Saved</th>
                   </tr>
                 </thead>
                 <tbody className="tabular-nums">
                   {byPool.map((p) => {
-                    const pct = savingsPctOf(p.listPrice, p.comparablePaid);
                     const saved = p.listPrice - p.comparablePaid;
                     return (
                       <tr key={p.slug ?? "none"} className="border-t">
@@ -171,7 +169,6 @@ export default async function DashboardPage() {
                             <>
                               {saved < 0 ? "+" : ""}
                               <MoneyText value={Math.abs(saved)} />
-                              {pct !== null && <span className="ml-1 text-xs">({Math.abs(Math.round(pct))}%)</span>}
                             </>
                           ) : (
                             "-"
