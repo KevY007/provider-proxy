@@ -20,11 +20,11 @@ export const ERROR_CODES: ErrorCodeInfo[] = [
   { code: "spend_limit_reached", http: 402, meaning: "The key's spend limit or your monthly spend limit has been reached.", fix: "Raise the limit on the key or in your billing settings." },
   { code: "rate_limited", http: 429, meaning: "Too many requests per minute/tokens, or too many concurrent requests.", fix: "Back off and retry after the `retry-after` header; lower concurrency or raise the key limits." },
   { code: "no_capacity", http: 429, meaning: "All capacity was busy for longer than the queue timeout.", fix: "Retry after the `retry-after` header. Official SDKs do this automatically." },
-  { code: "no_available_provider", http: 503, meaning: "No upstream is currently available for this model.", fix: "Retry shortly; check the Status page." },
-  { code: "upstream_insufficient_balance", http: 503, meaning: "The upstream provider account serving this model has run out of credit (not your balance).", fix: "Retry later; the operator has to top up the upstream account." },
-  { code: "upstream_timeout", http: 504, meaning: "The upstream took too long to respond.", fix: "Retry; use streaming for long generations." },
-  { code: "upstream_error", http: 502, meaning: "The upstream returned an error or was unreachable.", fix: "Retry with backoff. If it persists, share the request id with support." },
-  { code: "invalid_request", http: 400, meaning: "The request body or parameters are invalid.", fix: "Check the error message for the offending field and compare with the provider API reference." },
+  { code: "no_available_provider", http: 503, meaning: "This model is temporarily unavailable.", fix: "Retry shortly; check the Status page." },
+  { code: "upstream_insufficient_balance", http: 503, meaning: "This model is temporarily out of capacity (not your balance).", fix: "Retry later. If it persists, contact support." },
+  { code: "upstream_timeout", http: 504, meaning: "The model took too long to respond.", fix: "Retry; use streaming for long generations." },
+  { code: "upstream_error", http: 502, meaning: "The model returned an error or was unreachable.", fix: "Retry with backoff. If it persists, share the request id with support." },
+  { code: "invalid_request", http: 400, meaning: "The request body or parameters are invalid.", fix: "Check the error message for the offending field and compare with the API reference." },
   { code: "internal_error", http: 500, meaning: "Unexpected error on our side.", fix: "Retry; if it persists contact support with the request id." },
 ];
 

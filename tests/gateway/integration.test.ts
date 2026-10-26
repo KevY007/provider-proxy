@@ -810,11 +810,11 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
 
     // both keys are now cooling down -> same answer from the other API shapes without touching the upstream
     const a = await call("/v1/messages", null, { model: M.all429, max_tokens: 5, messages: [{ role: "user", content: "x" }] }, { headers: { "x-api-key": fx.main.key, "anthropic-version": "2023-06-01" } });
-    expect([429, 503]).toContain(a.status); // 503 while both keys cool down, 429 if the (2s) cooldown already elapsed
+    expect(a.status).toBe(429); // both keys cool down after a 429: the client is told to come back, as the upstream would
     const ab = await a.json();
     expect(ab.type).toBe("error");
-    expect(["overloaded_error", "rate_limit_error"]).toContain(ab.error.type);
-    expect(a.headers.get("retry-after")).toBeTruthy();
+    expect(ab.error.type).toBe("rate_limit_error");
+    expect(Number(a.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
   });
 
   it("upstream 500s are retried; the client then gets the LAST upstream's real status + native error (PLAN 9d.1a), the gateway code only in the log", async () => {
@@ -835,7 +835,7 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
       expect(res.status).toBe(503);
       const body = await res.json();
       expect(body.error.code).toBe("upstream_insufficient_balance");
-      expect(body.error.message).toMatch(/upstream provider/);
+      expect(body.error.message).toMatch(/out of capacity/);
     }
   });
 

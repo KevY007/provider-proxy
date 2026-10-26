@@ -19,8 +19,11 @@ export interface ChatUsage {
 
 export type ChatTurn = { role: "system" | "user" | "assistant"; content: string };
 
-/** Holds the playground key in memory only. `getKey()` lazily fetches (rotates) one; `renew()` forces a fresh one. */
-export function usePlaygroundKey() {
+/**
+ * Holds the playground key in memory only. `getKey()` lazily fetches (rotates) one; `renew()` forces a fresh one.
+ * `groupId` is the pool the playground bills at (null = the account default); changing it mints a key in that pool.
+ */
+export function usePlaygroundKey(groupId: string | null = null) {
   const keyRef = useRef<string | null>(null);
   const inflight = useRef<Promise<string> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -29,7 +32,7 @@ export function usePlaygroundKey() {
   const fetchKey = useCallback(async (): Promise<string> => {
     if (!inflight.current) {
       inflight.current = (async () => {
-        const r = await getPlaygroundKeyAction();
+        const r = await getPlaygroundKeyAction(groupId);
         if (!r.ok || !r.data) {
           setError(r.ok ? "Could not create a playground key" : r.error);
           throw new Error(r.ok ? "no key" : r.error);
@@ -43,7 +46,7 @@ export function usePlaygroundKey() {
       });
     }
     return inflight.current;
-  }, []);
+  }, [groupId]);
 
   const getKey = useCallback(async () => keyRef.current ?? fetchKey(), [fetchKey]);
   const renew = useCallback(async () => {
@@ -52,6 +55,8 @@ export function usePlaygroundKey() {
   }, [fetchKey]);
 
   useEffect(() => {
+    keyRef.current = null; // another pool: the key must be re-minted in it
+    inflight.current = null;
     fetchKey().catch(() => undefined);
   }, [fetchKey]);
 

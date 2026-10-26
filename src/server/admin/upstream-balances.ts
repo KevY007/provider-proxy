@@ -12,6 +12,10 @@
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
+import { audit } from "@/lib/audit";
+import { emailTemplates, sendTemplate } from "@/lib/email";
+import { logger } from "@/lib/logger";
+import { getSettings } from "@/lib/settings";
 import { assertPublicUrl } from "@/gateway/ssrf";
 import { parseUsageDoc, usageEndpoint } from "@/server/admin/upstream-usage";
 
@@ -117,7 +121,39 @@ export async function refreshUpstreamBalances(): Promise<BalanceSnapshot> {
   const snap: BalanceSnapshot = { at: new Date().toISOString(), accounts: groupAccounts(await readKeyBalances()) };
   const value = snap as unknown as Prisma.InputJsonValue;
   await db.setting.upsert({ where: { key: SNAPSHOT_KEY }, create: { key: SNAPSHOT_KEY, value }, update: { value } });
+  await alertLowBalances(snap).catch((err) => logger.warn("upstream low-balance alert failed", { err }));
   return snap;
+}
+
+const ALERTED_KEY = "upstreamBalanceAlerted";
+
+/**
+ * Email the admins once when an upstream account drops below `upstreamBalanceLowUsd`. The account is remembered as
+ * alerted until a read shows it at or above the level again, so the next drop alerts again (never on every refresh).
+ */
+export async function alertLowBalances(snap: BalanceSnapshot): Promise<string[]> {
+  const { upstreamBalanceLowUsd: limit } = await getSettings();
+  const row = await db.setting.findUnique({ where: { key: ALERTED_KEY } });
+  const before = new Set(Array.isArray(row?.value) ? (row.value as string[]) : []);
+  const after = new Set(before);
+  const fresh: UpstreamAccount[] = [];
+  for (const a of snap.accounts) {
+    if (a.balance === null) continue; // a failed read changes nothing
+    if (limit > 0 && a.balance < limit) {
+      if (!after.has(a.id)) fresh.push(a);
+      after.add(a.id);
+    } else after.delete(a.id);
+  }
+  if (after.size === before.size && [...after].every((id) => before.has(id))) return [];
+  const value = [...after] as unknown as Prisma.InputJsonValue;
+  await db.setting.upsert({ where: { key: ALERTED_KEY }, create: { key: ALERTED_KEY, value }, update: { value } });
+  if (!fresh.length) return [];
+  const admins = await db.user.findMany({ where: { role: "ADMIN", status: "ACTIVE" }, select: { email: true } });
+  for (const a of fresh) {
+    for (const ad of admins) await sendTemplate(ad.email, emailTemplates.upstreamBalanceLow({ account: a.name, balance: a.balance!, limit }));
+    await audit(null, "billing.upstream_balance_low", { type: "UpstreamAccount", id: a.id }, { balance: a.balance, limit });
+  }
+  return fresh.map((a) => a.id);
 }
 
 /** The stored snapshot (refreshed on the first read when none exists yet). */

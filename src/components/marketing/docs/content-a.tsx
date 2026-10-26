@@ -81,7 +81,7 @@ export function authentication(ctx: DocCtx) {
       <CodeBlock lang="bash" code={`curl ${ctx.base}/models -H "Authorization: Bearer ${KEY}"`} />
       <H2>Key settings</H2>
       <UL>
-        <li><strong>Pool (group)</strong>: decides price multiplier and which models are reachable.</li>
+        <li><strong>Pool (group)</strong>: decides your price (a share of the official list price) and which models are reachable.</li>
         <li><strong>Allowed models</strong>: optionally restrict a key to specific models.</li>
         <li><strong>Limits</strong>: requests per minute, tokens per minute, max concurrent requests and a lifetime spend limit.</li>
         <li><strong>IP allowlist</strong>: exact IPs or CIDR ranges allowed to use the key.</li>
@@ -172,7 +172,7 @@ export function openaiResponses(ctx: DocCtx) {
   }'`}
       />
       <Callout kind="info">
-        Responses endpoints are available for models that expose the <C>responses</C> capability. Stored responses are only retrievable while the same upstream capacity still holds them; otherwise you get a 404.
+        Responses endpoints are available for models that expose the <C>responses</C> capability. Stored responses are only retrievable for a limited time; otherwise you get a 404.
       </Callout>
     </>
   );
@@ -355,8 +355,8 @@ export function anthropicHeaders() {
         head={["Header", "Behavior"]}
         rows={[
           [<C key="1">x-api-key</C>, "Your sk-pp- key. Authorization: Bearer also works."],
-          [<C key="2">anthropic-version</C>, "Forwarded upstream; defaults to 2023-06-01 when omitted. Sending it also makes /v1/models respond in Anthropic's shape."],
-          [<C key="3">anthropic-beta</C>, "Forwarded upstream (for example for extended thinking or 1M-context betas)."],
+          [<C key="2">anthropic-version</C>, "Passed through; defaults to 2023-06-01 when omitted. Sending it also makes /v1/models respond in Anthropic's shape."],
+          [<C key="3">anthropic-beta</C>, "Passed through (for example for extended thinking or 1M-context betas)."],
           [<C key="4">x-request-id</C>, "Returned on every response; quote it when contacting support."],
         ]}
       />

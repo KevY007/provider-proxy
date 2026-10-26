@@ -125,7 +125,7 @@ export const KNOWN_PRICES: KnownPrice[] = [
   k("openai", "text-embedding-3-small", { input: 0.02, output: 0 }, { displayName: "Text Embedding 3 Small", description: "Low-cost text embeddings.", capabilities: ["embeddings"], contextWindow: 8_191 }),
   k("openai", "text-embedding-3-large", { input: 0.13, output: 0 }, { displayName: "Text Embedding 3 Large", description: "Highest-quality text embeddings.", capabilities: ["embeddings"], contextWindow: 8_191 }),
   k("openai", "text-embedding-ada-002", { input: 0.1, output: 0 }, { displayName: "Text Embedding Ada 002", capabilities: ["embeddings"], contextWindow: 8_191 }),
-  k("openai", "omni-moderation-latest", { input: 0, output: 0 }, { displayName: "Omni Moderation", description: "Text and image moderation (free upstream).", capabilities: ["moderation"] }),
+  k("openai", "omni-moderation-latest", { input: 0, output: 0 }, { displayName: "Omni Moderation", description: "Text and image moderation (free).", capabilities: ["moderation"] }),
   k("openai", "text-moderation-latest", { input: 0, output: 0 }, { displayName: "Text Moderation", capabilities: ["moderation"] }),
 
   // ======================================================================================================== Anthropic

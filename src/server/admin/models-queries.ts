@@ -31,13 +31,13 @@ export async function getModelRows(): Promise<ModelRow[]> {
   const [models, usage] = await Promise.all([
     db.model.findMany({
       orderBy: [{ sortOrder: "asc" }, { slug: "asc" }],
-      include: { routes: true },
+      include: { routes: { include: { provider: { select: { status: true } } } } },
     }),
     getBreakdown("model", { from: since, to: new Date() }, { limit: 1000 }).catch(() => []),
   ]);
   const usageBySlug = new Map(usage.map((u) => [u.key, u]));
   return models.map((m) => {
-    const routeRecs = m.routes.map((r) => ({ ...flat(r), enabled: r.enabled, priority: r.priority, weight: r.weight }));
+    const routeRecs = m.routes.map(({ provider, ...r }) => ({ ...flat(r), enabled: r.enabled, priority: r.priority, weight: r.weight, providerStatus: provider.status as string }));
     const best = primaryEnabledRoute(routeRecs);
     const units = rowUnits(flat(m), best as Record<string, string | number | null> | null);
     const sum = summarizeRow(units);
@@ -165,6 +165,25 @@ export interface RouteRow {
   autoCostStatus: string | null;
 }
 
+/** Token cost of the route each pool really uses for this model (its provider tags and route limits), per pool slug. */
+async function poolCosts(modelId: string): Promise<Map<string, { input: number; output: number; cached: number | null }>> {
+  const out = new Map<string, { input: number; output: number; cached: number | null }>();
+  try {
+    const { getConfig } = await import("@/gateway/cache");
+    const { primaryRoute } = await import("@/gateway/pool-prices");
+    const snap = await getConfig();
+    const m = snap.modelsById.get(modelId);
+    if (!m) return out;
+    for (const g of snap.groupsById.values()) {
+      const r = primaryRoute(snap, m, g);
+      if (r) out.set(g.slug, { input: r.cost.input.toNumber(), output: r.cost.output.toNumber(), cached: r.cost.cachedInput ? r.cost.cachedInput.toNumber() : null });
+    }
+  } catch {
+    /* no snapshot: the preview falls back to the model's primary route */
+  }
+  return out;
+}
+
 export async function getModelDetail(id: string) {
   const model = await db.model.findUnique({
     where: { id },
@@ -174,8 +193,17 @@ export async function getModelDetail(id: string) {
   const now = new Date();
   const [providers, groups, totals] = await Promise.all([
     db.provider.findMany({ orderBy: { name: "asc" }, select: { id: true, name: true, slug: true, status: true } }),
-    db.group.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { slug: true, name: true, priceMultiplier: true, priceBasis: true, allowedModels: true } }).then((gs) =>
-      gs.map((g) => ({ slug: g.slug, name: g.name, multiplier: Number(g.priceMultiplier.toString()), basis: g.priceBasis === "cost" ? ("cost" as const) : ("model" as const), allowed: g.allowedModels.length === 0 || g.allowedModels.includes(model.slug) })),
+    poolCosts(model.id).then((costs) =>
+      db.group.findMany({ orderBy: [{ sortOrder: "asc" }, { name: "asc" }], select: { slug: true, name: true, priceMultiplier: true, priceBasis: true, allowedModels: true } }).then((gs) =>
+        gs.map((g) => ({
+          slug: g.slug,
+          name: g.name,
+          multiplier: Number(g.priceMultiplier.toString()),
+          basis: g.priceBasis === "cost" ? ("cost" as const) : ("model" as const),
+          allowed: g.allowedModels.length === 0 || g.allowedModels.includes(model.slug),
+          cost: costs.get(g.slug) ?? null,
+        })),
+      ),
     ),
     getTotals({ from: new Date(now.getTime() - 24 * 3600_000), to: now, modelSlug: model.slug }).catch(() => null),
   ]);

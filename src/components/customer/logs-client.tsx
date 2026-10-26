@@ -165,7 +165,7 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
           { value: "success", label: "Success" },
           { value: "error", label: "Any error" },
           { value: "CLIENT_ERROR", label: "Client error" },
-          { value: "UPSTREAM_ERROR", label: "Upstream error" },
+          { value: "UPSTREAM_ERROR", label: "Model error" },
           { value: "GATEWAY_ERROR", label: "Gateway error" },
           { value: "CANCELLED", label: "Cancelled" },
         ]}

@@ -231,6 +231,20 @@ export const emailTemplates = {
     };
   },
 
+  /** Admins: an upstream account's balance fell below the warning level (sent once per drop). */
+  async upstreamBalanceLow(p: { account: string; balance: number; limit: number }): Promise<TemplateResult> {
+    const { siteName } = await getSettings();
+    return {
+      subject: `${siteName}: upstream balance low (${p.account}, ${formatUSD(p.balance)})`,
+      html: layout({
+        siteName,
+        title: "Upstream balance low",
+        body: `<p>The upstream account <strong>${escapeHtml(p.account)}</strong> has <strong>${formatUSD(p.balance)}</strong> left, below the warning level of ${formatUSD(p.limit)}. Requests it serves fail once it runs out. Top it up to keep the models it serves available.</p><p>You get this once per drop; it is sent again only after the balance has been above the warning level.</p>`,
+        cta: { label: "Open the Overview", url: `${appUrl}/admin` },
+      }),
+    };
+  },
+
   /** The balance reached zero or below: requests are now rejected (or, with a credit line, running on it). */
   async balanceExhausted(p: { name?: string | null; balance: MoneyLike; creditLeft?: MoneyLike | null; topUpUrl?: string }): Promise<TemplateResult> {
     const { siteName, customerBilling } = await getSettings();

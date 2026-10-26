@@ -50,7 +50,7 @@ export function GatewayErrorAlert({ error }: { error: GatewayError }) {
   } else if (code === "model_not_found" || code === "model_not_allowed") {
     title = "Model unavailable";
   } else if (error.status >= 500) {
-    title = "Upstream problem";
+    title = "Model error";
   }
   return (
     <Alert variant="destructive" className="border-red-500/30">

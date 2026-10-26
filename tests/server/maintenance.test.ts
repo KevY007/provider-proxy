@@ -70,3 +70,21 @@ describe.skipIf(!dbOk)("run claims (shared by every instance, timer and Cloud Sc
     expect((await runDueJobs("cron", { only: ["billing"], settings: OFF }))[0].ran).toBe(false); // within the gap
   });
 });
+
+describe("wall-clock slots", () => {
+  it("jobs with the same interval share one slot, so they run in the same tick", async () => {
+    const { slotStart } = await import("@/server/maintenance");
+    const h = 60 * 60_000;
+    const t = Date.UTC(2026, 9, 26, 14, 37, 12);
+    expect(slotStart(h, t)).toBe(Date.UTC(2026, 9, 26, 14, 0, 0));
+    expect(slotStart(15 * 60_000, t)).toBe(Date.UTC(2026, 9, 26, 14, 30, 0));
+    // a run at 14:59 and the next due at 15:00, not 15:59
+    expect(slotStart(h, Date.UTC(2026, 9, 26, 15, 0, 1))).toBeGreaterThan(Date.UTC(2026, 9, 26, 14, 59));
+    expect(slotStart(0, t)).toBe(t);
+  });
+
+  it("price sync is checked at its own interval in minutes", () => {
+    expect(jobInterval("priceSync", "timer", { ...ON, priceSyncAuto: true, priceSyncIntervalMin: 15 })).toBe(15 * 60_000);
+    expect(jobInterval("priceSync", "timer", { ...ON, priceSyncAuto: false, priceSyncIntervalMin: 15 })).toBeNull();
+  });
+});

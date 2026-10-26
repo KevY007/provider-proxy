@@ -38,7 +38,8 @@ const ACTIVITY_CHECK_MS = 60_000;
 /** Timer tick: re-reads the (cached) settings and runs whatever is due. */
 const TICK_MS = 30_000;
 
-type Settings = Pick<SettingValues, "activeHealthChecks" | "healthCheckIntervalMin" | "backgroundJobs" | "maintenanceIntervalMin"> & Partial<Pick<SettingValues, "priceSyncAuto" | "upstreamBalanceIntervalMin">>;
+type Settings = Pick<SettingValues, "activeHealthChecks" | "healthCheckIntervalMin" | "backgroundJobs" | "maintenanceIntervalMin"> &
+  Partial<Pick<SettingValues, "priceSyncAuto" | "priceSyncIntervalMin" | "upstreamBalanceIntervalMin">>;
 
 const g = globalThis as unknown as {
   __ppMaint?: { lastActivityCheck: number; running: Set<JobName>; timer: ReturnType<typeof setInterval> | null; timerFor: string };
@@ -55,6 +56,7 @@ export function jobInterval(job: JobName, source: JobSource, s: Settings): numbe
     return null; // never pinged because of traffic
   }
   if (job === "priceSync" && s.priceSyncAuto === false) return null;
+  if (job === "priceSync" && source !== "cron") return (s.priceSyncIntervalMin ?? 60) * MIN; // each provider is also gated by it
   if (job === "balances") {
     const min = s.upstreamBalanceIntervalMin ?? 60;
     if (!min) return null; // 0 = off (refresh button only)
@@ -66,10 +68,19 @@ export function jobInterval(job: JobName, source: JobSource, s: Settings): numbe
   return ACTIVITY_UPKEEP_MS;
 }
 
-/** Claim a run: true when the job has not run within `intervalMs` (atomic across instances). */
+/**
+ * Start of the wall-clock slot `now` is in, for an interval (UTC-aligned: 60 min = every full hour, 15 min = :00 :15
+ * :30 :45). Jobs are due once per slot, so every job with the same interval runs in the same tick instead of drifting
+ * apart, and an instance has one burst of work per slot and is idle in between.
+ */
+export function slotStart(intervalMs: number, now = Date.now()): number {
+  return intervalMs > 0 ? Math.floor(now / intervalMs) * intervalMs : now;
+}
+
+/** Claim a run: true when the job has not run in the current slot of `intervalMs` (atomic across instances). */
 async function claim(job: JobName, intervalMs: number, source: JobSource): Promise<boolean> {
   const now = new Date();
-  const threshold = new Date(now.getTime() - intervalMs);
+  const threshold = new Date(slotStart(intervalMs, now.getTime()) - 1);
   const rows = await db.$queryRaw<Array<{ name: string }>>(Prisma.sql`
     INSERT INTO "JobRun" ("name", "lastRunAt", "source", "updatedAt") VALUES (${job}, ${now}, ${source}, ${now})
     ON CONFLICT ("name") DO UPDATE SET "lastRunAt" = EXCLUDED."lastRunAt", "source" = EXCLUDED."source", "updatedAt" = EXCLUDED."updatedAt"
