@@ -25,6 +25,8 @@ const STATUS: Record<Proposal["status"], { label: string; variant: "default" | "
   missing: { label: "Not on page", variant: "outline" },
   excluded: { label: "Excluded", variant: "outline" },
 };
+/** "45 min" / "6 h" / "1 h 30 min" */
+const fmtEvery = (min: number) => (min < 60 ? `${min} min` : `${Math.floor(min / 60)} h${min % 60 ? ` ${min % 60} min` : ""}`);
 const usd = (v: string | null | undefined) => (v === null || v === undefined ? "-" : `$${Number(Number(v).toPrecision(8))}`);
 const host = (u: string) => {
   try {
@@ -111,7 +113,7 @@ export function PriceSyncCard({ providerId, providerName, initial, canEdit }: { 
               <Switch checked={auto} onCheckedChange={setAuto} disabled={!canEdit} /> Update automatically
             </label>
             <span className="text-sm">
-              (every {panel.schedule.hours} h
+              (every {fmtEvery(panel.schedule.minutes)}
               {!panel.schedule.enabled && <span className="text-destructive">, but automatic updates are off</span>} -{" "}
               <Link href="/admin/settings" className="underline underline-offset-2">
                 Settings &gt; Monitoring

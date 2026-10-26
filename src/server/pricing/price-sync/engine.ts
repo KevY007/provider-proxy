@@ -484,10 +484,11 @@ export async function applyPriceSyncRun(runId: string, routeIds: string[], opts:
 export async function runDuePriceSyncs(now = new Date()): Promise<{ ran: string[]; applied: number }> {
   const settings = await getSettings();
   if (!settings.priceSyncAuto) return { ran: [], applied: 0 };
-  const intervalMs = settings.priceSyncIntervalHours * 3_600_000;
+  const intervalMs = settings.priceSyncIntervalMin * 60_000;
   const due = await db.priceSync.findMany({ where: { auto: true }, include: { provider: { select: { status: true } } } });
   const ready = due
-    .filter((s) => s.provider.status === "ACTIVE" && (!s.lastRunAt || now.getTime() - s.lastRunAt.getTime() >= intervalMs))
+    // once per wall-clock slot (the same slots as the background jobs, so they run together)
+    .filter((s) => s.provider.status === "ACTIVE" && (!s.lastRunAt || s.lastRunAt.getTime() < Math.floor(now.getTime() / intervalMs) * intervalMs))
     .sort((a, b) => (a.basis === b.basis ? 0 : a.basis === "official" ? -1 : 1));
   const ran: string[] = [];
   let applied = 0;

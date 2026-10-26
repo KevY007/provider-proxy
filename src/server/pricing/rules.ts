@@ -7,7 +7,7 @@
 //   MARKUP_OVER_COST    : sell = primary-route cost x (1 + pricingValue / 100)
 //   PERCENT_OF_COST     : sell = primary-route cost x pricingValue / 100
 //   ... then + pricingAdjust (signed, per unit, never below 0)
-// "Primary route" = the highest-priority ENABLED route (ties: higher weight, then oldest).
+// "Primary route" = the highest-priority ENABLED route on an ACTIVE provider (ties: higher weight, then oldest).
 // Whenever one of the INPUTS of that derivation changes you MUST call
 //
 //     await onModelPricingInputsChanged(modelId)
@@ -36,7 +36,7 @@ export async function recomputeModelPrices(modelId: string): Promise<{ changed: 
   if (!model || model.pricingMode === "FIXED") return { changed: false };
   const rule: PricingRule = { mode: model.pricingMode, value: model.pricingValue === null ? null : Number(model.pricingValue.toString()), adjust: model.pricingAdjust === null ? null : Number(model.pricingAdjust.toString()) };
   if (validateRule(rule)) return { changed: false };
-  const route = await db.modelRoute.findFirst({ where: { modelId, enabled: true }, orderBy: [{ priority: "desc" }, { weight: "desc" }, { createdAt: "asc" }] });
+  const route = await db.modelRoute.findFirst({ where: { modelId, enabled: true, provider: { status: "ACTIVE" } }, orderBy: [{ priority: "desc" }, { weight: "desc" }, { createdAt: "asc" }] });
   const updates = deriveSellUpdates(model as unknown as Row, route as unknown as Row | null, rule);
   if (!Object.keys(updates).length) return { changed: false };
   await db.model.update({ where: { id: modelId }, data: updates });

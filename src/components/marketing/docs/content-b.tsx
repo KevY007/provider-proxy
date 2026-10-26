@@ -12,7 +12,7 @@ export function streaming(ctx: DocCtx) {
   return (
     <>
       <P>
-        Set <C>stream: true</C> and the response arrives as server-sent events (<C>text/event-stream</C>) in the same shape as the upstream API for the endpoint you called. Bytes are
+        Set <C>stream: true</C> and the response arrives as server-sent events (<C>text/event-stream</C>) in the same shape as the official API for the endpoint you called. Bytes are
         passed through as they arrive; there is no buffering.
       </P>
       <CodeTabs
@@ -53,7 +53,7 @@ for chunk in stream:
       />
       <H2>Billing and disconnects</H2>
       <P>
-        Usage is read from the final event of the stream. If the client disconnects early, the request is cancelled upstream and billed for the tokens received so far (estimated when the
+        Usage is read from the final event of the stream. If the client disconnects early, the request is cancelled and billed for the tokens received so far (estimated when the
         provider has not reported usage yet). Errors before the first byte are returned as normal JSON errors with the proper HTTP status; once streaming has started, failures are sent
         as an error event.
       </P>
@@ -151,7 +151,7 @@ print(img.url or "base64 image of", len(data or b""), "bytes")`,
         FLUX models served through fal.ai or Replicate are exposed through this same endpoint. Only <C>/v1/images/generations</C> is available for them (no edits or variations).
       </Callout>
       <H2>Pricing</H2>
-      <P>Image models are billed per generated image (shown on the Pricing page) or, for token-billed models, by the tokens the model reports, times your pool multiplier. Each request shows its exact cost in your Logs.</P>
+      <P>Image models are billed per generated image (shown on the Pricing page) or, for token-billed models, by the tokens the model reports, at your pool&apos;s price. Each request shows its exact cost in your Logs.</P>
     </>
   );
 }
@@ -185,7 +185,7 @@ curl ${ctx.base}/videos/video_.../content -H "Authorization: Bearer ${KEY}" -o o
       />
       <H2>Billing</H2>
       <UL>
-        <li>The job is charged <strong>when it is created</strong>: requested seconds times the per-second price of the model, times your pool multiplier.</li>
+        <li>The job is charged <strong>when it is created</strong>: requested seconds times your per-second price for the model.</li>
         <li>If a job later ends as <C>failed</C>, the full charge is refunded to your balance automatically (shown as a Refund in your ledger), exactly once.</li>
         <li>Polling and downloading are free. Videos are only visible to the account that created them; any other key gets <C>404</C>.</li>
       </UL>
@@ -227,7 +227,7 @@ export function batchesGuide(ctx: DocCtx) {
       <H2>Rules</H2>
       <UL>
         <li>Every request in a batch is checked when you create it: an unknown model, a model your key may not use, or a model without batch support rejects the <strong>whole</strong> batch, and the error names the <C>custom_id</C>.</li>
-        <li>All models of one batch must be available through the same upstream; if they are not, split the batch by model.</li>
+        <li>All models of one batch must be available together; if they are not, split the batch by model.</li>
         <li>When you create a batch, your balance must cover its worst case (every request at its <C>max_tokens</C>, batch price). That amount is held until the results are billed, then released. If the balance is too low you get <C>402 insufficient_balance</C>.</li>
         <li>Each succeeded result is billed exactly once. Errored, canceled and expired requests are free. Results show up in your request logs with the batch id.</li>
         <li>Batches and their result files are only visible to the account that created them. Any other key gets <C>404</C>.</li>
@@ -256,8 +256,8 @@ export function rateLimits() {
       </P>
       <H2>Queueing under load</H2>
       <P>
-        When upstream capacity is temporarily saturated we hold your request in a short queue (up to about 20 seconds) instead of failing it. If capacity is still not available you get{" "}
-        <C>429 no_capacity</C> with a <C>retry-after</C> hint. Upstream 429s and 5xx errors are retried transparently on other capacity before they ever reach you.
+        When capacity is temporarily saturated we hold your request in a short queue (up to about 20 seconds) instead of failing it. If capacity is still not available you get{" "}
+        <C>429 no_capacity</C> with a <C>retry-after</C> hint. Temporary 429s and 5xx errors are retried transparently before they ever reach you.
       </P>
       <H2>Handling 429s</H2>
       <CodeBlock
@@ -285,11 +285,11 @@ export function billing() {
         code={`price = ( uncached_input x input_price
         + cached_input   x cached_price
         + output (incl. reasoning) x output_price ) / 1,000,000
-        x pool multiplier x your price multiplier
+        x your pool's share of the official price
         + per-image / per-request charges`}
       />
       <UL>
-        <li><strong>Pools</strong> have a price multiplier (for example Pro = 0.8x). Choose a pool per key when creating it.</li>
+        <li><strong>Pools</strong> set your price as a share of the official list price (for example 50% of official). Choose a pool per key when creating it.</li>
         <li><strong>Cached tokens</strong> are cheaper than normal input on models that support prompt caching.</li>
         <li><strong>Long-context</strong> requests above a model&apos;s threshold may carry a surcharge, noted on the Pricing page.</li>
         <li>Failed requests (4xx/5xx) that produced no usage are not charged.</li>
@@ -409,7 +409,7 @@ export function pricingApi(ctx: DocCtx) {
       <Table
         head={["Endpoint", "Auth", "Use it for"]}
         rows={[
-          [<C key="a">GET /v1/models</C>, "API key", "The models your key can use, with your effective prices (pool and account multipliers applied) next to the official list price."],
+          [<C key="a">GET /v1/models</C>, "API key", "The models your key can use, with your prices next to the official list price."],
           [<C key="b">GET /v1/models/{"{id}"}</C>, "API key", "The same fields for one model."],
           [<C key="c">GET /v1/model/info</C>, "API key", "LiteLLM-compatible cost per token, for LiteLLM, Langfuse and other cost trackers."],
           [<C key="d">GET /api/pricing</C>, "none, or API key", "The price list (default pool, or ?group=<pool>). Cached for 60 s, CORS enabled. When the operator makes pricing private it needs your API key, and then shows your own prices."],
@@ -449,7 +449,7 @@ export function pricingApi(ctx: DocCtx) {
 }`}
       />
       <Callout kind="info">
-        <C>yours</C> is exactly what you are charged: your key&apos;s pool multiplier and any account multiplier are already applied. Image, audio and video models use other units
+        <C>yours</C> is exactly what you are charged: your key&apos;s pool and account pricing are already applied. Image, audio and video models use other units
         (<C>usd_per_image</C>, <C>usd_per_second</C>, <C>usd_per_minute</C>, ...), named in <C>x_pricing.units</C>.
       </Callout>
       <H2>LiteLLM format: GET /v1/model/info</H2>
@@ -479,7 +479,7 @@ curl ${ctx.appUrl}/api/pricing -H "Authorization: Bearer $PP_API_KEY"   # your o
         No key needed, CORS <C>*</C>, cached for 60 seconds. The document lists the public pools (<C>groups</C>), the units, and per model the <C>yours</C> / <C>official</C> /{" "}
         <C>savings_pct</C> prices (US dollars per million tokens for text models). If the operator has made pricing private, it answers <C>401 pricing_private</C> without a key; send your
         API key the same way as on the API (<C>Authorization: Bearer</C>, <C>x-api-key</C> or <C>?key=</C>) and you get your own prices: your pool, your
-        account multiplier and your key&apos;s model allow-list, never cached by shared caches. A wrong, disabled or expired key is rejected with the usual{" "}
+        account pricing and your key&apos;s model allow-list, never cached by shared caches. A wrong, disabled or expired key is rejected with the usual{" "}
         <C>401</C>.
       </P>
       <H2>Keeping prices in sync</H2>

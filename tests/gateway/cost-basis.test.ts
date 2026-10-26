@@ -46,6 +46,12 @@ describe.skipIf(!dbOk)("cost-basis pool", () => {
     await invalidateGatewayConfig("all");
   });
 
+  it("x-price-multiplier is the share of the official price, never the factor on our cost", async () => {
+    const res = await h.call("/v1/chat/completions", key, { model: slug, messages: [{ role: "user", content: "hi" }] });
+    // input: cost 1.5 x 1.5 = 2.25 against official 4 => 0.5625 of list (the pool's own 1.5 stays internal)
+    expect(Number(res.headers.get("x-price-multiplier"))).toBeCloseTo(0.5625, 4);
+  });
+
   it("/v1/models shows the cost-based price", async () => {
     const res = await h.call("/v1/models", key);
     const m = ((await res.json()) as { data: Array<{ id: string; x_pricing: { yours: { input: number; output: number } } }> }).data.find((x) => x.id === slug)!;

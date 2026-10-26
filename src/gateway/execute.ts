@@ -201,28 +201,31 @@ function modelRateLimitedError(snap: ConfigSnapshot, routes: RoutePlan[]): Gatew
   for (const rp of routes) for (const k of snap.keysByProvider.get(rp.route.providerId) ?? []) pairs.push([k.id, rp.route.upstreamModel]);
   const left = modelCooldownLeftSec(pairs);
   if (left === null) return null;
-  return new GatewayError("rate_limited", `Rate limit reached for this model upstream. Please retry in ${left}s.`, { retryAfterSec: left, internal: "every key is cooling down for this model after an upstream 429" });
+  return new GatewayError("rate_limited", `Rate limit reached for this model. Please retry in ${left}s.`, { retryAfterSec: left, internal: "every key is cooling down for this model after an upstream 429" });
 }
 
+/**
+ * No upstream key can take the request. The client is told when one will be free again: the soonest LIVE cooldown
+ * (runtime state, so a 429 a moment ago counts, up to the 1 h cooldown cap). When every key is held back by an upstream
+ * rate limit the answer is a 429 with that wait, exactly as the upstream would have said it.
+ */
 function noProviderError(snap: ConfigSnapshot, routes: RoutePlan[]): GatewayError {
   const now = Date.now();
-  let soonest = Infinity;
-  for (const rp of routes) {
-    for (const k of snap.keysByProvider.get(rp.route.providerId) ?? []) {
-      if (k.cooldownUntil && k.cooldownUntil > now) soonest = Math.min(soonest, k.cooldownUntil - now);
-    }
-  }
-  const retry = Number.isFinite(soonest) ? Math.min(60, Math.max(1, Math.ceil(soonest / 1000))) : 30;
-  // every key is cooling down because its upstream account is out of credit: say so instead of "no provider"
-  const keys = routes.flatMap((rp) => snap.keysByProvider.get(rp.route.providerId) ?? []);
-  const noCredit = (k: KeyRec) => {
-    const st = effectiveKeyState(k);
-    const last = getKeyRuntime(k.id)?.lastError ?? "";
-    const m = /^(\d+): ([\s\S]*)$/.exec(last);
-    return st.status === "COOLDOWN" && (st.cooldownUntil ?? 0) > now && !!m && classifyStatus(Number(m[1]), m[2]) === "payment";
+  const keys = [...new Map(routes.flatMap((rp) => snap.keysByProvider.get(rp.route.providerId) ?? []).map((k) => [k.id, k])).values()];
+  const cooling = keys.map((k) => ({ k, st: effectiveKeyState(k) })).filter(({ st }) => st.status !== "DISABLED" && st.status !== "INVALID" && st.status !== "EXHAUSTED");
+  const lastKind = (k: KeyRec) => {
+    const m = /^(\d+): ([\s\S]*)$/.exec(getKeyRuntime(k.id)?.lastError ?? "");
+    return m ? classifyStatus(Number(m[1]), m[2]) : null;
   };
-  if (keys.length && keys.every(noCredit))
-    return new GatewayError("upstream_insufficient_balance", undefined, { retryAfterSec: 60, internal: "every upstream key is cooling down: its upstream account is out of credit" });
+  let soonest = Infinity;
+  for (const { st } of cooling) if (st.cooldownUntil && st.cooldownUntil > now) soonest = Math.min(soonest, st.cooldownUntil - now);
+  const retry = Number.isFinite(soonest) ? Math.min(3600, Math.max(1, Math.ceil(soonest / 1000))) : 30;
+  const allCooling = cooling.length > 0 && cooling.every(({ st }) => (st.cooldownUntil ?? 0) > now);
+  // every key is cooling down because its upstream account is out of credit: say so instead of "no provider"
+  if (allCooling && cooling.every(({ k }) => lastKind(k) === "payment"))
+    return new GatewayError("upstream_insufficient_balance", undefined, { retryAfterSec: retry, internal: "every upstream key is cooling down: its upstream account is out of credit" });
+  if (allCooling && cooling.every(({ k }) => lastKind(k) === "rate_limit"))
+    return new GatewayError("rate_limited", `Rate limit reached for this model. Please retry in ${retry}s.`, { retryAfterSec: retry, internal: "every upstream key is cooling down after an upstream 429" });
   return new GatewayError("no_available_provider", undefined, { retryAfterSec: retry, internal: "no usable upstream key (all disabled, invalid, cooling down or missing)" });
 }
 
