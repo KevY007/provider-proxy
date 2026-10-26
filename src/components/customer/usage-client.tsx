@@ -90,7 +90,7 @@ export function UsageClient(props: UsageClientProps) {
       { accessorKey: "spend", header: "Cost", cell: ({ row }) => <MoneyText value={row.original.spend} />, meta: { className: "text-right" } },
       {
         id: "saved",
-        header: "Saved",
+        header: "Saved vs official",
         accessorFn: (r) => r.official - r.comparable,
         cell: ({ row }) => (row.original.official > 0 ? <MoneyText value={row.original.official - row.original.comparable} colorize signed /> : <span className="text-muted-foreground">-</span>),
         meta: { className: "text-right" },
@@ -133,10 +133,10 @@ export function UsageClient(props: UsageClientProps) {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Spend" icon={Coins} value={<MoneyText value={totals.spend} />} />
         <StatCard
-          label={savings.kind === "paid_more" ? "Paid more than regular" : "Saved"}
+          label={savings.kind === "paid_more" ? "Paid more than official" : "Saved vs official prices"}
           icon={PiggyBank}
           value={hasSavingsData ? <span className={savings.kind === "saved" ? "text-emerald-600 dark:text-emerald-400" : savings.kind === "paid_more" ? "text-amber-600 dark:text-amber-400" : undefined}>{savings.value}</span> : "-"}
-          hint={hasSavingsData ? <>regular price <MoneyText value={totals.official} /></> : "No priced requests yet"}
+          hint={hasSavingsData ? <>official price <MoneyText value={totals.official} /></> : "No priced requests yet"}
         />
         <StatCard label="Requests" icon={Activity} value={formatNumber(totals.requests)} />
         <StatCard label="Tokens" icon={Hash} value={formatCompact(totals.inputTokens + totals.outputTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
@@ -146,13 +146,13 @@ export function UsageClient(props: UsageClientProps) {
         <StatCard label="Avg cost / request" icon={Coins} value={<MoneyText value={totals.requests ? totals.spend / totals.requests : 0} />} />
       </div>
 
-      <ChartCard title={metric === "cost" ? "Spend vs regular price over time" : "Tokens over time"} action={metricToggle} empty={empty} emptyText="No requests in this period">
+      <ChartCard title={metric === "cost" ? "Spend vs official prices over time" : "Tokens over time"} action={metricToggle} empty={empty} emptyText="No requests in this period">
         {metric === "cost" ? (
           <AreaChart
             data={timeRows}
             xKey="x"
             series={[
-              { key: "official", label: "Regular price", color: "var(--chart-3)" },
+              { key: "official", label: "At official prices", color: "var(--chart-3)" },
               { key: "cost", label: "You paid", color: "var(--chart-1)" },
             ]}
             valueFormatter={valueFmt}
