@@ -45,7 +45,7 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
         <FilterSelect
           param="status"
           label="Status"
-          options={["SUCCESS", "CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR", "CANCELLED"].map((s) => ({ value: s, label: s.replace(/_/g, " ").toLowerCase() }))}
+          options={[{ value: "ERRORS", label: "any error" }, ...["SUCCESS", "CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR", "CANCELLED"].map((s) => ({ value: s, label: s.replace(/_/g, " ").toLowerCase() }))]}
         />
         <FilterInput param="errorCode" placeholder="Error code" className="w-36" />
         <FilterSelect param="stream" label="Stream" options={[{ value: "yes", label: "Streaming" }, { value: "no", label: "Non-stream" }]} />

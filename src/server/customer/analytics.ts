@@ -100,9 +100,10 @@ export interface RecentError {
   errorMessage: string | null;
 }
 
-export async function getRecentErrors(userId: string, take = 8): Promise<RecentError[]> {
+/** Failed requests of the last `hours` (the overview shows only fresh ones; older errors stay in Logs). */
+export async function getRecentErrors(userId: string, take = 8, hours = 24): Promise<RecentError[]> {
   return db.requestLog.findMany({
-    where: { userId, status: { in: ["CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR"] } },
+    where: { userId, status: { in: ["CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR"] }, createdAt: { gte: new Date(Date.now() - hours * 3_600_000) } },
     orderBy: { createdAt: "desc" },
     take,
     select: { id: true, createdAt: true, modelSlug: true, endpoint: true, httpStatus: true, errorCode: true, errorMessage: true },
