@@ -29,6 +29,8 @@ export interface NavItem {
   external?: boolean;
   /** Hidden from SUPPORT staff (the page itself is admin-only). */
   adminOnly?: boolean;
+  /** Customer billing page: hidden when the customerBilling setting is off. */
+  billing?: boolean;
 }
 
 export interface NavGroup {
@@ -54,7 +56,7 @@ export const customerNav: NavGroup[] = [
   {
     label: "Account",
     items: [
-      { title: "Billing", href: "/dashboard/billing", icon: CreditCard },
+      { title: "Billing", href: "/dashboard/billing", icon: CreditCard, billing: true },
       { title: "Settings", href: "/dashboard/settings", icon: Settings },
       { title: "Docs", href: "/docs", icon: BookOpen, external: true },
     ],
@@ -100,6 +102,14 @@ export const adminNav: NavGroup[] = [
 export function navForRole(groups: NavGroup[], role: "CUSTOMER" | "SUPPORT" | "ADMIN"): NavGroup[] {
   return groups
     .map((g) => ({ ...g, items: g.items.filter((i) => !i.adminOnly || role === "ADMIN") }))
+    .filter((g) => g.items.length > 0);
+}
+
+/** Drops billing items (and groups left empty) when customer billing pages are turned off. */
+export function navForBilling(groups: NavGroup[], customerBilling: boolean): NavGroup[] {
+  if (customerBilling) return groups;
+  return groups
+    .map((g) => ({ ...g, items: g.items.filter((i) => !i.billing) }))
     .filter((g) => g.items.length > 0);
 }
 

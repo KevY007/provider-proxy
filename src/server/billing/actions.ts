@@ -6,7 +6,7 @@ import { requireUserForAction } from "@/lib/auth/session";
 import type { ActionResult } from "@/lib/auth/types";
 import { db } from "@/lib/db";
 import { rateLimit } from "@/lib/ratelimit";
-import { getSettings } from "@/lib/settings";
+import { getSetting, getSettings } from "@/lib/settings";
 import { toDbString } from "@/lib/money";
 import { invalidateGatewayConfig } from "@/gateway/cache";
 import { ActionFail, parseInput, toActionResult } from "./action-utils";
@@ -27,10 +27,14 @@ import { createTopup, getTopupLimits, syncCheckoutSession, syncPaymentIntent, va
  * Customer billing server actions. Each one re-checks the session (`requireUserForAction`), validates input
  * with zod and returns a serializable ActionResult - never throws for expected failures.
  */
+const BILLING_OFF_ERROR = "Billing is managed by your admin. Contact them to change your balance.";
+
 async function run<T>(name: string, fn: (user: { id: string }) => Promise<{ data?: T; message?: string } | void>): Promise<ActionResult<T>> {
   try {
     const { user, impersonatorId } = await requireUserForAction();
     if (impersonatorId) return { ok: false, error: "Billing actions are disabled while impersonating." };
+    // internal tracking mode: customers cannot pay, redeem or change billing; admins set the balance
+    if (!(await getSetting("customerBilling"))) return { ok: false, error: BILLING_OFF_ERROR };
     const out = await fn(user);
     return { ok: true, data: out?.data, message: out?.message };
   } catch (err) {

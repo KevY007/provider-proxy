@@ -11,6 +11,7 @@ import { PaymentMethodsCard } from "@/components/billing/payment-methods-card";
 import { AutoRechargeCard, RedeemCard, SpendControlsCard } from "@/components/billing/settings-cards";
 import { TopUpCard } from "@/components/billing/topup-card";
 import { requireUser } from "@/lib/auth/session";
+import { getSetting } from "@/lib/settings";
 import { getCustomerBillingData } from "@/server/billing/queries";
 
 export const metadata = { title: "Billing" };
@@ -22,6 +23,8 @@ export default async function BillingPage({
   searchParams: Promise<{ topup?: string; session_id?: string; setup_intent?: string }>;
 }) {
   const { user } = await requireUser();
+  // internal tracking mode: no customer billing page at all
+  if (!(await getSetting("customerBilling"))) notFound();
   const [data, sp] = await Promise.all([getCustomerBillingData(user.id), searchParams]);
   if (!data) notFound();
 

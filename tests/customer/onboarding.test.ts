@@ -6,6 +6,13 @@ import { estimateSaving } from "@/server/customer/pricing";
 describe("deriveOnboarding", () => {
   const base = { emailVerified: false, balance: "0", everFunded: false, keyCount: 0, requestCount: 0 };
 
+  it("drops the balance step when customer billing pages are off", () => {
+    const s = deriveOnboarding({ ...base, customerBilling: false, emailVerified: true, keyCount: 1, requestCount: 1 });
+    expect(s.steps.map((x) => x.id)).toEqual(["verify", "key", "request"]);
+    expect(s.total).toBe(3);
+    expect(s.allDone).toBe(true);
+  });
+
   it("starts with everything open and the first step as next", () => {
     const s = deriveOnboarding(base);
     expect(s.doneCount).toBe(0);
