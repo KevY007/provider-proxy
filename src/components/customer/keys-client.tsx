@@ -176,8 +176,8 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
         id: "listPrice",
         header: () => (
           <Tooltip>
-            <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4">Regular price</TooltipTrigger>
-            <TooltipContent className="max-w-xs">What this key&apos;s requests would have cost at the regular price.</TooltipContent>
+            <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4">At list price</TooltipTrigger>
+            <TooltipContent className="max-w-xs">What this key&apos;s requests would have cost at the providers&apos; official prices.</TooltipContent>
           </Tooltip>
         ),
         accessorFn: (k) => Number(k.listPrice ?? 0),

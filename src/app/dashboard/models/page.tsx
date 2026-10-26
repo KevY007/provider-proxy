@@ -19,7 +19,7 @@ export default async function ModelsPage() {
   const visible = new Set(models.map((m) => m.slug));
   return (
     <>
-      <PageHeader title="Models & Pricing" description="Every model you can call, what it costs you and and how much you save." />
+      <PageHeader title="Models & Pricing" description="Every model you can call, what it costs you and and how much you save compared with the official list price." />
       <ModelsClient models={models} pools={pools} currentPoolSlug={currentPool?.slug ?? null} />
       <section className="mt-8 space-y-3">
         <div>
