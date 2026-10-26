@@ -35,6 +35,17 @@ describe.skipIf(!dbOk)("cost-basis pool", () => {
     expect(Number(log.officialPrice)).toBeCloseTo(6, 6);
   });
 
+  it("a pool's shown saving replaces the official figure: 50% = twice what the customer paid", async () => {
+    await db.group.update({ where: { id: h.groupId }, data: { referenceSavingsPct: 50 } });
+    await invalidateGatewayConfig("all");
+    const res = await h.call("/v1/chat/completions", key, { model: slug, messages: [{ role: "user", content: "hi [[usage:in=1000000,out=100000]]" }] });
+    const log = await h.logOf(res);
+    expect(Number(log.price)).toBeCloseTo(3.375, 6);
+    expect(Number(log.officialPrice)).toBeCloseTo(6.75, 6);
+    await db.group.update({ where: { id: h.groupId }, data: { referenceSavingsPct: null } });
+    await invalidateGatewayConfig("all");
+  });
+
   it("/v1/models shows the cost-based price", async () => {
     const res = await h.call("/v1/models", key);
     const m = ((await res.json()) as { data: Array<{ id: string; x_pricing: { yours: { input: number; output: number } } }> }).data.find((x) => x.id === slug)!;

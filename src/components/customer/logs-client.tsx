@@ -132,7 +132,7 @@ export function LogsClient({ rows, nextCursor, hasCursor, range: rangeProp, opti
       { id: "cached", header: "Cached", accessorFn: (r) => r.cachedTokens, cell: ({ row }) => formatNumber(row.original.cachedTokens), meta: { className: "text-right" }, enableSorting: false },
       {
         id: "official",
-        header: "Official",
+        header: "Regular price",
         accessorFn: (r) => r.officialPrice,
         cell: ({ row }) => (Number(row.original.officialPrice) > 0 ? <MoneyText value={row.original.officialPrice} className="text-muted-foreground" /> : <span className="text-muted-foreground">-</span>),
         meta: { className: "text-right" },

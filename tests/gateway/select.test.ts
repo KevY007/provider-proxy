@@ -91,6 +91,7 @@ const group = (over: Partial<GroupRec> = {}): GroupRec => ({
   effortRoutes: [],
   maxConcurrency: null,
   priceBasis: "model",
+  referenceSavingsPct: null,
   ...over,
 });
 

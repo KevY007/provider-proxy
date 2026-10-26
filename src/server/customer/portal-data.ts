@@ -7,6 +7,7 @@ import { Decimal } from "@/lib/money";
 import { getConfig } from "@/gateway/cache";
 import { poolPriceTable } from "@/gateway/pool-prices";
 import type { PriceTable } from "@/gateway/pricing";
+import type { UnitPriceMap } from "./price-rows";
 
 const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
 
@@ -133,6 +134,8 @@ export async function getKeysPageData(user: SessionUser) {
 export interface UserModel extends CatalogModel {
   /** Effective prices per pool slug (only pools that allow this model). */
   prices: Record<string, EffectivePrices>;
+  /** The "regular price" a pool compares against (its shown saving), per pool slug; absent = the official price. */
+  reference: Record<string, UnitPriceMap>;
 }
 
 /** Models the customer can use, priced for every pool they could pick (exactly what the gateway charges). */
@@ -144,21 +147,26 @@ export async function getModelsForUser(user: SessionUser) {
   const blends = new Map<string, { off: Decimal; ours: Decimal }>();
   for (const m of models) {
     const prices: Record<string, EffectivePrices> = {};
+    const reference: Record<string, UnitPriceMap> = {};
     const rec = snap.modelsById.get(m.id);
     for (const p of pools) {
       if (!groupAllowsModel({ allowedModels: allowed.get(p.id) ?? [] }, m.slug, m.aliases)) continue;
       const group = snap.groupsById.get(p.id) ?? null;
       const ep = rec && group?.priceBasis === "cost" ? fromTable(poolPriceTable(snap, rec, group, new Decimal(p.multiplier))) : effectivePrices(m, p.multiplier);
       prices[p.slug] = ep;
-      // pool saving: blend input:output 3:1 over the models that have an official price
-      if (m.officialInputPrice && m.officialOutputPrice) {
+      const pct = group?.referenceSavingsPct ?? null;
+      if (pct) reference[p.slug] = scaleMap(ep, 1 / (1 - pct / 100));
+      // pool saving: blend input:output 3:1 over the models that have a reference price
+      const refIn = pct ? Number(ep.input) / (1 - pct / 100) : m.officialInputPrice ? Number(m.officialInputPrice) : null;
+      const refOut = pct ? Number(ep.output) / (1 - pct / 100) : m.officialOutputPrice ? Number(m.officialOutputPrice) : null;
+      if (refIn !== null && refOut !== null) {
         const b = blends.get(p.slug) ?? { off: new Decimal(0), ours: new Decimal(0) };
-        b.off = b.off.plus(new Decimal(m.officialInputPrice).times(3)).plus(m.officialOutputPrice);
+        b.off = b.off.plus(new Decimal(refIn).times(3)).plus(refOut);
         b.ours = b.ours.plus(new Decimal(ep.input).times(3)).plus(ep.output);
         blends.set(p.slug, b);
       }
     }
-    if (Object.keys(prices).length) out.push({ ...m, prices });
+    if (Object.keys(prices).length) out.push({ ...m, prices, reference });
   }
   applySavings(pools, blends);
   if (current) current.savingsPct = pools.find((p) => p.id === current.id)?.savingsPct ?? null;
@@ -173,6 +181,13 @@ function applySavings(pools: PoolOption[], blends: Map<string, { off: Decimal; o
 }
 
 const ds = (d: Decimal | null | undefined) => (d ? d.toString() : null);
+
+/** Unit prices x factor, keyed like the catalog's unit maps. */
+function scaleMap(ep: EffectivePrices, f: number): UnitPriceMap {
+  const out: UnitPriceMap = {};
+  for (const [k, v] of Object.entries(ep)) out[k as keyof UnitPriceMap] = v === null ? null : new Decimal(v).times(f).toDecimalPlaces(8).toString();
+  return out;
+}
 function fromTable(t: PriceTable): EffectivePrices {
   return {
     input: t.input.toString(),

@@ -20,7 +20,6 @@ import { StatusBadge } from "@/components/common/status-badge";
 import { formatCompact } from "@/lib/utils";
 import { deleteRevokedKeyAction, emptyRevokedKeysAction, revealOwnKeyAction, revokeKeyAction, setKeyEnabledAction, type CreatedKey } from "@/server/customer/keys";
 import { poolSavingsLabel } from "@/server/customer/pricing";
-import { savingsPctOf } from "@/server/customer/savings";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { KeyFormDialog } from "./key-form-dialog";
 import { LocalTime } from "./local-time";
@@ -177,25 +176,15 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
         id: "listPrice",
         header: () => (
           <Tooltip>
-            <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4">At list price</TooltipTrigger>
-            <TooltipContent className="max-w-xs">What this key&apos;s requests would have cost at the providers&apos; official prices.</TooltipContent>
+            <TooltipTrigger className="cursor-help underline decoration-dotted underline-offset-4">Regular price</TooltipTrigger>
+            <TooltipContent className="max-w-xs">What this key&apos;s requests would have cost at the regular price.</TooltipContent>
           </Tooltip>
         ),
         accessorFn: (k) => Number(k.listPrice ?? 0),
         cell: ({ row }) => {
           const k = row.original;
           if (!k.listPrice || Number(k.listPrice) <= 0) return <span className="text-muted-foreground">-</span>;
-          const pct = savingsPctOf(k.listPrice, k.listComparablePaid ?? "0");
-          return (
-            <div className="space-y-0.5 whitespace-nowrap text-sm">
-              <MoneyText value={k.listPrice} className="text-muted-foreground" />
-              {pct !== null && Math.round(pct) !== 0 && (
-                <p className={`text-xs ${pct > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}`}>
-                  {pct > 0 ? `saved ${Math.round(pct)}%` : `+${Math.abs(Math.round(pct))}% vs list`}
-                </p>
-              )}
-            </div>
-          );
+          return <MoneyText value={k.listPrice} className="whitespace-nowrap text-sm text-muted-foreground" />;
         },
       },
       {
@@ -215,11 +204,17 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
         header: "",
         enableSorting: false,
         enableHiding: false,
-        meta: { noExport: true, className: "w-10" },
+        meta: { noExport: true, className: "w-20" },
         cell: ({ row }) => {
           const k = row.original;
           const revoked = k.status === "REVOKED";
           return (
+            <div className="flex items-center justify-end gap-0.5">
+            {!revoked && (
+              <Button variant="ghost" size="icon" className="size-8" aria-label={`Use ${k.name}`} title="Use key: setup steps for Claude Code, Codex, IDEs and SDKs" onClick={() => setUseKey({ id: k.id, name: k.name, apiKey: null, allowedModels: k.allowedModels, groupId: k.groupId })}>
+                <Terminal className="size-4" />
+              </Button>
+            )}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon" className="size-8" aria-label={`Actions for ${k.name}`}>
@@ -262,6 +257,7 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+            </div>
           );
         },
       },

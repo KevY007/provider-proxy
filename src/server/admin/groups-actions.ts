@@ -14,6 +14,7 @@ const groupSchema = z.object({
   description: z.string().max(500).nullish().transform((v) => (v?.trim() ? v.trim() : null)),
   priceMultiplier: optDecimal.default("1").refine((v) => v !== null && Number(v) > 0 && Number(v) <= 1000, "Must be greater than 0"),
   priceBasis: z.enum(["model", "cost"]).default("model"),
+  referenceSavingsPct: optDecimal.default(null).refine((v) => v === null || (Number(v) > 0 && Number(v) < 100), "Between 0 and 100 (blank = compare with the official list price)"),
   providerTags: stringList.default([]),
   allowedModels: stringList.default([]),
   isDefault: z.boolean().default(false),
