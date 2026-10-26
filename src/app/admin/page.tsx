@@ -47,7 +47,8 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
     getTimeSeries(filter, gran),
     getBreakdown("model", filter, { limit: 8 }),
     getBreakdown("customer", filter, { limit: 8 }),
-    getRecentErrors(filter, 8, { includeInternal: true }),
+    // only the last 24 h (within the selected range): older errors are in Logs
+    getRecentErrors(filter, 8, { includeInternal: true, maxAgeHours: 24 }),
     db.provider.findMany({
       orderBy: [{ status: "asc" }, { name: "asc" }],
       select: {
@@ -257,15 +258,15 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
         <CardHeader className="flex flex-row items-center justify-between space-y-0">
           <div>
             <CardTitle className="text-base">Recent errors</CardTitle>
-            <CardDescription>Latest failed requests in the selected range</CardDescription>
+            <CardDescription>Failed requests in the last 24 hours. Older ones are in Logs.</CardDescription>
           </div>
-          <Link href="/admin/logs?status=UPSTREAM_ERROR" className="text-sm text-primary hover:underline">
+          <Link href="/admin/logs?status=ERRORS" className="text-sm text-primary hover:underline">
             Logs
           </Link>
         </CardHeader>
         <CardContent>
           {errors.length === 0 ? (
-            <EmptyState title="No errors in this period" className="border-0 py-8" />
+            <EmptyState title="No errors in the last 24 hours" className="border-0 py-8" />
           ) : (
             <Table>
               <TableHeader>

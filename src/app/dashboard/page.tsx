@@ -216,7 +216,7 @@ export default async function DashboardPage() {
         <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0">
           <div className="space-y-1">
             <CardTitle className="text-base">Recent errors</CardTitle>
-            <CardDescription>Latest failed requests. Share the request id with support if you need help.</CardDescription>
+            <CardDescription>Failed requests in the last 24 hours (older ones are in Logs). Share the request id with support if you need help.</CardDescription>
           </div>
           <Button asChild variant="ghost" size="sm">
             <Link href="/dashboard/logs?status=error">
@@ -226,7 +226,7 @@ export default async function DashboardPage() {
         </CardHeader>
         <CardContent>
           {errors.length === 0 ? (
-            <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">No errors recently. Nice.</p>
+            <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">No errors in the last 24 hours.</p>
           ) : (
             <ul className="divide-y">
               {errors.map((e) => {
