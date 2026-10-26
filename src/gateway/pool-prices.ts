@@ -16,6 +16,25 @@ export function poolPriceTable(snap: ConfigSnapshot, model: ModelRec, group: Gro
   return scale(route.cost, multiplier, model);
 }
 
+/**
+ * What a pool's customers pay as a share of the official list price (0.5 = half of list), the only form customers
+ * see. A model-basis pool: its multiplier. A cost-basis pool (its multiplier is a factor on OUR cost and stays
+ * internal): the average input-price share over the pool's models that have an official price.
+ */
+export function poolListShare(snap: ConfigSnapshot, group: GroupRec | null, multiplier: Decimal, model?: ModelRec | null): Decimal {
+  if (group?.priceBasis !== "cost") return multiplier;
+  const models = model ? [model] : [...snap.modelsById.values()].filter((m) => m.status === "ACTIVE" && (!group.allowedModels || group.allowedModels.has(m.slug)));
+  let sum = new Decimal(0);
+  let n = 0;
+  for (const m of models) {
+    const off = m.official.input;
+    if (!off || !off.gt(0) || !primaryRoute(snap, m, group)) continue;
+    sum = sum.plus(poolPriceTable(snap, m, group, multiplier).input.div(off));
+    n++;
+  }
+  return n ? sum.div(n).toDecimalPlaces(4) : multiplier;
+}
+
 /** Highest-priority enabled route on an active provider the pool may use (the cache holds enabled routes only). */
 export function primaryRoute(snap: ConfigSnapshot, model: ModelRec, group: GroupRec | null): RouteRec | null {
   const all = (snap.routesByModel.get(model.id) ?? []).filter((r) => {

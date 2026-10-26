@@ -23,8 +23,8 @@ import { HeroTerminal } from "@/components/marketing/hero-terminal";
 import { buildPriceRows, PriceTable } from "@/components/marketing/price-table";
 import { appUrl } from "@/lib/env";
 import { getSetting } from "@/lib/settings";
-import { formatMultiplier } from "@/server/customer/pricing";
-import { getCatalogModels, getDefaultGroup } from "@/server/customer/catalog";
+import { formatListShare } from "@/server/customer/pricing";
+import { getCatalogModels, getDefaultGroup, getPoolListShares } from "@/server/customer/catalog";
 import { vendorLabel } from "@/server/customer/labels";
 import { publicVisibility } from "@/server/customer/visibility";
 
@@ -38,7 +38,7 @@ const FEATURES = [
   { icon: Plug, title: "Drop-in compatible", body: "OpenAI, Anthropic and Gemini wire formats on one base URL. Change the base URL and key, keep your SDK." },
   { icon: Zap, title: "Streaming & tools", body: "Server-sent events, tool/function calling, vision and structured outputs pass straight through." },
   { icon: ImageIcon, title: "Images & audio", body: "Image generation, embeddings, speech and transcription behind the same key and balance." },
-  { icon: Layers, title: "Pools with lower prices", body: "Choose a pool per key: pay a multiplier of the base price and trade off cost and priority." },
+  { icon: Layers, title: "Pools with lower prices", body: "Choose a pool per key: each pays a set share of the official price." },
   { icon: BarChart3, title: "Usage analytics", body: "Spend, tokens, latency and errors by model, key and endpoint, with request-level logs and CSV export." },
   { icon: Wallet, title: "Pay as you go", body: "Prepaid balance, no subscription. Top up by card, enable auto-recharge, set per-key spend limits." },
   { icon: Gauge, title: "Built for load", body: "Automatic failover and queueing absorb rate limits, so your clients see fewer 429s." },
@@ -48,7 +48,7 @@ const FEATURES = [
 const FAQ = [
   { q: "How does it work?", a: "You get one API key and one base URL. Send requests in OpenAI, Anthropic or Gemini format; we route them to the best available capacity, meter the usage and bill it against your prepaid balance." },
   { q: "Will my existing SDK work?", a: "Yes. Point the official OpenAI or Anthropic SDK (or any compatible tool such as Codex CLI, Claude Code, OpenCode or Cursor) at our base URL and use your key. See the client setup guides in the docs." },
-  { q: "How is pricing calculated?", a: "Each model has a per-token price; your pool applies a multiplier on top. You are charged for actual input, output and cached tokens, shown per request in your logs. There is no subscription or minimum." },
+  { q: "How is pricing calculated?", a: "Each model has a per-token price; your pool sets it as a share of the official price. You are charged for actual input, output and cached tokens, shown per request in your logs. There is no subscription or minimum." },
   { q: "Do you store my prompts?", a: "Request metadata (model, tokens, cost, latency, status) is logged so you can audit usage. Prompt and response bodies are not stored unless explicitly enabled by the operator." },
   { q: "What happens when my balance runs out?", a: "Requests are rejected with a 402 insufficient_balance error until you add funds. Turn on auto-recharge or low-balance emails to avoid interruptions." },
   { q: "What about rate limits?", a: "Each key can have its own requests-per-minute, tokens-per-minute and concurrency limits. When capacity is tight we queue briefly and otherwise return a standard 429 with retry-after, so SDK retries just work." },
@@ -66,7 +66,7 @@ export default async function HomePage() {
   // with private pricing nothing price-related reaches a visitor who is not signed in (table, savings, links)
   const showPrices = vis.pricing;
   const showModels = vis.models;
-  const multiplier = group?.priceMultiplier ?? "1";
+  const multiplier = group ? ((await getPoolListShares([group])).get(group.id) ?? group.priceMultiplier) : "1";
   const rows = buildPriceRows(models, multiplier);
   const chatModel = (showModels && models.find((m) => m.capabilities.includes("chat"))?.slug) || "gpt-6-sol";
   const featured = rows.filter((r) => !r.isImage && r.savings !== null).slice(0, 8);
@@ -155,7 +155,7 @@ export default async function HomePage() {
             <div className="space-y-2">
               <h2 className="text-2xl font-semibold tracking-tight sm:text-3xl">Official vs. {siteName}</h2>
               <p className="max-w-xl text-muted-foreground">
-                Live prices from our catalog{group ? <> on the {group.name} pool ({formatMultiplier(multiplier)})</> : null}. Cheaper pools are available for every key.
+                Live prices from our catalog{group ? <> on the {group.name} pool ({formatListShare(multiplier)})</> : null}. Cheaper pools are available for every key.
               </p>
             </div>
             <Button asChild variant="outline">

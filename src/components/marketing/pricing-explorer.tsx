@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Button } from "@/components/ui/button";
-import { formatMultiplier } from "@/server/customer/pricing";
+import { formatListShare } from "@/server/customer/pricing";
 import { CAPABILITY_LABELS, vendorLabel } from "@/server/customer/labels";
 import { buildPriceRows, PriceTable, type PriceModel } from "./price-table";
 
@@ -52,7 +52,7 @@ export function PricingExplorer({ models, groups }: { models: PriceModel[]; grou
               {groups.map((x) => (
                 <TabsTrigger key={x.slug} value={x.slug} className="gap-2">
                   {x.name}
-                  <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">{formatMultiplier(x.priceMultiplier)}</span>
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] tabular-nums text-muted-foreground">{formatListShare(x.priceMultiplier)}</span>
                 </TabsTrigger>
               ))}
             </TabsList>

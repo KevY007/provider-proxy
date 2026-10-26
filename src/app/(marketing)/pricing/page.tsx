@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { PricingExplorer } from "@/components/marketing/pricing-explorer";
 import { toPriceModel } from "@/server/customer/price-rows";
-import { getCatalogModels, getPublicGroups } from "@/server/customer/catalog";
+import { getCatalogModels, getPoolListShares, getPublicGroups } from "@/server/customer/catalog";
 import { requirePublicSite } from "@/server/customer/visibility";
 
 export const metadata: Metadata = {
@@ -14,6 +14,8 @@ export const dynamic = "force-dynamic";
 export default async function PricingPage() {
   if (!(await requirePublicSite("/pricing")).pricing) redirect("/login?next=/pricing");
   const [models, groups] = await Promise.all([getCatalogModels(), getPublicGroups()]);
+  // what each pool pays as a share of the official price (never a cost-based pool's own factor)
+  const shares = await getPoolListShares(groups);
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-12">
       <div className="mb-8 max-w-2xl space-y-3">
@@ -26,7 +28,7 @@ export default async function PricingPage() {
         models={models.map(toPriceModel)}
         groups={groups
           .filter((g) => g.isPublic)
-          .map((g) => ({ slug: g.slug, name: g.name, description: g.description, priceMultiplier: g.priceMultiplier, isDefault: g.isDefault }))}
+          .map((g) => ({ slug: g.slug, name: g.name, description: g.description, priceMultiplier: shares.get(g.id) ?? g.priceMultiplier, isDefault: g.isDefault }))}
       />
     </div>
   );
