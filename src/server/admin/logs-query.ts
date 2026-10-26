@@ -4,6 +4,8 @@ import { parseRangeParams } from "@/lib/date-range";
 
 export const LOG_PAGE_SIZE = 50;
 export const LOG_STATUSES = ["SUCCESS", "CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR", "CANCELLED"] as const;
+/** status=ERRORS in the URL: every failed request (client, upstream and gateway errors). */
+const ANY_ERROR = "ERRORS";
 
 export interface LogFilters {
   from: Date;
@@ -15,7 +17,7 @@ export interface LogFilters {
   model: string;
   provider: string;
   providerKey: string;
-  status: (typeof LOG_STATUSES)[number] | "";
+  status: (typeof LOG_STATUSES)[number] | typeof ANY_ERROR | "";
   errorCode: string;
   stream: "" | "yes" | "no";
   endpoint: string;
@@ -47,7 +49,7 @@ export function parseLogFilters(sp: SP, now = new Date()): LogFilters {
     model: clip("model"),
     provider: clip("provider"),
     providerKey: clip("providerKey"),
-    status: (LOG_STATUSES as readonly string[]).includes(status) ? (status as LogFilters["status"]) : "",
+    status: status === ANY_ERROR || (LOG_STATUSES as readonly string[]).includes(status) ? (status as LogFilters["status"]) : "",
     errorCode: clip("errorCode"),
     stream: stream === "yes" || stream === "no" ? stream : "",
     endpoint: clip("endpoint"),
@@ -82,7 +84,8 @@ export function buildLogWhere(f: LogFilters, cursor?: LogCursor | null, dir: "ol
   if (f.model) and.push({ modelSlug: f.model });
   if (f.provider) and.push({ providerId: f.provider });
   if (f.providerKey) and.push({ providerKeyId: f.providerKey });
-  if (f.status) and.push({ status: f.status });
+  if (f.status === ANY_ERROR) and.push({ status: { in: ["CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR"] } });
+  else if (f.status) and.push({ status: f.status });
   if (f.errorCode) and.push({ errorCode: f.errorCode });
   if (f.stream) and.push({ stream: f.stream === "yes" });
   if (f.endpoint) and.push({ endpoint: f.endpoint });

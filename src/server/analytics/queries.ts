@@ -287,10 +287,11 @@ export async function getBreakdown(
   });
 }
 
-export async function getRecentErrors(f: AnalyticsFilter, limit = 10, opts: { includeInternal?: boolean } = {}): Promise<RecentError[]> {
+export async function getRecentErrors(f: AnalyticsFilter, limit = 10, opts: { includeInternal?: boolean; maxAgeHours?: number } = {}): Promise<RecentError[]> {
+  const from = opts.maxAgeHours ? new Date(Math.max(f.from.getTime(), Date.now() - opts.maxAgeHours * 3_600_000)) : f.from;
   const rows = await db.requestLog.findMany({
     where: {
-      createdAt: { gte: f.from, lte: f.to },
+      createdAt: { gte: from, lte: f.to },
       status: { in: ["CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR"] },
       ...(f.userId ? { userId: f.userId } : {}),
       ...(f.modelSlug ? { modelSlug: f.modelSlug } : {}),
