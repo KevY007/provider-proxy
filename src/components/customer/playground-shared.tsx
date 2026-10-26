@@ -5,6 +5,7 @@ import { AlertTriangle } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { formatUSD } from "@/lib/money";
+import { useCustomerBilling } from "@/components/shell/billing-context";
 import type { EffectivePrices, OfficialUnitPrices } from "@/server/customer/pricing";
 import type { GatewayError } from "./playground-api";
 
@@ -32,16 +33,18 @@ export function SavedNote({ saved }: { saved: string | null | undefined }) {
 
 /** Friendly rendering of gateway errors with a next step where one exists. */
 export function GatewayErrorAlert({ error }: { error: GatewayError }) {
+  const customerBilling = useCustomerBilling();
   const code = error.code ?? "";
   let title = "Request failed";
   let action: React.ReactNode = null;
   if (code === "insufficient_balance" || error.status === 402) {
     title = "Insufficient balance";
-    action = (
+    // billing pages off: no top-up link (the admin sets the balance)
+    action = customerBilling ? (
       <Button asChild size="sm" className="mt-2">
         <Link href="/dashboard/billing">Add funds</Link>
       </Button>
-    );
+    ) : null;
   } else if (code === "rate_limited" || code === "no_capacity" || error.status === 429) {
     title = "Rate limited";
   } else if (code === "model_not_found" || code === "model_not_allowed") {

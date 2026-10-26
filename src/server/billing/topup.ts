@@ -68,6 +68,7 @@ export async function settleFromIntent(paymentId: string, pi: Stripe.PaymentInte
  */
 export async function createTopup(userId: string, rawAmount: unknown): Promise<TopupResult> {
   if (!isStripeConfigured()) return { ok: false, error: "Card payments are not configured yet.", code: "not_configured" };
+  if (!(await getSettings()).customerBilling) return { ok: false, error: "Billing is managed by your admin.", code: "error" };
 
   const check = validateTopupAmount(rawAmount, await getTopupLimits());
   if (!check.ok) return { ok: false, error: check.error, code: "invalid_amount" };

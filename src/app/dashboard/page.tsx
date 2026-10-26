@@ -56,10 +56,11 @@ function SavingsFigure({ label, s }: { label: string; s: SavingsSummary & { hasD
 
 export default async function DashboardPage() {
   const { user } = await requireUser();
-  const [ov, announcements, siteName, onboarding, totals, byPool] = await Promise.all([
+  const [ov, announcements, siteName, customerBilling, onboarding, totals, byPool] = await Promise.all([
     getOverview(user.id),
     db.announcement.findMany({ where: { active: true }, orderBy: { createdAt: "desc" }, take: 3 }),
     getSetting("siteName"),
+    getSetting("customerBilling"),
     getOnboarding(user),
     getSavingsTotals(user.id),
     getSpendByPool(user.id),
@@ -85,11 +86,13 @@ export default async function DashboardPage() {
                 <KeyRound className="size-4" /> API keys
               </Link>
             </Button>
-            <Button asChild>
-              <Link href="/dashboard/billing">
-                <Wallet className="size-4" /> Add funds
-              </Link>
-            </Button>
+            {customerBilling && (
+              <Button asChild>
+                <Link href="/dashboard/billing">
+                  <Wallet className="size-4" /> Add funds
+                </Link>
+              </Button>
+            )}
           </>
         }
       />
@@ -108,10 +111,19 @@ export default async function DashboardPage() {
           <AlertTriangle className="text-amber-500" />
           <AlertTitle>Your balance is empty</AlertTitle>
           <AlertDescription>
-            API requests are rejected with <code className="font-mono">insufficient_balance</code> until you add funds.{" "}
-            <Link href="/dashboard/billing" className="font-medium text-primary hover:underline">
-              Add funds
-            </Link>
+            {customerBilling ? (
+              <>
+                API requests are rejected with <code className="font-mono">insufficient_balance</code> until you add funds.{" "}
+                <Link href="/dashboard/billing" className="font-medium text-primary hover:underline">
+                  Add funds
+                </Link>
+              </>
+            ) : (
+              <>
+                API requests are rejected with <code className="font-mono">insufficient_balance</code> until your balance is
+                topped up. Contact your admin.
+              </>
+            )}
           </AlertDescription>
         </Alert>
       )}
@@ -185,7 +197,7 @@ export default async function DashboardPage() {
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Balance" icon={Wallet} value={<MoneyText value={user.balance.toString()} />} hint={<Link href="/dashboard/billing" className="hover:text-foreground hover:underline">Manage billing</Link>} />
+        <StatCard label="Balance" icon={Wallet} value={<MoneyText value={user.balance.toString()} />} hint={customerBilling ? <Link href="/dashboard/billing" className="hover:text-foreground hover:underline">Manage billing</Link> : undefined} />
         <StatCard label="Spend today" icon={Coins} value={<MoneyText value={today.spend} />} hint={`${formatCompact(today.requests)} requests`} />
         <StatCard label="Spend, 7 days" icon={BarChart3} value={<MoneyText value={week.spend} />} />
         <StatCard label="Tokens, 7 days" icon={Hash} value={formatCompact(tokens7)} hint={`${formatCompact(week.inputTokens)} in / ${formatCompact(week.outputTokens)} out`} />

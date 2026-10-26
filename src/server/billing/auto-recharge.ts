@@ -24,6 +24,7 @@ export type AutoRechargeOutcome =
       status: "skipped";
       reason:
         | "not_configured"
+        | "billing_off"
         | "locked"
         | "user_not_found"
         | "not_eligible"
@@ -71,6 +72,8 @@ export async function countConsecutiveFailures(userId: string): Promise<number> 
 /** The actual flow; exposed for tests and the cron sweep (which wants the outcome). */
 export async function runAutoRecharge(userId: string): Promise<AutoRechargeOutcome> {
   if (!isStripeConfigured()) return { status: "skipped", reason: "not_configured" };
+  // customer billing pages off: never charge a saved card (admins set balances by hand)
+  if (!(await getSetting("customerBilling"))) return { status: "skipped", reason: "billing_off" };
 
   const release = await acquireLock(`autorecharge:${userId}`, LOCK_TTL_MS);
   if (!release) return { status: "skipped", reason: "locked" };
