@@ -1,7 +1,12 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, beforeAll } from "vitest";
 import { db } from "@/lib/db";
 import { generateCodes, makeCode, normalizeCode, redeemCode, RedeemInputError } from "@/server/billing/redeem";
 import { balanceOf, cleanupUsers, dbAvailable, makeUser } from "./helpers";
+
+// the portal may run with customer billing off (prod default now): these tests exercise billing itself
+beforeAll(async () => {
+  await (await import("@/lib/settings")).setSettings({ customerBilling: true });
+});
 
 const up = await dbAvailable();
 const codeIds: string[] = [];
