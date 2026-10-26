@@ -5,6 +5,7 @@ import type { AuthRecord, ConfigSnapshot, GroupRec, ModelRec } from "./cache";
 import { GatewayError, errorResponse } from "./errors";
 import { logger } from "@/lib/logger";
 import { allowAnonymousLog } from "./limits";
+import { poolPriceTable } from "./pool-prices";
 import { recordOutcome, type Charge, type Outcome } from "./metering";
 import { settleFunds, type FundsState } from "./reserve";
 import type { ParsedForm } from "./multipart";
@@ -139,15 +140,27 @@ export function corsHeaders(): Record<string, string> {
 }
 
 /**
+ * What the caller pays as a share of the official list price (0.5 = half of list). A cost-based pool's own multiplier
+ * is a factor on OUR cost and is never sent: its share is read off the pool's input price against the official one.
+ */
+export function listShare(ctx: Ctx): Decimal {
+  const m = ctx.model;
+  if (!m || !ctx.snap || ctx.group?.priceBasis !== "cost") return ctx.multiplier;
+  const off = m.official.input;
+  const ours = poolPriceTable(ctx.snap, m, ctx.group, ctx.multiplier).input;
+  return off && off.gt(0) ? ours.div(off).toDecimalPlaces(4) : ctx.multiplier;
+}
+
+/**
  * Add x-request-id + CORS to a response we constructed, and on billable calls the pool that served (and bills) it
- * plus the price multiplier applied to list prices (pool x customer). The exact charge: GET /v1/requests/{x-request-id}.
+ * plus its price as a share of the official list price. The exact charge: GET /v1/requests/{x-request-id}.
  */
 export function withCommon(ctx: Ctx, res: Response): Response {
   try {
     res.headers.set("x-request-id", ctx.requestId);
     if (ctx.model && ctx.group) {
       res.headers.set("x-pool", ctx.group.slug);
-      res.headers.set("x-price-multiplier", ctx.multiplier.toString());
+      res.headers.set("x-price-multiplier", listShare(ctx).toString());
     }
     for (const [k, v] of Object.entries(corsHeaders())) res.headers.set(k, v);
   } catch {

@@ -41,7 +41,7 @@ const FEATURES = [
   { icon: Layers, title: "Pools with lower prices", body: "Choose a pool per key: pay a multiplier of the base price and trade off cost and priority." },
   { icon: BarChart3, title: "Usage analytics", body: "Spend, tokens, latency and errors by model, key and endpoint, with request-level logs and CSV export." },
   { icon: Wallet, title: "Pay as you go", body: "Prepaid balance, no subscription. Top up by card, enable auto-recharge, set per-key spend limits." },
-  { icon: Gauge, title: "Built for load", body: "Automatic failover and queueing absorb upstream rate limits, so your clients see fewer 429s." },
+  { icon: Gauge, title: "Built for load", body: "Automatic failover and queueing absorb rate limits, so your clients see fewer 429s." },
   { icon: ShieldCheck, title: "Key controls", body: "Per-key model allow-lists, rate limits, IP allowlists, expiry and one-click revoke." },
 ];
 
@@ -52,7 +52,7 @@ const FAQ = [
   { q: "Do you store my prompts?", a: "Request metadata (model, tokens, cost, latency, status) is logged so you can audit usage. Prompt and response bodies are not stored unless explicitly enabled by the operator." },
   { q: "What happens when my balance runs out?", a: "Requests are rejected with a 402 insufficient_balance error until you add funds. Turn on auto-recharge or low-balance emails to avoid interruptions." },
   { q: "What about rate limits?", a: "Each key can have its own requests-per-minute, tokens-per-minute and concurrency limits. When capacity is tight we queue briefly and otherwise return a standard 429 with retry-after, so SDK retries just work." },
-  { q: "Can I use it for production workloads?", a: "Yes. Automatic failover across upstream accounts, streaming support and a public status page are built for production traffic." },
+  { q: "Can I use it for production workloads?", a: "Yes. Automatic failover, streaming support and a public status page are built for production traffic." },
 ];
 
 export default async function HomePage() {

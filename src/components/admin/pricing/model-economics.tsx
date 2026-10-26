@@ -22,7 +22,8 @@ export function ModelEconomics({
   customer: TokenPrices;
   cost: TokenPrices | null;
   official: TokenPrices | null;
-  pools: Array<{ slug: string; name: string; multiplier?: number; basis?: "model" | "cost"; allowed?: boolean }>;
+  /** `cost`: the route this pool really uses (its provider tags); undefined = use the model's primary route, null = no route */
+  pools: Array<{ slug: string; name: string; multiplier?: number; basis?: "model" | "cost"; allowed?: boolean; cost?: TokenPrices | null }>;
   /** what the rule value multiplies: "official" (% of official), "cost" (% of / markup over cost), null (fixed prices) */
   ruleBasis: { kind: "official" | "cost" | "markup"; } | null;
   onRuleValue?: (v: string) => void;
@@ -35,13 +36,16 @@ export function ModelEconomics({
   const poolRows = useMemo(
     () =>
       pools
-        .filter((p) => p.allowed !== false && p.multiplier !== undefined)
+        // a pool with no route to this model can't serve it: nothing to show
+        .filter((p) => p.allowed !== false && p.multiplier !== undefined && p.cost !== null)
         .map((p) => {
-          let rev = p.basis === "cost" && cost ? costAmt * p.multiplier! : base.revenue * p.multiplier!;
+          const pc = p.cost === undefined ? cost : p.cost;
+          const poolCost = pc ? workloadPrice(pc, w) : 0;
+          let rev = p.basis === "cost" && pc ? poolCost * p.multiplier! : base.revenue * p.multiplier!;
           if (p.basis === "cost" && listAmt !== null && rev > listAmt) rev = listAmt;
-          return { ...p, e: economics(rev, costAmt, listAmt) };
+          return { ...p, e: economics(rev, poolCost, listAmt) };
         }),
-    [pools, cost, costAmt, base.revenue, listAmt],
+    [pools, cost, w, base.revenue, listAmt],
   );
   const basisAmt = ruleBasis?.kind === "official" ? listAmt ?? 0 : costAmt;
   return (
@@ -86,7 +90,7 @@ export function ModelEconomics({
           </table>
         </div>
       )}
-      <p className="text-xs text-muted-foreground">10M tokens = 3.75M input, 3.75M cached input, 2.5M output. Upstream cost = the primary route.</p>
+      <p className="text-xs text-muted-foreground">10M tokens = 3.75M input, 3.75M cached input, 2.5M output. Each pool&apos;s profit uses the cost of the route that pool serves the model from.</p>
     </div>
   );
 }

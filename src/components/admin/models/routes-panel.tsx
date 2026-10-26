@@ -40,6 +40,8 @@ export interface GroupOption {
   basis?: "model" | "cost";
   /** the pool lets this model through */
   allowed?: boolean;
+  /** token cost of the route this pool uses for the model (its provider tags); null = the pool has no route */
+  cost?: { input: number; output: number; cached: number | null } | null;
 }
 
 function Margin({ v }: { v: number | null }) {

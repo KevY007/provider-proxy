@@ -14,7 +14,7 @@ export interface LogStatusInfo {
 const STATUS: Record<string, LogStatusInfo> = {
   SUCCESS: { label: "Success", tone: "success", hint: "The request completed and was billed." },
   CLIENT_ERROR: { label: "Rejected", tone: "warning", hint: "The request was refused before reaching a model (bad input, auth, limits or balance)." },
-  UPSTREAM_ERROR: { label: "Provider error", tone: "danger", hint: "The model provider failed or timed out." },
+  UPSTREAM_ERROR: { label: "Model error", tone: "danger", hint: "The model failed or timed out." },
   GATEWAY_ERROR: { label: "Our error", tone: "danger", hint: "Something went wrong on our side." },
 };
 
@@ -82,10 +82,10 @@ export function attemptStatusLabel(status: number | null): string {
   if (status === null) return "Unknown";
   if (status === 0) return "No response (network error or timeout)";
   if (status >= 200 && status < 300) return "OK";
-  if (status === 429) return "Rate limited by provider";
-  if (status === 401 || status === 403) return "Provider rejected the key";
-  if (status === 404) return "Model not found at provider";
+  if (status === 429) return "Rate limited";
+  if (status === 401 || status === 403) return "Rejected";
+  if (status === 404) return "Model not found";
   if (status === 408 || status === 504) return "Timed out";
-  if (status >= 500) return "Provider error";
-  return "Rejected by provider";
+  if (status >= 500) return "Model error";
+  return "Rejected";
 }

@@ -600,13 +600,14 @@ export const sellTable = (model: Rec2) => toPriceTable(model, (p) => p.sell);
 export const costTable = (route: Rec2) => toPriceTable(route, (p) => p.cost);
 
 /**
- * The route whose cost prices are based on (same rule as the server's rules.ts): the highest-priority ENABLED route;
- * ties go to the higher weight, then the first in list order (oldest). This is "Our cost" everywhere in the admin UI.
+ * The route whose cost prices are based on (same rule as the server's rules.ts): the highest-priority ENABLED route on
+ * a provider that is not disabled; ties go to the higher weight, then the first in list order (oldest). This is "Our
+ * cost" everywhere in the admin UI.
  */
-export function primaryEnabledRoute<T extends { enabled: boolean; priority: number; weight: number }>(routes: T[]): T | null {
+export function primaryEnabledRoute<T extends { enabled: boolean; priority: number; weight: number; providerStatus?: string }>(routes: T[]): T | null {
   let best: T | null = null;
   for (const r of routes) {
-    if (!r.enabled) continue;
+    if (!r.enabled || (r.providerStatus !== undefined && r.providerStatus !== "ACTIVE")) continue;
     if (!best || r.priority > best.priority || (r.priority === best.priority && r.weight > best.weight)) best = r;
   }
   return best;
