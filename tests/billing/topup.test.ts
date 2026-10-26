@@ -1,8 +1,13 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, beforeAll } from "vitest";
 import { db } from "@/lib/db";
 import { setStripeClientForTests } from "@/server/billing/stripe";
 import { createTopup, validateTopupAmount } from "@/server/billing/topup";
 import { balanceOf, cleanupUsers, dbAvailable, makeUser, mockStripe } from "./helpers";
+
+// the portal may run with customer billing off (prod default now): these tests exercise billing itself
+beforeAll(async () => {
+  await (await import("@/lib/settings")).setSettings({ customerBilling: true });
+});
 
 describe("validateTopupAmount", () => {
   const limits = { min: 5, max: 1000 };
