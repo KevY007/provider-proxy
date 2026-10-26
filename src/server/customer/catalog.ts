@@ -1,5 +1,8 @@
 import "server-only";
 import { db } from "@/lib/db";
+import { getConfig } from "@/gateway/cache";
+import { poolListShare } from "@/gateway/pool-prices";
+import { Decimal } from "@/lib/money";
 import { effectiveMultiplier, groupAllowsModel, type GroupLike } from "./pricing";
 import { PRICE_UNITS } from "./price-units";
 import type { UnitPriceMap } from "./price-rows";
@@ -96,6 +99,15 @@ export async function getPublicGroups(): Promise<CatalogGroup[]> {
 export async function getDefaultGroup(): Promise<CatalogGroup | null> {
   const row = (await db.group.findFirst({ where: { isDefault: true } })) ?? (await db.group.findFirst({ orderBy: { sortOrder: "asc" } }));
   return row ? toCatalogGroup(row) : null;
+}
+
+/**
+ * Share of the official list price the public pages show for a pool ("50%", "~10%"): a cost-based pool's multiplier
+ * is a factor on OUR cost and must never be shown, so its share is read off the pool's prices.
+ */
+export async function getPoolListShares(groups: CatalogGroup[]): Promise<Map<string, string>> {
+  const snap = await getConfig();
+  return new Map(groups.map((g) => [g.id, poolListShare(snap, snap.groupsById.get(g.id) ?? null, new Decimal(g.priceMultiplier)).toString()]));
 }
 
 function toCatalogGroup(g: { id: string; slug: string; name: string; description: string | null; priceMultiplier: { toString(): string }; allowedModels: string[]; isDefault: boolean; isPublic: boolean; sortOrder: number }): CatalogGroup {

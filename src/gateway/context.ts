@@ -5,7 +5,7 @@ import type { AuthRecord, ConfigSnapshot, GroupRec, ModelRec } from "./cache";
 import { GatewayError, errorResponse } from "./errors";
 import { logger } from "@/lib/logger";
 import { allowAnonymousLog } from "./limits";
-import { poolPriceTable } from "./pool-prices";
+import { poolListShare } from "./pool-prices";
 import { recordOutcome, type Charge, type Outcome } from "./metering";
 import { settleFunds, type FundsState } from "./reserve";
 import type { ParsedForm } from "./multipart";
@@ -144,11 +144,7 @@ export function corsHeaders(): Record<string, string> {
  * is a factor on OUR cost and is never sent: its share is read off the pool's input price against the official one.
  */
 export function listShare(ctx: Ctx): Decimal {
-  const m = ctx.model;
-  if (!m || !ctx.snap || ctx.group?.priceBasis !== "cost") return ctx.multiplier;
-  const off = m.official.input;
-  const ours = poolPriceTable(ctx.snap, m, ctx.group, ctx.multiplier).input;
-  return off && off.gt(0) ? ours.div(off).toDecimalPlaces(4) : ctx.multiplier;
+  return ctx.snap ? poolListShare(ctx.snap, ctx.group, ctx.multiplier, ctx.model) : ctx.multiplier;
 }
 
 /**
