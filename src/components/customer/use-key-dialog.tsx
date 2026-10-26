@@ -4,7 +4,6 @@ import { useMemo, useState } from "react";
 import { Eye, Loader2, TriangleAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CopyButton } from "@/components/common/copy-button";
 import { useAction } from "@/components/admin/use-action";
@@ -86,7 +85,7 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
   };
 
   return (
-      <DialogContent className="max-h-[92vh] gap-3 sm:max-w-5xl">
+      <DialogContent className="flex max-h-[92vh] w-[calc(100vw-2rem)] max-w-[min(96vw,80rem)] flex-col gap-3 overflow-hidden sm:max-w-[min(96vw,80rem)]">
         <DialogHeader>
           <DialogTitle>Use {keyName ? `"${keyName}"` : "your key"}</DialogTitle>
           <DialogDescription>
@@ -124,7 +123,7 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
           </p>
         )}
 
-        <div className="grid min-h-0 gap-3 md:grid-cols-[13rem_1fr]">
+        <div className="grid min-h-0 min-w-0 flex-1 gap-3 md:grid-cols-[13rem_minmax(0,1fr)]">
           {/* client picker: a list on wide screens, a select on phones */}
           <div className="md:hidden">
             <Select value={guide.id} onValueChange={chooseClient}>
@@ -147,7 +146,7 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
               </SelectContent>
             </Select>
           </div>
-          <nav className="hidden max-h-[56vh] space-y-3 overflow-y-auto pr-1 md:block" aria-label="Apps">
+          <nav className="hidden max-h-[64vh] space-y-3 overflow-y-auto pr-1 md:block" aria-label="Apps">
             {CATEGORIES.map((c) => (
               <div key={c}>
                 <p className="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{c}</p>
@@ -167,7 +166,7 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
             ))}
           </nav>
 
-          <ScrollArea className="max-h-[56vh] min-w-0 pr-3">
+          <div className="max-h-[64vh] min-w-0 overflow-y-auto overflow-x-hidden pr-3">
             <div className="space-y-4">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
@@ -212,7 +211,7 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
                 </ul>
               ) : null}
             </div>
-          </ScrollArea>
+          </div>
         </div>
       </DialogContent>
   );
