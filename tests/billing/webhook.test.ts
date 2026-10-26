@@ -1,8 +1,13 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi, beforeAll } from "vitest";
 import { db } from "@/lib/db";
 import { setStripeClientForTests } from "@/server/billing/stripe";
 import { handleStripeEvent } from "@/server/billing/webhook";
 import { balanceOf, cleanupUsers, dbAvailable, event, makeUser, mockStripe, piSucceeded } from "./helpers";
+
+// the portal may run with customer billing off (prod default now): these tests exercise billing itself
+beforeAll(async () => {
+  await (await import("@/lib/settings")).setSettings({ customerBilling: true });
+});
 
 const granted = vi.fn(async () => ({ granted: true }));
 vi.mock("@/lib/auth/service", () => ({ grantTrialCredit: (...a: unknown[]) => granted(...(a as [])) }));
