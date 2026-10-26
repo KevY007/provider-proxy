@@ -15,7 +15,7 @@ export function CodeBlock({ block, className, maxHeight = "22rem" }: { block: Pi
         </div>
         <CopyButton value={block.code} size="icon-sm" toastMessage="Copied snippet" />
       </div>
-      <pre className="overflow-auto p-3 font-mono text-[12.5px] leading-relaxed" style={{ maxHeight }}>
+      <pre className="max-w-full overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[12.5px] leading-relaxed" style={{ maxHeight }}>
         <code>{block.code}</code>
       </pre>
     </div>
