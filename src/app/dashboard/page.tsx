@@ -47,8 +47,8 @@ function SavingsFigure({ label, s }: { label: string; s: SavingsSummary & { hasD
           : s.kind === "saved"
             ? "saved"
             : s.kind === "paid_more"
-              ? "more than regular"
-              : "same as regular"}
+              ? "more than official"
+              : "same as official"}
       </p>
     </div>
   );
@@ -124,9 +124,9 @@ export default async function DashboardPage() {
         <CardHeader className="flex flex-row items-start justify-between gap-2 space-y-0 pb-2">
           <div className="space-y-1">
             <CardTitle className="flex items-center gap-2 text-base">
-              <PiggyBank className="size-4 text-emerald-600 dark:text-emerald-400" /> Your savings
+              <PiggyBank className="size-4 text-emerald-600 dark:text-emerald-400" /> Your savings vs official prices
             </CardTitle>
-            <CardDescription>What the same requests would have cost at the regular price, minus what you paid.</CardDescription>
+            <CardDescription>What the same requests would have cost directly at OpenAI, Anthropic and others, minus what you paid us.</CardDescription>
           </div>
           <Button asChild variant="ghost" size="sm">
             <Link href="/dashboard/usage">
@@ -149,7 +149,7 @@ export default async function DashboardPage() {
                     <th className="py-1.5 pr-4 font-medium">Pool</th>
                     <th className="py-1.5 pr-4 text-right font-medium">Requests</th>
                     <th className="py-1.5 pr-4 text-right font-medium">Spent</th>
-                    <th className="py-1.5 pr-4 text-right font-medium">Regular price</th>
+                    <th className="py-1.5 pr-4 text-right font-medium">At list price</th>
                     <th className="py-1.5 text-right font-medium">Saved</th>
                   </tr>
                 </thead>

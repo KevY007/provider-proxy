@@ -26,7 +26,7 @@ export function SavedNote({ saved }: { saved: string | null | undefined }) {
   return n > 0 ? (
     <span className="text-emerald-600 dark:text-emerald-400">saved {formatUSD(n)}</span>
   ) : (
-    <span className="text-amber-600 dark:text-amber-400">{formatUSD(Math.abs(n))} more than regular</span>
+    <span className="text-amber-600 dark:text-amber-400">{formatUSD(Math.abs(n))} more than official</span>
   );
 }
 
