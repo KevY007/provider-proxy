@@ -4,7 +4,7 @@ import { effectiveGroup } from "./auth";
 import type { AuthRecord } from "./cache";
 import { modalities, plainNumber, priceMatrix } from "./price-view";
 import { effectiveMultiplier, type PriceTable } from "./pricing";
-import { poolPriceTable } from "./pool-prices";
+import { poolListShare, poolPriceTable } from "./pool-prices";
 
 /**
  * Price list (`GET /api/pricing`, public or with an API key): every ACTIVE model that can actually be served, with the
@@ -24,7 +24,9 @@ export interface PublicPricing {
 const CACHE_MS = 60_000;
 const cache = new Map<string, { at: number; body: PublicPricing }>();
 
-const groupView = (g: GroupRec) => ({ slug: g.slug, name: g.name, multiplier: plainNumber(g.priceMultiplier) ?? 1 });
+/** `multiplier` = what the pool pays as a share of the official list price (a cost-based pool's own factor stays internal). */
+const groupView = (snap: Snap, g: GroupRec, mult: Decimal = g.priceMultiplier) => ({ slug: g.slug, name: g.name, multiplier: plainNumber(poolListShare(snap, g, mult)) ?? 1 });
+type Snap = Awaited<ReturnType<typeof getConfig>>;
 
 function modelView(m: ModelRec, sell: PriceTable): Record<string, unknown> {
   const matrix = priceMatrix(sell, m.official, new Decimal(1));
@@ -72,7 +74,7 @@ export async function getPublicPricing(groupSlug?: string | null, viewer?: AuthR
   return body;
 }
 
-function buildPricing(snap: Awaited<ReturnType<typeof getConfig>>, group: GroupRec | null, viewer: AuthRecord | null): PublicPricing {
+function buildPricing(snap: Snap, group: GroupRec | null, viewer: AuthRecord | null): PublicPricing {
   const models: ModelRec[] = [];
   for (const m of snap.modelsById.values()) {
     if (m.status !== "ACTIVE") continue;
@@ -87,8 +89,8 @@ function buildPricing(snap: Awaited<ReturnType<typeof getConfig>>, group: GroupR
     object: "pricing",
     currency: "USD",
     updated_at: new Date().toISOString(),
-    group: group ? { ...groupView(group), ...(viewer ? { multiplier: plainNumber(mult) ?? 1 } : {}) } : { slug: "", name: "Default", multiplier: plainNumber(mult) ?? 1 },
-    groups: [...snap.groupsById.values()].filter((g) => g.isPublic).map(groupView),
+    group: group ? groupView(snap, group, mult) : { slug: "", name: "Default", multiplier: plainNumber(mult) ?? 1 },
+    groups: [...snap.groupsById.values()].filter((g) => g.isPublic).map((g) => groupView(snap, g)),
     units: {
       usd_per_1m_tokens: "US dollars per one million tokens",
       usd_per_image: "US dollars per generated image",

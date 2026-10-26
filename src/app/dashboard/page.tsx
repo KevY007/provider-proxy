@@ -1,6 +1,7 @@
 import Link from "next/link";
-import { Activity, AlertTriangle, ArrowRight, BarChart3, Clock, Coins, Gauge, Hash, KeyRound, PiggyBank, Wallet } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Clock, Coins, KeyRound, PiggyBank, Wallet } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { formatUSD } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -197,14 +198,10 @@ export default async function DashboardPage() {
       </Card>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard label="Balance" icon={Wallet} value={<MoneyText value={user.balance.toString()} />} hint={customerBilling ? <Link href="/dashboard/billing" className="hover:text-foreground hover:underline">Manage billing</Link> : undefined} />
-        <StatCard label="Spend today" icon={Coins} value={<MoneyText value={today.spend} />} hint={`${formatCompact(today.requests)} requests`} />
-        <StatCard label="Spend, 7 days" icon={BarChart3} value={<MoneyText value={week.spend} />} />
-        <StatCard label="Tokens, 7 days" icon={Hash} value={formatCompact(tokens7)} hint={`${formatCompact(week.inputTokens)} in / ${formatCompact(week.outputTokens)} out`} />
-        <StatCard label="Requests, 7 days" icon={Activity} value={formatCompact(week.requests)} />
-        <StatCard label="Error rate" icon={Gauge} value={formatPercent(errorRate)} hint={`${formatCompact(week.errors)} failed`} />
+        <StatCard label="Balance" icon={Wallet} value={<MoneyText value={user.balance.toString()} />} hint={customerBilling ? <Link href="/dashboard/billing" className="hover:text-foreground hover:underline">Manage billing</Link> : `${keyCount} active key${keyCount === 1 ? "" : "s"}`} />
+        <StatCard label="Spend, 7 days" icon={Coins} value={<MoneyText value={week.spend} />} hint={`today ${formatUSD(today.spend)}`} />
+        <StatCard label="Requests, 7 days" icon={Activity} value={formatCompact(week.requests)} hint={`${formatCompact(tokens7)} tokens, ${formatPercent(errorRate)} errors`} />
         <StatCard label="Avg latency" icon={Clock} value={week.requests ? formatDuration(week.avgLatencyMs) : "-"} hint="last 7 days" />
-        <StatCard label="Active keys" icon={KeyRound} value={String(keyCount)} hint={<Link href="/dashboard/keys" className="hover:text-foreground hover:underline">Manage keys</Link>} />
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-3">

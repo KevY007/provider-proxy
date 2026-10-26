@@ -117,6 +117,12 @@ export function poolSavingsLabel(pct: number | null | undefined): string {
   return "list price";
 }
 
+/** A pool's share of the official price for customers: 0.5 -> "50% of official", 1 -> "official price". */
+export function formatListShare(m: MoneyLike): string {
+  const pct = toDecimal(m, 1).times(100).toDecimalPlaces(0).toNumber();
+  return pct === 100 ? "official price" : `${pct}% of official`;
+}
+
 /** Format a multiplier for UI: 0.8 -> "0.8x" (admin only). */
 export function formatMultiplier(m: MoneyLike): string {
   return `${toDecimal(m, 1).toDecimalPlaces(4).toString()}×`;
