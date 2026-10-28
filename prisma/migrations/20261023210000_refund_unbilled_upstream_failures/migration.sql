@@ -1,4 +1,4 @@
--- One-off billing correction for the provider.texhub.ai deployment, from a request-by-request reconciliation with
+-- One-off billing correction for the production deployment, from a request-by-request reconciliation with
 -- Codex Everywhere's own usage records (2026-10-22/23): 74 failed requests that CE never billed, but that we charged
 -- (an estimated input charge for requests that delivered nothing, or the delivered output of streams CE itself ended
 -- with an error at its ~900 s cap). Their price / cost / profit / official price become 0, the customer is refunded,

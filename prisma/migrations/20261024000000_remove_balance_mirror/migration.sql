@@ -1,5 +1,5 @@
 -- Balance mirror removed: customer wallets are never driven by an upstream account (customers can use several
--- providers). Each mirror adjustment that ran (admin@texhub.ai, -874.93) is reversed with an opposite entry.
+-- providers). Each mirror adjustment that ran (the main customer, -874.93) is reversed with an opposite entry.
 WITH m AS (
   SELECT e.id, e."userId", e.amount FROM "LedgerEntry" e
   WHERE e.metadata ? 'balanceMirror' AND NOT EXISTS (SELECT 1 FROM "LedgerEntry" r WHERE r.metadata->>'reverses' = e.id)

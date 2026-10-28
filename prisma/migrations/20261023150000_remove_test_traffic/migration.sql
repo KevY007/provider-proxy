@@ -1,4 +1,4 @@
--- One-off data cleanup for the provider.texhub.ai deployment: remove the test traffic run while setting it up
+-- One-off data cleanup for the production deployment: remove the test traffic run while setting it up
 -- (2026-10-21..23): twelve revoked "(temporary)" test keys, their requests, and test requests sent from the build /
 -- sandbox environment (recorded client IP 0.0.0.0) on the Studio key or without a key. The spend of those requests is
 -- refunded to the account that paid it, and the key / upstream-key usage counters are lowered by the same amounts.

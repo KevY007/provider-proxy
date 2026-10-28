@@ -17,7 +17,7 @@ describe("integration guides", () => {
   });
 
   it("Claude Code: origin base URL, the key as auth token, and the built-in model choices mapped to pool models", () => {
-    const gs = buildGuides({ appUrl: "https://p.example.com/", apiKey: "sk-pp-SECRET", siteName: "Texhub Proxy", poolName: "Coding", models: CODING });
+    const gs = buildGuides({ appUrl: "https://p.example.com/", apiKey: "sk-pp-SECRET", siteName: "Acme Proxy", poolName: "Coding", models: CODING });
     const cc = guide(gs, "claude-code");
     const settings = JSON.parse(cc.steps.find((s) => s.title.startsWith("Paste"))!.code![0].code) as { env: Record<string, string> };
     expect(settings.env).toMatchObject({
@@ -39,13 +39,13 @@ describe("integration guides", () => {
   });
 
   it("Codex: /v1 base URL over HTTP, OpenAI auth from auth.json, a model of the pool", () => {
-    const gs = buildGuides({ appUrl: "https://p.example.com", apiKey: "sk-pp-SECRET", siteName: "Texhub Proxy", models: STUDIO });
+    const gs = buildGuides({ appUrl: "https://p.example.com", apiKey: "sk-pp-SECRET", siteName: "Acme Proxy", models: STUDIO });
     const text = all(guide(gs, "codex"));
     expect(text).toContain('base_url = "https://p.example.com/v1"');
     expect(text).toContain("supports_websockets = false");
     expect(text).toContain('model = "gpt-6.1-sol"');
     expect(text).toContain('"OPENAI_API_KEY": "sk-pp-SECRET"');
-    expect(text).toContain("[model_providers.texhub-proxy]");
+    expect(text).toContain("[model_providers.acme-proxy]");
   });
 
   it("OpenCode only declares providers the pool has models for; image models are left out of chat apps", () => {

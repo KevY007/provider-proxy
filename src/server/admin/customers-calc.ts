@@ -102,6 +102,7 @@ export const customerSettingsSchema = z.object({
   creditLimit: optMoney.transform((v) => v ?? "0"),
   monthlySpendLimit: optMoney,
   maxConcurrency: optIntField,
+  freeWhenEmpty: z.boolean().default(false),
 });
 export type CustomerSettingsInput = z.input<typeof customerSettingsSchema>;
 

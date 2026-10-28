@@ -2,11 +2,11 @@
 
 A metered, multi-provider AI gateway. Customers get **our** API keys and call **our** endpoints in
 OpenAI / Anthropic / Gemini format. We forward to **upstream providers** that the admin configures at
-runtime (OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, OpenRouter, Codex-Everywhere, any
+runtime (OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, OpenRouter, any
 OpenAI-compatible URL…), each with any number of **upstream keys/accounts**. Every request is metered:
 we charge the customer our **sell price** and record our **cost price** → profit per request.
 
-Reference product studied: codex-everywhere.com (pools = "groups" with price multipliers, per-key group,
+Reference model: reseller gateways (pools = "groups" with price multipliers, per-key group,
 channel status page, usage analytics by model/group/endpoint, image studio, Stripe/crypto top-ups,
 redeem codes, OpenAI `/v1/*` + Anthropic `/v1/messages` + Gemini `/v1beta` on one base URL).
 
@@ -186,7 +186,7 @@ model Provider {
   id            String         @id @default(cuid())
   name          String
   slug          String         @unique
-  preset        String         // "openai" | "anthropic" | "google" | "xai" | "groq" | "deepseek" | "openrouter" | "mistral" | "together" | "fireworks" | "azure" | "codex-everywhere" | "custom"
+  preset        String         // "openai" | "anthropic" | "google" | "xai" | "groq" | "deepseek" | "openrouter" | "mistral" | "together" | "fireworks" | "azure" | "custom"
   baseUrl       String         // e.g. https://api.openai.com/v1 , https://api.anthropic.com , https://generativelanguage.googleapis.com
   authStyle     AuthStyle      @default(BEARER)
   formats       String[]       // natively accepted EndpointFormat values (see §5)
@@ -393,7 +393,7 @@ model EmailOutbox { id String @id @default(cuid())  to String  subject String  h
 
 ## 5. Gateway (the core)
 
-### Inbound surface (one base URL, like CE)
+### Inbound surface (one base URL)
 | Format id | Paths |
 |---|---|
 | `openai_chat` | `POST /v1/chat/completions` |
@@ -434,13 +434,12 @@ Also accept `/chat/completions` etc. without `/v1`? No — but `/v1/v1/...` doub
 
 ### Provider adapters (`src/gateway/providers/*`)
 `interface ProviderAdapter { buildUrl(provider, op, upstreamModel, stream): string; buildHeaders(provider, secret, inboundHeaders): Headers; }`
-- **openai** / **openai-compatible** (openai, xai, groq, deepseek, openrouter, mistral, together, fireworks, codex-everywhere, custom): Bearer; `${baseUrl}/chat/completions` etc. (baseUrl includes `/v1`).
+- **openai** / **openai-compatible** (openai, xai, groq, deepseek, openrouter, mistral, together, fireworks, custom): Bearer; `${baseUrl}/chat/completions` etc. (baseUrl includes `/v1`).
 - **anthropic**: `x-api-key` + `anthropic-version` (forward client's header, default `2023-06-01`) + forward `anthropic-beta`; `${baseUrl}/v1/messages`.
 - **google**: `x-goog-api-key`; native `${baseUrl}/v1beta/models/{m}:generateContent`; also OpenAI-compat at `${baseUrl}/v1beta/openai/chat/completions` (so openai_chat → google needs no translator).
 - **azure**: `api-key` header, `${baseUrl}/openai/deployments/{deployment}/chat/completions?api-version=…` (deployment = upstreamModel).
 - **fal** (preset `fal`, formats `openai_images`): `Authorization: Key <key>` (applied in `providers/adapters.ts`, keyed on preset - no AuthStyle change); synchronous `https://fal.run/{model}` with automatic fallback to the queue API; see 5c.
 - **replicate** (preset `replicate`, formats `openai_images`): Bearer; predictions API with polling; see 5c.
-- Codex-Everywhere preset: formats `openai_chat, openai_responses, openai_images, anthropic_messages, gemini, openai_embeddings`; baseUrl `https://codex-everywhere.com/v1`; anthropic at same base; gemini at `https://codex-everywhere.com/v1beta` (store in settings.geminiBaseUrl).
 
 Presets live in `src/gateway/providers/presets.ts` (exported; Admin UI uses them for the "Add provider" form): name, baseUrl, authStyle, formats, docs link, sample models.
 
@@ -499,7 +498,7 @@ For images: if `imagePrice` set bill per image, else bill token usage returned b
 
 ## 8. UI
 
-**Design:** clean dark-first dashboard (CE-like): left sidebar, top bar with balance pill + user menu + theme toggle; stat cards; Recharts area/bar/pie charts; data tables with filters, pagination, CSV export; detail drawers. Light mode supported. Every form: zod validation, inline errors, toast on success/failure, loading states, empty states, error boundaries (`error.tsx`) and `loading.tsx` per segment.
+**Design:** clean dark-first dashboard: left sidebar, top bar with balance pill + user menu + theme toggle; stat cards; Recharts area/bar/pie charts; data tables with filters, pagination, CSV export; detail drawers. Light mode supported. Every form: zod validation, inline errors, toast on success/failure, loading states, empty states, error boundaries (`error.tsx`) and `loading.tsx` per segment.
 
 **Public (Portal):** `/` landing (hero with curl snippet, model price table showing official vs ours with % savings, provider cards, FAQ, CTA) · `/pricing` (live from DB, per group) · `/docs` (quickstart, auth, OpenAI-compatible, Anthropic-compatible, Gemini-compatible, images, audio, embeddings, streaming, errors reference table with all codes from §5, rate limits, SDK snippets for curl/Python/Node, client configs for Codex CLI, Claude Code, OpenCode, Cursor) · `/status` (public provider-group health, 24h/7d availability bars from HealthCheck + RequestLog; no provider secrets).
 

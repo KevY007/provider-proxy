@@ -113,9 +113,9 @@ export async function getTotals(f: AnalyticsFilter): Promise<Totals> {
       count(*)::float8 AS requests,
       (count(*) FILTER (WHERE r."status" = 'SUCCESS'))::float8 AS success,
       (count(*) FILTER (WHERE ${ERR}))::float8 AS errors,
-      coalesce(sum(r."price"), 0)::float8 AS revenue,
+      coalesce(sum(r."price" - r."waived"), 0)::float8 AS revenue,
       coalesce(sum(r."cost"), 0)::float8 AS cost,
-      coalesce(sum(r."profit"), 0)::float8 AS profit,
+      coalesce(sum(r."profit" - r."waived"), 0)::float8 AS profit,
       coalesce(sum(r."inputTokens"), 0)::float8 AS input_tokens,
       coalesce(sum(r."outputTokens"), 0)::float8 AS output_tokens,
       coalesce(sum(r."cachedTokens"), 0)::float8 AS cached_tokens,
@@ -167,9 +167,9 @@ export async function getTimeSeries(f: AnalyticsFilter, gran?: Granularity): Pro
       to_char(date_trunc(${GRAN_SQL[g]}, r."createdAt"), 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS t,
       count(*)::float8 AS requests,
       (count(*) FILTER (WHERE ${ERR}))::float8 AS errors,
-      coalesce(sum(r."price"), 0)::float8 AS revenue,
+      coalesce(sum(r."price" - r."waived"), 0)::float8 AS revenue,
       coalesce(sum(r."cost"), 0)::float8 AS cost,
-      coalesce(sum(r."profit"), 0)::float8 AS profit,
+      coalesce(sum(r."profit" - r."waived"), 0)::float8 AS profit,
       coalesce(sum(r."inputTokens" + r."outputTokens"), 0)::float8 AS tokens
     FROM "RequestLog" r
     ${where(f)}
@@ -248,9 +248,9 @@ export async function getBreakdown(
       ${Prisma.raw(d.label)} AS label,
       count(*)::float8 AS requests,
       (count(*) FILTER (WHERE ${ERR}))::float8 AS errors,
-      coalesce(sum(r."price"), 0)::float8 AS revenue,
+      coalesce(sum(r."price" - r."waived"), 0)::float8 AS revenue,
       coalesce(sum(r."cost"), 0)::float8 AS cost,
-      coalesce(sum(r."profit"), 0)::float8 AS profit,
+      coalesce(sum(r."profit" - r."waived"), 0)::float8 AS profit,
       coalesce(sum(r."inputTokens"), 0)::float8 AS input_tokens,
       coalesce(sum(r."outputTokens"), 0)::float8 AS output_tokens,
       coalesce(sum(r."inputTokens" + r."outputTokens"), 0)::float8 AS tokens,
@@ -335,7 +335,7 @@ export async function getProviderWindowStats(from: Date, to: Date = new Date()) 
       count(*)::float8 AS requests,
       (count(*) FILTER (WHERE ${ERR}))::float8 AS errors,
       coalesce(sum(r."cost"), 0)::float8 AS cost,
-      coalesce(sum(r."price"), 0)::float8 AS revenue
+      coalesce(sum(r."price" - r."waived"), 0)::float8 AS revenue
     FROM "RequestLog" r
     WHERE r."createdAt" >= ${from} AND r."createdAt" <= ${to} AND r."providerId" IS NOT NULL
     GROUP BY 1

@@ -256,6 +256,11 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
   const keyRemaining = key.spendLimit ? key.spendLimit.minus(key.spent).minus(ctx.auth!.spentDelta) : null;
 
   let base = await getBalance(user.id, { balance: user.balance, at: ctx.auth!.loadedAt });
+  // free when empty (admin switch): no balance check, no clamp, no stream cutoff - the request always runs and the
+  // meter writer takes from the balance only what it still covers (it never goes below 0). Key and monthly spend
+  // limits are customer-set caps and still apply.
+  const freeWhenEmpty = user.freeWhenEmpty;
+  if (freeWhenEmpty) base = base.plus(FREE_WHEN_EMPTY_HEADROOM);
   let confirmedWithDb = false;
   let clamped = false;
   let last: { reason: "balance" | "monthly" | "key"; amount: Decimal; available: Decimal; affordTokens: number | null; internal: string } | null = null;
@@ -294,7 +299,7 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
         note: notes.length ? notes.join("; ") : null,
         // only a runaway upstream is cut: an enforced cap may legitimately be reached exactly, and without one the
         // chars/4 estimate can run ~30% above the real token count on prose, so leave room for a full-length answer
-        cutAtTokens: plan.textOut ? Math.ceil(outTokens * n * (enforced ? 1.25 : 1.5)) : 0,
+        cutAtTokens: plan.textOut && !freeWhenEmpty ? Math.ceil(outTokens * n * (enforced ? 1.25 : 1.5)) : 0,
         cut: false,
       };
       return;
@@ -340,6 +345,12 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
   throw insufficient(ctx, { ...l, explicit: explicit !== null, affordTokens: l.affordTokens });
 }
 
+/**
+ * Balance headroom added for a `freeWhenEmpty` customer: large enough that no realistic request is ever refused or
+ * clamped for funds. Holds still count against it, so concurrent requests stay visible in the hold bookkeeping.
+ */
+export const FREE_WHEN_EMPTY_HEADROOM = new Decimal(1_000_000);
+
 // ---------------------------------------------------------------- Batch API
 /** Batches end within 24 hours upstream; the hold outlives that (the sweep re-places it while the batch is open). */
 export const BATCH_HOLD_TTL_MS = 30 * 60 * 60_000;
@@ -358,6 +369,7 @@ export async function reserveBatchHold(ctx: Ctx, amount: Decimal): Promise<HoldR
   const monthlyRemaining = user.monthlySpendLimit ? user.monthlySpendLimit.minus(await userMonthlySpend(user.id)) : null;
   const keyRemaining = key.spendLimit ? key.spendLimit.minus(key.spent).minus(ctx.auth!.spentDelta) : null;
   let base = await getBalance(user.id, { balance: user.balance, at: ctx.auth!.loadedAt });
+  if (user.freeWhenEmpty) base = base.plus(FREE_WHEN_EMPTY_HEADROOM);
   for (let attempt = 0; attempt < 2; attempt++) {
     const r = await reserveHold({ id, userId: user.id, keyId: key.id, amount, base, headroomExtra: user.creditLimit.minus(minBalance), monthlyRemaining, keyRemaining, ttlMs: BATCH_HOLD_TTL_MS });
     if (r.ok) return amount.gt(0) ? { id, userId: user.id, keyId: key.id, backend: r.backend, createdAt: Date.now() } : null;
