@@ -104,6 +104,7 @@ export async function updateCustomerSettings(input: unknown) {
         creditLimit: d.creditLimit,
         monthlySpendLimit: d.monthlySpendLimit,
         maxConcurrency: d.maxConcurrency,
+        freeWhenEmpty: d.freeWhenEmpty,
       },
     });
     const { userId: _u, ...changes } = d;

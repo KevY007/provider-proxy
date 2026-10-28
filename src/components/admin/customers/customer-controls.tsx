@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { StatusBadge } from "@/components/common/status-badge";
-import { CheckField, NumberField, SelectField } from "@/components/admin/fields";
+import { CheckField, NumberField, SelectField, SwitchField } from "@/components/admin/fields";
 import { useAction } from "@/components/admin/use-action";
 import { fmtDateTime } from "@/components/admin/format";
 import { describePercent, multiplierToPercent, percentToMultiplier } from "@/lib/percent";
@@ -35,6 +35,7 @@ export function CustomerControls({
   const [creditLimit, setCreditLimit] = useState(user.creditLimit === "0" ? "" : user.creditLimit);
   const [monthlyLimit, setMonthlyLimit] = useState(user.monthlySpendLimit ?? "");
   const [maxConc, setMaxConc] = useState(user.maxConcurrency?.toString() ?? "");
+  const [freeWhenEmpty, setFreeWhenEmpty] = useState(user.freeWhenEmpty);
   const staff = user.role !== "CUSTOMER";
   const suspended = user.status === "SUSPENDED";
   const unverified = !user.emailVerifiedAt || user.status === "PENDING_VERIFICATION";
@@ -93,7 +94,7 @@ export function CustomerControls({
           onSubmit={(e) => {
             e.preventDefault();
             void run(() =>
-              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc }),
+              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc, freeWhenEmpty }),
             );
           }}
         >
@@ -140,6 +141,13 @@ export function CustomerControls({
             <NumberField label="Monthly spend limit" suffix="USD" value={monthlyLimit} onChange={setMonthlyLimit} placeholder="no limit" min={0} error={fieldErrors.monthlySpendLimit} disabled={!isAdmin} />
             <NumberField label="Max concurrency" value={maxConc} onChange={setMaxConc} placeholder="default" step="1" min={1} description="Concurrent in-flight requests across all their keys." error={fieldErrors.maxConcurrency} disabled={!isAdmin} />
           </div>
+          <SwitchField
+            label="Free when the balance runs out"
+            checked={freeWhenEmpty}
+            onChange={setFreeWhenEmpty}
+            disabled={!isAdmin}
+            description="Requests keep working at $0 instead of being refused. The balance is charged while it lasts and never goes below $0; every request still records its full price, and the uncovered part is waived (it shows as a loss in analytics)."
+          />
           <div className="space-y-2">
             <p className="text-sm font-medium">Extra pools for API keys</p>
             <p className="text-xs text-muted-foreground">

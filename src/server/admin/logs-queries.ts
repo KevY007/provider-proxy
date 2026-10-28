@@ -18,6 +18,7 @@ const rowSelect = {
   outputTokens: true,
   cachedTokens: true,
   price: true,
+  waived: true,
   cost: true,
   profit: true,
   officialPrice: true,
@@ -50,6 +51,8 @@ export interface LogRow {
   outputTokens: number;
   cachedTokens: number;
   price: string;
+  /** part of the price never taken from the balance (free-when-empty customer) */
+  waived: string;
   cost: string;
   profit: string;
   /** What the same usage would cost at the model's official prices. */
@@ -81,6 +84,7 @@ function toRow(r: Awaited<ReturnType<typeof fetchRows>>[number]): LogRow {
     outputTokens: r.outputTokens,
     cachedTokens: r.cachedTokens,
     price: dstr0(r.price),
+    waived: dstr0(r.waived),
     cost: dstr0(r.cost),
     profit: dstr0(r.profit),
     officialPrice: dstr0(r.officialPrice),
@@ -193,6 +197,7 @@ export async function getLogDetailData(id: string) {
     toolUsage: toolUsageMap(r.toolUsage),
     batchId: r.batchId,
     price: dstr0(r.price),
+    waived: dstr0(r.waived),
     cost: dstr0(r.cost),
     profit: dstr0(r.profit),
     officialPrice: dstr0(r.officialPrice),

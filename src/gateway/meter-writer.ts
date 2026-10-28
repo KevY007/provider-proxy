@@ -311,7 +311,26 @@ interface UserRow {
 
 type Tx = Prisma.TransactionClient;
 
-/** Balance / key / upstream-key side effects of `entries`. */
+/**
+ * Free when empty: mark `amount` of these requests' price as waived (never taken from the balance), newest requests
+ * first, so the requests made while the balance still covered them stay fully paid. Price and profit stay as metered.
+ */
+async function waiveUncovered(tx: Tx, entries: MeterEntry[], amount: Decimal): Promise<void> {
+  let left = amount;
+  for (const e of [...entries].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
+    if (!left.gt(0)) break;
+    if (!e.price.gt(0)) continue;
+    const w = Decimal.min(left, e.price);
+    left = left.minus(w);
+    await tx.$executeRaw`UPDATE "RequestLog" SET "waived" = ${toDbString(w)}::numeric WHERE "id" = ${e.log.id as string}`;
+  }
+}
+
+/**
+ * Balance / key / upstream-key side effects of `entries`. `price` is what the request is worth; for a `freeWhenEmpty`
+ * customer only the part the balance still covers is taken (the rest is `RequestLog.waived`). Key `spent` counts the
+ * full price, so a key's own spend cap keeps working on free usage.
+ */
 async function applyFinancials(tx: Tx, entries: MeterEntry[]): Promise<{ userRows: UserRow[]; users: Map<string, Decimal> }> {
   const users = new Map<string, Decimal>();
   const keys = new Map<string, { price: Decimal; last: Date }>();
@@ -336,6 +355,17 @@ async function applyFinancials(tx: Tx, entries: MeterEntry[]): Promise<{ userRow
 
   let userRows: UserRow[] = [];
   if (users.size) {
+    // free when empty: what the balance can still cover is taken, the rest of the batch is waived (the balance stops at
+    // 0 and never goes below it). Locked first, so the split is exact against concurrent flushes and ledger moves.
+    const ids = [...users.keys()];
+    const free = await tx.$queryRaw<Array<{ id: string; balance: Prisma.Decimal | string }>>`
+      SELECT "id", "balance" FROM "User" WHERE "id" IN (${Prisma.join(ids)}) AND "freeWhenEmpty" ORDER BY "id" FOR UPDATE`;
+    for (const f of free) {
+      const owed = users.get(f.id)!;
+      const take = Decimal.min(owed, Decimal.max(toDecimal(f.balance), ZERO));
+      if (take.lt(owed)) await waiveUncovered(tx, entries.filter((e) => e.userId === f.id), owed.minus(take));
+      users.set(f.id, take);
+    }
     const values = Prisma.join([...users].map(([id, amt]) => Prisma.sql`(${id}, ${toDbString(amt)}::numeric)`));
     userRows = await tx.$queryRaw<UserRow[]>`
       UPDATE "User" AS u SET "balance" = u."balance" - v.amt

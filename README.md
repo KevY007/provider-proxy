@@ -5,7 +5,7 @@ A metered, multi-provider AI gateway: "be the AI provider for your customers".
 Customers sign up, add credit and create `sk-pp-...` API keys. They call **one base URL** with the API format they
 already use (OpenAI `/v1/*`, Anthropic `/v1/messages`, Gemini `/v1beta/*`). The gateway forwards each request to an
 upstream provider that an admin configured at runtime (OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, Mistral,
-Together, Fireworks, OpenRouter, Azure OpenAI, fal.ai, Replicate, the relay or any OpenAI-compatible URL). Each
+Together, Fireworks, OpenRouter, Azure OpenAI, fal.ai, Replicate or any OpenAI-compatible URL). Each
 provider can have any number of upstream keys/accounts. Every request is metered with the customer price, our cost,
 the margin and the official list price, so customers can see their savings.
 

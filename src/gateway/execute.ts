@@ -185,7 +185,20 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       } else {
         recordKeyFailure(pick.cand.key, f.fk, { status: f.status, message: f.message, retryAfterSec: f.retryAfterSec, startedAt: f.startedAt, noCooldown: providerNoCooldown(pick.cand.route.provider), model: pick.cand.route.upstreamModel }, settings);
       }
-      if (attemptsMade >= maxAttempts) throw finalError(f, settings);
+      if (attemptsMade >= maxAttempts) {
+        // a relay's transient 502 / 503 / 504 / 52x: keep trying every badGatewayRetryEverySec, up to badGatewayRetrySec
+        // after the first attempt, instead of failing - the client has received nothing yet, so the wait is invisible
+        const win = badGatewayWindow(pick.cand.route.provider, settings);
+        // honour the upstream's retry-after when it gave one (never past the window), else the provider's pace
+        const waitMs = Math.max(1, f.retryAfterSec ?? win.everySec) * 1000;
+        if (BAD_GATEWAY.has(f.status) && win.totalSec > 0 && Date.now() - ctx.startedAt + waitMs <= win.totalSec * 1000) {
+          ctx.notes.push(`upstream ${f.status}: retrying in ${Math.round(waitMs / 1000)}s (attempt ${attemptsMade + 1})`);
+          await sleep(waitMs, signal);
+          // failures are kept: the next round starts with the key that failed least, so several keys take turns
+          continue;
+        }
+        throw finalError(f, settings);
+      }
     }
   } finally {
     if (queued) {
@@ -193,6 +206,19 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       if (queueStart !== null && !queueRecorded) ctx.queueMs = Date.now() - queueStart;
     }
   }
+}
+
+/** Upstream statuses retried for a while (badGatewayRetrySec) before they reach the client: gateway errors, and the
+ * Cloudflare edge ones a relay behind Cloudflare answers with (520 unknown, 521 down, 522 / 523 unreachable, 524 timeout). */
+const BAD_GATEWAY = new Set([502, 503, 504, 520, 521, 522, 523, 524]);
+
+/**
+ * Retry window for 502 / 503 / 504 / 52x: provider settings `badGatewayRetrySec` / `badGatewayRetryEverySec` win, else the
+ * global ones. 0 seconds = off (fail after the normal attempts).
+ */
+function badGatewayWindow(provider: { settings: Record<string, unknown> }, settings: SettingValues): { totalSec: number; everySec: number } {
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null);
+  return { totalSec: n(provider.settings.badGatewayRetrySec) ?? settings.badGatewayRetrySec, everySec: Math.max(1, n(provider.settings.badGatewayRetryEverySec) ?? settings.badGatewayRetryEverySec) };
 }
 
 /** Every usable key is rate-limited for this model (a relay's per-model limit): a 429 the client can retry. */

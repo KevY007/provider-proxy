@@ -176,6 +176,11 @@ export function LogDetailSheet({ id, onClose }: { id: string | null; onClose: ()
                 </KV>
                 <KV label="Our cost (paid to supplier)"><MoneyText value={d.cost} /></KV>
                 <KV label="Margin (profit)"><MoneyText value={d.profit} colorize /></KV>
+                {Number(d.waived) > 0 && (
+                  <KV label="Waived (balance empty)">
+                    <MoneyText value={d.waived} /> not taken from the balance
+                  </KV>
+                )}
               </Section>
 
               <Section title="Who & where">

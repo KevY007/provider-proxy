@@ -22,7 +22,7 @@ enable models, set pricing, invite customers.
 ## Providers, keys and slots (`/admin/providers`)
 
 A **provider** is an upstream API endpoint. Create one from a preset: OpenAI, Anthropic, Google, Azure, xAI, Groq,
-DeepSeek, Mistral, Together, Fireworks, OpenRouter, the relay, fal.ai, Replicate or Custom
+DeepSeek, Mistral, Together, Fireworks, OpenRouter, fal.ai, Replicate or Custom
 (OpenAI-compatible).
 
 | Field | Notes |

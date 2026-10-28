@@ -2564,6 +2564,13 @@ async function route(ctx: Ctx, raw: Buffer): Promise<void> {
   if (cred.includes("fail500")) return sendError(ctx, "server", "The server had an error while processing your request.", idHeaders());
   if (cred.includes("nocredit402")) return sendError(ctx, "invalid_request", "Insufficient account balance", idHeaders(), 402);
   if (cred.includes("fail529")) return sendError(ctx, "overloaded", "Overloaded.", idHeaders());
+  // "flaky<status>x<N>" (502, 522 ...): the first N requests on this credential answer that status, then it recovers
+  const flakyBad = /flaky(5\d\d)x(\d+)/.exec(cred);
+  if (flakyBad) {
+    const n = (flakyStarts.get(cred) ?? 0) + 1;
+    flakyStarts.set(cred, n);
+    if (n <= Number(flakyBad[2])) return sendError(ctx, "server", "Bad gateway.", idHeaders(), Number(flakyBad[1]));
+  }
   // x-mock-fail: <status> - any HTTP status, retry-after 7 + request id, native error body
   const failStatus = Number(hdr(req, "x-mock-fail"));
   if (Number.isInteger(failStatus) && failStatus >= 400 && failStatus < 600) {
