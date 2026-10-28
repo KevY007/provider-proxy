@@ -1,6 +1,6 @@
 -- Codex-Everywhere account sync (id-scoped; every statement is a no-op on databases without these rows).
 
--- admin@texhub.ai's balance mirrors the Codex-Everywhere account balance (upkeep refreshes it)
+-- the main customer's balance mirrors the Codex-Everywhere account balance (upkeep refreshes it)
 UPDATE "User" SET "balanceMirrorProviderId" = 'cmvhvy4ns000101s67u2kr0f3'
 WHERE id = 'c7364482fd7ea506878ed3b6e' AND EXISTS (SELECT 1 FROM "Provider" WHERE id = 'cmvhvy4ns000101s67u2kr0f3');
 

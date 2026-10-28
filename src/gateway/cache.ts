@@ -435,6 +435,8 @@ export interface AuthUser {
   autoRechargeThreshold: Decimal;
   lowBalanceAlertAt: Decimal | null;
   maxConcurrency: number | null;
+  /** admin switch: once the balance is used up, requests are free instead of refused (the balance stops at 0) */
+  freeWhenEmpty: boolean;
 }
 
 export interface AuthKey {
@@ -497,6 +499,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
           autoRechargeThreshold: true,
           lowBalanceAlertAt: true,
           maxConcurrency: true,
+          freeWhenEmpty: true,
         },
       },
     },
@@ -538,6 +541,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       autoRechargeThreshold: toDecimal(u.autoRechargeThreshold),
       lowBalanceAlertAt: u.lowBalanceAlertAt ? toDecimal(u.lowBalanceAlertAt) : null,
       maxConcurrency: u.maxConcurrency,
+      freeWhenEmpty: u.freeWhenEmpty,
     },
   };
 }

@@ -12,7 +12,7 @@
 
 A metered, multi-provider AI gateway ("be the AI provider for our customers"). Customers get `sk-pp-…` keys and call our
 OpenAI / Anthropic / Gemini-compatible endpoints (`/v1/*`, `/v1beta/*`); we forward to admin-configured upstream providers
-(OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, OpenRouter, fal.ai, Replicate, Codex-Everywhere, any OpenAI-compatible URL), each with
+(OpenAI, Anthropic, Google, xAI, Groq, DeepSeek, OpenRouter, fal.ai, Replicate, any OpenAI-compatible URL), each with
 any number of upstream keys/accounts and concurrency slots. Every request is metered: customer price, our cost, profit, and the
 official list price (for customer-facing savings). Pay-as-you-go billing (Stripe), admin console, customer portal, public site + docs.
 Target hosting: Google Cloud Run + Supabase Postgres (+ optional Memorystore Redis). DNS on Cloudflare, mail via Resend SMTP.
@@ -107,7 +107,7 @@ Running several dev servers from one checkout: `NEXT_DIST_DIR=.next-<name> pnpm 
 | 1:1 output limits (explicit `max_tokens` passed through), admin API key reveal (audited), Pricing API docs, full-width logs | ✅ PR #15 |
 | Portal-only switch (no public site: login page only for visitors who are not signed in) | ✅ `requirePublicSite` in `src/server/customer/visibility.ts` (PR #17) |
 | `/api/pricing` with an API key while pricing is private (the key's own prices) | ✅ `checkApiKey` in `src/gateway/auth.ts` (PR #18) |
-| Upstream 403s told apart (bad key / no credit / not allowed for this model or endpoint); Codex Everywhere preset verified live | ✅ `classifyStatus` in `src/gateway/keyhealth.ts` (PR #19) |
+| Upstream 403s told apart (bad key / no credit / not allowed for this model or endpoint) | ✅ `classifyStatus` in `src/gateway/keyhealth.ts` (PR #19) |
 
 Last verified gates (2026-10-21, cloud session): `pnpm typecheck` clean, `pnpm lint` 0 errors, `pnpm test` 820 passed / 1 skipped,
 `pnpm build` OK, CI green on `main`; live smoke suites against the production deployment 19/19.

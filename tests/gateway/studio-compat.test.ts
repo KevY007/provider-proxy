@@ -1,5 +1,5 @@
 /**
- * What an OpenAI Responses client (Texhub Studio) needs from the gateway in front of a relay that misbehaves:
+ * What an OpenAI Responses client (a studio app) needs from the gateway in front of a relay that misbehaves:
  * errors before any output come back as real HTTP errors in OpenAI's shape (no retries of a deterministic 400),
  * transient relay failures are retried invisibly, prompt-cache hints can be stripped, unknown efforts and unserved
  * service tiers are refused up front, and a max_output_tokens the upstream ignores is enforced.

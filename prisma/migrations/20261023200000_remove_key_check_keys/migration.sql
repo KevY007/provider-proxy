@@ -1,4 +1,4 @@
--- One-off data cleanup for the provider.texhub.ai deployment: the two "key check (temporary)" API keys used on
+-- One-off data cleanup for the production deployment: the two "key check (temporary)" API keys used on
 -- 2026-10-23 to verify the new upstream keys (Studio 2, Claude 1) and the price-sync prompt, and their requests. The
 -- spend is refunded to the account that paid it and the upstream-key usage counters are lowered by the same amounts.
 -- Every statement is scoped to these exact ids, so on any other database it does nothing.
