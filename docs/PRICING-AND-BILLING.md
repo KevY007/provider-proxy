@@ -111,6 +111,14 @@ Notes:
 
 The official price of a batch result is the vendor's own batch price: official list price with the 50% discount.
 
+### Retried attempts the upstream still bills
+
+A stream that ends before any output reaches the gateway (closed, or the connection broke) is retried on the next
+key, invisibly to the client. Some upstreams keep generating and bill that attempt anyway (provider option
+`billsDroppedStreams`, on by default for the relay preset). For those, the usage the dropped attempt reported (its
+prompt, cache reads and writes) is priced at the route cost and added to the request's **our cost**, never to the
+customer price, so margins show what the upstream really charges. Its output is never seen, so this is a floor.
+
 ## Official price and savings snapshots
 
 For every request the gateway computes `RequestLog.officialPrice`: the same usage priced at official prices

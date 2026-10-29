@@ -12,6 +12,7 @@ import { classifyStatus, modelCooldownLeftSec, providerNoCooldown, recordKeyFail
 import { checkRpm, checkTpm, providerKeyDailyCost } from "./limits";
 import { fileBytes } from "./multipart";
 import type { StreamProcessor } from "./processor";
+import { computeAmount } from "./pricing";
 import { streamExceedsHold } from "./reserve";
 import { rememberResponse } from "./responses-sticky";
 import { buildCandidates, type Candidate, type RoutePlan } from "./select";
@@ -37,7 +38,7 @@ import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPoo
 import { StreamSession, type FinishInfo } from "./stream";
 import { holdCommitAfterMs, isPreambleEvent } from "./stream-start";
 import { canCollect, SseCollector } from "./stream-collect";
-import { providerSettings, unbilledCancels, upstreamOp } from "./providers/adapters";
+import { billsDroppedStreams, providerSettings, unbilledCancels, upstreamOp } from "./providers/adapters";
 import { SseParser } from "./sse";
 import { GeminiJsonArrayStream } from "./stream-gemini-array";
 import { AnthropicStreamPassthrough, GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "./stream-processors";
@@ -191,8 +192,10 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
         const win = badGatewayWindow(pick.cand.route.provider, settings);
         // honour the upstream's retry-after when it gave one (never past the window), else the provider's pace
         const waitMs = Math.max(1, f.retryAfterSec ?? win.everySec) * 1000;
-        if (BAD_GATEWAY.has(f.status) && win.totalSec > 0 && Date.now() - ctx.startedAt + waitMs <= win.totalSec * 1000) {
-          ctx.notes.push(`upstream ${f.status}: retrying in ${Math.round(waitMs / 1000)}s (attempt ${attemptsMade + 1})`);
+        // transient: a 502 / 503 / 504 / 52x answer, or a connection that failed before any output (status 0)
+        const transient = BAD_GATEWAY.has(f.status) || (f.status === 0 && (f.fk === "network" || f.fk === "timeout"));
+        if (transient && win.totalSec > 0 && Date.now() - ctx.startedAt + waitMs <= win.totalSec * 1000) {
+          ctx.notes.push(`upstream ${f.status || "connection failed"}: retrying in ${Math.round(waitMs / 1000)}s (attempt ${attemptsMade + 1})`);
           await sleep(waitMs, signal);
           // failures are kept: the next round starts with the key that failed least, so several keys take turns
           continue;
@@ -206,6 +209,21 @@ export async function execute(ctx: Ctx, routes: RoutePlan[], opts: ExecOptions =
       if (queueStart !== null && !queueRecorded) ctx.queueMs = Date.now() - queueStart;
     }
   }
+}
+
+/**
+ * An attempt that ended before any output reached us, on an upstream that bills such streams anyway (it keeps
+ * generating): add what it reported so far (prompt, cache reads / writes) at the route's cost to our recorded cost.
+ * Its output is never seen, so this is a floor. The customer is not charged for it.
+ */
+function noteDroppedCost(ctx: Ctx, cand: Candidate, processor: StreamProcessor, why: string): void {
+  if (!billsDroppedStreams(cand.route.provider) || !ctx.model) return;
+  const u = processor.usage();
+  if (!u || !(u.inputTokens > 0)) return;
+  const c = computeAmount(u, cand.route.cost, { longContext: ctx.model.longContext });
+  if (!c.gt(0)) return;
+  ctx.droppedCost = ctx.droppedCost.plus(c);
+  ctx.notes.push(`dropped attempt (${why}) billed upstream: our cost +${c.toFixed(6)} for its ${u.inputTokens} input tokens (its output is not seen)`);
 }
 
 /** Upstream statuses retried for a while (badGatewayRetrySec) before they reach the client: gateway errors, and the
@@ -863,6 +881,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
     h.abort();
     h.dispose();
     if (clientGone) throw new GatewayError("client_closed");
+    noteDroppedCost(ctx, cand, processor, "connection broke before any output");
     if (reason instanceof UpstreamTimeoutError) return fail("timeout", 0, "timed out waiting for the first stream event");
     return fail("network", 0, `stream failed before first event: ${describeNetworkError(err)}`);
   }
@@ -889,6 +908,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   if (session.isEmpty()) {
     session.discard();
     h.dispose();
+    noteDroppedCost(ctx, cand, processor, "closed before any output");
     return fail("server", 200, "upstream closed the stream before producing any output");
   }
 

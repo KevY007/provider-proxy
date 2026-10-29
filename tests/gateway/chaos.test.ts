@@ -43,6 +43,8 @@ interface Fmt {
 
 const bearer = (key: string) => ({ authorization: `Bearer ${key}`, "content-type": "application/json" });
 const anth = (key: string) => ({ "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" });
+// these tests check the immediate failover and the error the client gets: no long retry window for transient failures
+const NO_WINDOW = { badGatewayRetrySec: 0 };
 const goog = (key: string) => ({ "x-goog-api-key": key, "content-type": "application/json" });
 
 const FORMATS: Fmt[] = [
@@ -219,9 +221,9 @@ describe.skipIf(!dbOk)("connection fidelity (real sockets)", () => {
     const u = await h.makeUser("main", { balance: "100" });
     userId = u.id;
     apiKey = (await h.makeKey("main", u.id, { maxConcurrency: 500 })).key;
-    const oa = await h.makeProvider("oa", { formats: ["openai_chat", "openai_responses", "openai_images", "openai_files"], keys: [{ s: "oa1" }, { s: "oa2" }] });
-    const an = await h.makeProvider("an", { formats: ["anthropic_messages"], authStyle: "X_API_KEY", baseUrl: h.base, keys: [{ s: "an1" }, { s: "an2" }] });
-    const ge = await h.makeProvider("ge", { formats: ["gemini"], baseUrl: h.base, keys: [{ s: "ge1" }, { s: "ge2" }] });
+    const oa = await h.makeProvider("oa", { formats: ["openai_chat", "openai_responses", "openai_images", "openai_files"], settings: NO_WINDOW, keys: [{ s: "oa1" }, { s: "oa2" }] });
+    const an = await h.makeProvider("an", { formats: ["anthropic_messages"], authStyle: "X_API_KEY", baseUrl: h.base, settings: NO_WINDOW, keys: [{ s: "an1" }, { s: "an2" }] });
+    const ge = await h.makeProvider("ge", { formats: ["gemini"], baseUrl: h.base, settings: NO_WINDOW, keys: [{ s: "ge1" }, { s: "ge2" }] });
     providerKeys.oa = oa.keys;
     providerKeys.an = an.keys;
     providerKeys.ge = ge.keys;
