@@ -60,7 +60,7 @@ export const ERROR_DEFS: Record<GatewayErrorCode, ErrorDef> = {
   no_capacity: { status: 429, openaiType: "rate_limit_error", kind: "gateway", message: "All capacity for this model is currently busy. Please retry shortly." },
   no_available_provider: { status: 503, openaiType: "server_error", kind: "gateway", message: "This model is temporarily unavailable. Please retry shortly." },
   // our upstream account ran out of credit: not the customer's balance, so 503 (retryable) rather than 402
-  upstream_insufficient_balance: { status: 503, openaiType: "server_error", kind: "gateway", message: "This model is temporarily out of capacity. Please retry later." },
+  upstream_insufficient_balance: { status: 503, openaiType: "server_error", kind: "gateway", message: "The upstream model is out of capacity / funding. Please retry later." },
   upstream_timeout: { status: 504, openaiType: "server_error", kind: "upstream", message: "The model took too long to respond." },
   upstream_error: { status: 502, openaiType: "server_error", kind: "upstream", message: "The model returned an error." },
   upstream_overloaded: { status: 529, openaiType: "server_error", kind: "upstream", message: "The model is overloaded. Please retry shortly." },

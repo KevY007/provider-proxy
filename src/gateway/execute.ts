@@ -258,7 +258,8 @@ function noProviderError(snap: ConfigSnapshot, routes: RoutePlan[]): GatewayErro
   const keys = [...new Map(routes.flatMap((rp) => snap.keysByProvider.get(rp.route.providerId) ?? []).map((k) => [k.id, k])).values()];
   const cooling = keys.map((k) => ({ k, st: effectiveKeyState(k) })).filter(({ st }) => st.status !== "DISABLED" && st.status !== "INVALID" && st.status !== "EXHAUSTED");
   const lastKind = (k: KeyRec) => {
-    const m = /^(\d+): ([\s\S]*)$/.exec(getKeyRuntime(k.id)?.lastError ?? "");
+    // this instance's own record first, else the stored one (a key paused by another instance or before a restart)
+    const m = /^(\d+): ([\s\S]*)$/.exec(getKeyRuntime(k.id)?.lastError ?? k.lastError ?? "");
     return m ? classifyStatus(Number(m[1]), m[2]) : null;
   };
   let soonest = Infinity;

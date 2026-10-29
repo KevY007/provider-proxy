@@ -835,7 +835,7 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
       expect(res.status).toBe(503);
       const body = await res.json();
       expect(body.error.code).toBe("upstream_insufficient_balance");
-      expect(body.error.message).toMatch(/out of capacity/);
+      expect(body.error.message).toMatch(/out of capacity \/ funding/);
     }
   });
 
