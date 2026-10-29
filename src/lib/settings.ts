@@ -55,7 +55,7 @@ export const SETTING_DEFS = {
   // --- gateway ---
   logBodies: def("boolean", "gateway", "Log request/response bodies", "Store full request and response bodies in request logs (privacy + storage impact).", z.boolean(), false),
   maxAttempts: def("number", "gateway", "Max upstream attempts", "How many keys/routes to try before failing a request.", z.number().int().min(1).max(10), 3),
-  badGatewayRetrySec: def("number", "gateway", "Retry 502/503/504/52x for (s)", "When the upstream answers 502, 503, 504 or a Cloudflare 520-524 (and nothing has been sent to the client yet), keep retrying every `badGatewayRetryEverySec` for up to this long before giving up, instead of failing after the normal attempts. 0 = off.", z.number().int().min(0).max(600), 90),
+  badGatewayRetrySec: def("number", "gateway", "Retry 502/503/504/52x for (s)", "When the upstream answers 502, 503, 504, a Cloudflare 520-524 or the connection fails (and nothing has been sent to the client yet), keep retrying every `badGatewayRetryEverySec` for up to this long before giving up, instead of failing after the normal attempts. 0 = off.", z.number().int().min(0).max(600), 180),
   badGatewayRetryEverySec: def("number", "gateway", "Retry 502/503/504/52x every (s)", "Wait between those retries.", z.number().int().min(1).max(120), 30),
   keyCooldownSeconds: def("number", "gateway", "Key cooldown (s)", "Default cooldown applied to an upstream key after a 429/repeated failures.", z.number().int().min(1).max(86400), 60),
   failuresBeforeCooldown: def("number", "gateway", "Failures before cooldown", "Consecutive 5xx/timeouts before a key is put on cooldown.", z.number().int().min(1).max(100), 3),

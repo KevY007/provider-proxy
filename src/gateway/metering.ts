@@ -51,6 +51,8 @@ export interface Outcome {
   billable?: boolean;
   /** The upstream does not bill this request (e.g. OpenAI after a client cancel): the customer price stands, our cost is 0. */
   upstreamUnbilled?: boolean;
+  /** Upstream cost of dropped earlier attempts the upstream billed (our cost only; the customer never pays for them). */
+  droppedCost?: Decimal;
   /** Batch API result: the upstream batch id. Token prices are discounted by Model.batchDiscountPct / ModelRoute.batchCostDiscountPct. */
   batchId?: string | null;
   /** Who the row belongs to when there is no request (cron sweep of ended batches). */
@@ -87,6 +89,7 @@ export function recordOutcome(o: Outcome): Charge {
     charge = { price: b.price, cost: b.cost, profit: b.profit, official: referenceAmount(b.price, b.official, o.referenceSavingsPct) };
     if (o.upstreamUnbilled) charge = { ...charge, cost: ZERO, profit: b.price };
   }
+  if (o.droppedCost && o.droppedCost.gt(0)) charge = { ...charge, cost: charge.cost.plus(o.droppedCost), profit: charge.profit.minus(o.droppedCost) };
 
   const u = usage;
   const userId = o.auth?.user.id ?? o.owner?.userId ?? null;

@@ -66,6 +66,8 @@ export interface Ctx {
   inputEstimate: number;
   /** Credit reservation + output clamp for this request (PLAN 9c); null before reservation / for lookups. */
   funds: FundsState | null;
+  /** Upstream cost of earlier attempts the upstream billed although nothing reached us (billsDroppedStreams): added to our cost, never to the price. */
+  droppedCost: Decimal;
 }
 
 export function newCtx(req: Request, requestId: string, ip: string): Ctx {
@@ -105,6 +107,7 @@ export function newCtx(req: Request, requestId: string, ip: string): Ctx {
     notes: [],
     inputEstimate: 0,
     funds: null,
+    droppedCost: ZERO,
   };
 }
 
@@ -228,6 +231,7 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
     usage: null as Usage | null,
     ttftMs: null,
     queueMs: ctx.queueMs,
+    droppedCost: ctx.droppedCost,
     attempts: ctx.attempts,
     logBodies: ctx.logBodies,
     requestBody: ctx.logBodies ? (ctx.body as Json) : undefined,

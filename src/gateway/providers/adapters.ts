@@ -331,3 +331,13 @@ export function unbilledCancels(p: { preset: string; settings: JsonObject }): bo
   const v = p.settings.unbilledCancels;
   return typeof v === "boolean" ? v : p.preset === "openai";
 }
+
+/**
+ * The upstream bills a stream it closes before any output reaches us (it keeps generating on its side), so an attempt
+ * the gateway retries is paid twice upstream. Observed on the relay preset; `settings.billsDroppedStreams` overrides it
+ * for any provider. The customer never pays for such an attempt; it is added to our recorded cost (see execute.ts).
+ */
+export function billsDroppedStreams(p: { preset: string; settings: JsonObject }): boolean {
+  const v = p.settings.billsDroppedStreams;
+  return typeof v === "boolean" ? v : p.preset === "codex-everywhere";
+}

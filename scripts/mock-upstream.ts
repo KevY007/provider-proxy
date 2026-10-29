@@ -1477,6 +1477,13 @@ async function handleAnthropicMessages(ctx: Ctx, b: Obj): Promise<void> {
   const startUsage: Obj = { ...usage, output_tokens: 1, server_tool_use: { web_search_requests: 0 } };
   delete startUsage.output_tokens_details;
   frames.push(eventFrame("message_start", { type: "message_start", message: { ...message, content: [], stop_reason: null, usage: startUsage } }));
+  // "dropstart" credentials: every odd streamed request sends message_start (with its usage) and then closes, the way a
+  // relay drops a stream before any output (and still bills it)
+  if (ctx.cred.includes("dropstart")) {
+    const n = (flakyStarts.get(ctx.cred) ?? 0) + 1;
+    flakyStarts.set(ctx.cred, n);
+    if (n % 2 === 1) return emitFrames(ctx, frames, delay, SSE);
+  }
   blocks.forEach((blk, index) => {
     const start = (cb: Obj) => frames.push(eventFrame("content_block_start", { type: "content_block_start", index, content_block: cb }));
     const delta = (d: Obj) => frames.push(eventFrame("content_block_delta", { type: "content_block_delta", index, delta: d }));

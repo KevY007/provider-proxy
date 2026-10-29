@@ -1,3 +1,4 @@
+import { LocalTime } from "@/components/customer/local-time";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { AlertTriangle, CheckCircle2, CircleHelp, XCircle } from "lucide-react";
@@ -73,7 +74,7 @@ export default async function StatusPage() {
         <Icon className={cn("size-6 shrink-0", TEXT_COLOR[snap.overall])} />
         <div className="min-w-0 flex-1 basis-48">
           <p className="font-medium">{banner}</p>
-          <p className="text-xs text-muted-foreground">Updated {new Date(snap.generatedAt).toISOString().replace("T", " ").slice(0, 19)} UTC</p>
+          <p className="text-xs text-muted-foreground">Updated <LocalTime iso={new Date(snap.generatedAt).toISOString()} mode="full" /></p>
         </div>
         <div className="w-full pl-9 sm:w-auto sm:pl-0">
           <AutoRefresh seconds={30} />

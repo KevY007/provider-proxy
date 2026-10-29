@@ -227,7 +227,8 @@ describe.skipIf(!dbOk)("database-backed regressions", () => {
     expect(log.status).toBe("CANCELLED");
     expect(log.outputTokens).toBeGreaterThan(300);
     expect(Number(log.price)).toBeGreaterThan((300 * 15) / 1e6);
-  });
+    // ~400 frames 2 ms apart: well under 5 s on Linux, but Windows timers fire every ~16 ms (6+ s)
+  }, 30_000);
 
   it("G6: another customer's previous_response_id answers 404 (it is never continued)", async () => {
     await rememberResponse(`resp_bob_${h.sfx}`, { userId: bob.userId, providerId: oaProvider, providerKeyId: "x", routeId: "x", modelId: "x" });
