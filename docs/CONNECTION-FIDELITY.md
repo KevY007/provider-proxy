@@ -73,7 +73,7 @@ provider settings and delete their fixtures.
 
 ## Deliberate deviations from "mirror everything" (PLAN 9d.7) and why
 
-1. Upstream 401 / 402 / 403 are returned as 503 `no_available_provider`: they are OUR account problem; a mirrored 401 would make SDKs blame the customer's key. The real code stays in `RequestLog.errorCode`.
+1. Upstream 401 / 403 are returned as 503 `no_available_provider`, and an upstream account out of credit (402, or a 403 about balance) as 503 `upstream_insufficient_balance`: they are OUR account problem; a mirrored 401 would make SDKs blame the customer's key. The real code stays in `RequestLog.errorCode`.
 2. Failures with no upstream answer (connect error, reset before headers, headers timeout) have no status to mirror -> native-shaped 502 / 504 (every SDK retries these like a network error).
 3. A stream is complete only when the upstream's terminal event arrived; a missing terminal (RST, FIN, idle cutoff) drops the client connection instead of faking an end. Heartbeats exist only on SSE, only after the response started or the upstream stayed silent for one interval.
 4. JSON bodies need about 3x their size in memory (parsed once for validation, funds estimate and usage fallback). Multipart does not. Size the container memory for the largest JSON body you accept.

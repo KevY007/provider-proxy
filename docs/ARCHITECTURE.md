@@ -68,7 +68,9 @@ flowchart TB
 8. **Funds hold** (`reserve.ts`, `holds.ts`). The worst-case price is reserved before any upstream call; see
    [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md#funds-holds). When funds are short the answer is 402
    `insufficient_balance` and the upstream is never contacted. When the client sent no output limit, an affordable
-   one is written into the upstream request.
+   one is written into the upstream request. A customer with **Free when the balance runs out** (`User.freeWhenEmpty`)
+   gets a large headroom (`FREE_WHEN_EMPTY_HEADROOM`), so they are never refused, clamped or cut off for funds; key
+   spend limits and monthly limits still apply.
 9. **Routing** (`select.ts`). The eligible routes are: route enabled, provider ACTIVE, provider tags matching the
    pool's `providerTags`, route `groupSlugs` including the pool, and the provider speaking the inbound format natively
    or through a translator. Order: route priority (desc), then native before translated, then provider priority
@@ -80,7 +82,13 @@ flowchart TB
     for up to `queueTimeoutMs` (20 s) and then gets 429 `no_capacity`. Upstream 401 / 402 / 403 / 408 / 429 / 5xx /
     3xx, network errors and timeouts are recorded on the key (`keyhealth.ts`) and the next candidate is tried, up to
     `maxAttempts` (3), as long as nothing has been committed to the client. 4xx validation errors are passed through
-    without failover.
+    without failover. On top of that, a **transient** failure (an upstream 502 / 503 / 504 or Cloudflare 520-524, or
+    a connection that failed or timed out before any output) is retried every `badGatewayRetryEverySec` (30 s, or the
+    upstream's `retry-after`), the provider's keys taking turns, for up to `badGatewayRetrySec` (180 s, 0 = off) after
+    the request arrived, before the client gets an error. A provider can override both in its settings. An attempt
+    dropped before any output on an upstream that still bills it (`billsDroppedStreams`) adds its reported usage, at
+    route cost, to the request's our cost (see
+    [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md#retried-attempts-the-upstream-still-bills)).
 11. **Response** (`stream.ts`, `stream-processors.ts`, `shape.ts`). Non-stream: usage is parsed, the body is
     translated back if needed, and the upstream model name is masked. Stream: the response is committed on the first
     upstream output event (or after one heartbeat interval of silence). Events are translated and masked, usage and
@@ -88,16 +96,28 @@ flowchart TB
     default 15). A stream is complete only when the upstream's terminal event arrived. If the upstream resets or
     closes early, the client connection is dropped the same way and no synthetic `[DONE]` is sent. When a stream
     reaches its funds hold, the upstream is aborted and the stream ends with a native `insufficient_balance` error
-    event.
+    event (never for a free-when-empty customer).
 12. **Metering** (`metering.ts`, `pricing.ts`). Price, cost, profit and official price are computed from the usage
     (or a `js-tiktoken` estimate, `usageEstimated=true`). The entry is handed to the meter writer, the hold is
     settled, and the slots are released. A client abort gives `CANCELLED` (499) with the partial usage billed.
 
 Errors are rendered in the inbound format (OpenAI `{"error":{...}}`, Anthropic `{"type":"error",...}`, Gemini
 `{"error":{"code","message","status"}}`). Upstream errors are mirrored after failover is exhausted, with the last
-upstream's status, `retry-after`, rate-limit headers and native error document, scrubbed of provider identity. There
-are two deliberate exceptions. Upstream 401/402/403 become 503 `no_available_provider`, because they are our account
-problems. Failures with no upstream answer become 502/504. The response header allow-list is in `headers.ts`.
+upstream's status, `retry-after`, rate-limit headers and native error document, scrubbed of provider identity. The
+deliberate exceptions are our own account problems and failures without an upstream answer (`failure.ts`):
+- An upstream account out of credit (402, or a 403 about balance / quota) puts the key on a 10-minute cooldown and
+  becomes 503 `upstream_insufficient_balance` ("The upstream model is out of capacity / funding. Please retry later.").
+- Other upstream 401 / 403 (a bad key, or a model the account may not use) become 503 `no_available_provider`.
+- Failures with no upstream answer become 502 / 504.
+- When no key can be tried at all, the answer depends on why the keys are paused (`noProviderError`): every key
+  cooling down after a 429 gives 429 `rate_limited`, every key paused for credit gives 503
+  `upstream_insufficient_balance`, anything else 503 `no_available_provider`, each with `retry-after` set to the
+  soonest live cooldown. The reason is read from the key's stored `lastError` when this instance has none, so it is
+  known for a key paused by another instance or before a restart.
+
+The response header allow-list is in `headers.ts`. Billable calls also carry `x-pool` and `x-price-multiplier`: the
+pool's price as a share of the official list price (0.3 = 30% of official), never a cost-based pool's own factor
+(`listShare()` in `context.ts`).
 
 ### Transport rules (summary of PLAN 9d)
 
@@ -115,7 +135,9 @@ problems. Failures with no upstream answer become 502/504. The response header a
   the response is committed and heartbeats keep it alive.
 - Provider `settings.streamUpstream: true` sends non-streaming chat / responses / messages requests upstream as streams
   and assembles the reply into the provider's JSON (`stream-collect.ts`); `settings.noCooldown: true` keeps transient
-  failures from cooling the provider's keys down.
+  failures from cooling the provider's keys down; `settings.badGatewayRetrySec` / `badGatewayRetryEverySec` override
+  the transient-failure retry window; `settings.billsDroppedStreams` (default on for the relay preset) marks an
+  upstream that bills a stream it closed before any output (`adapters.ts`).
 - Client disconnect aborts the upstream request immediately.
 - URLs that come back from an upstream (fal / Replicate result files, video CDN links, redirects) are fetched only
   when they resolve to public addresses (`ssrf.ts`). The provider's own host is the exception, so self-hosted and
@@ -206,6 +228,9 @@ upkeep's `sweepVideoJobs()`) that sees `failed` refunds the charge exactly once 
 - On SIGTERM or exit the buffer is flushed (up to 8 s) and the rest is spilled to the dead-letter file.
 - After a flush the writer settles the holds (`holdsFlushed`), publishes the new balance, and calls
   `triggerAutoRecharge` / `maybeSendLowBalanceAlert`.
+- For a free-when-empty customer only what the balance still covers is debited (never below 0). The rest is written
+  to `RequestLog.waived`, newest requests first (`waiveUncovered`); `price` stays the full amount, and the key's
+  `spent` counts the full price so key spend caps keep working.
 
 ## Holds
 
@@ -228,10 +253,14 @@ semantics are identical. Admins see live usage at `GET /api/admin/slots` (provid
 Cold by default: `upkeep` (health from traffic, video/batch sweeps, dead-letter replay, history pruning) and `billing`
 (auto-recharge, postpaid, stale payments) run as a side effect of activity (`noteActivity()` from the gateway after
 authentication and from the admin layout), throttled to every 5 minutes / hourly. `probes` (uptime pings) run only
-on a timer and only with `activeHealthChecks`. With `backgroundJobs` / `activeHealthChecks` on, an in-process timer
-(armed at start-up by `src/instrumentation.ts` and whenever settings change) runs them on the admin's intervals. The
-`/api/cron/health` and `/api/cron/billing` routes (`Authorization: Bearer $CRON_SECRET`) run the same jobs for an
-external scheduler. Runs are claimed atomically in `JobRun`.
+on a timer and only with `activeHealthChecks`. `balances` reads the remaining balance of upstream accounts that
+publish one every `upstreamBalanceIntervalMin` (60) and emails the active admins once when one drops below
+`upstreamBalanceLowUsd` (again only after it was back above). `priceSync` re-reads the pricing pages of providers with
+automatic AI price sync, each every `priceSyncIntervalMin` (360). With `backgroundJobs` / `activeHealthChecks` on, an
+in-process timer (armed at start-up by `src/instrumentation.ts` and whenever settings change) runs them on the admin's
+intervals. The `/api/cron/health` and `/api/cron/billing` routes (`Authorization: Bearer $CRON_SECRET`) run the same
+jobs for an external scheduler. Runs are claimed atomically in `JobRun`, once per wall-clock slot of the job's
+interval (`slotStart()`: 60 min = every full hour), so jobs with the same interval run in the same tick.
 
 ## Other HTTP endpoints
 

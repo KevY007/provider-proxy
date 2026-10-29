@@ -209,7 +209,7 @@ export function ModelWorkspace({
               />
               {costRoute ? (
                 <p className="text-xs text-muted-foreground">
-                  Our cost comes from the primary route (highest priority, enabled): <span className="font-mono">{costRoute.upstreamModel}</span> on {costRoute.providerName}.
+                  Our cost comes from the primary route (highest priority, enabled, on an active provider; each pool below uses the route it serves the model from): <span className="font-mono">{costRoute.upstreamModel}</span> on {costRoute.providerName}.
                 </p>
               ) : (
                 <p className="rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">No enabled route yet, so margins can&apos;t be calculated. Add a route below.</p>

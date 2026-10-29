@@ -257,7 +257,9 @@ export function rateLimits() {
       <H2>Queueing under load</H2>
       <P>
         When capacity is temporarily saturated we hold your request in a short queue (up to about 20 seconds) instead of failing it. If capacity is still not available you get{" "}
-        <C>429 no_capacity</C> with a <C>retry-after</C> hint. Temporary 429s and 5xx errors are retried transparently before they ever reach you.
+        <C>429 no_capacity</C> with a <C>retry-after</C> hint. Temporary 429s and 5xx errors are retried transparently before they ever reach you: a 502, 503 or 504,
+        or a connection that fails before any output, is retried for up to about 3 minutes. An error that does reach you has been failing for a while, so back off rather than
+        retrying in a tight loop.
       </P>
       <H2>Handling 429s</H2>
       <CodeBlock
@@ -275,10 +277,10 @@ for attempt in range(6):
   );
 }
 
-export function billing() {
+export function billing(ctx: DocCtx) {
   return (
     <>
-      <P>{`Billing is prepaid pay-as-you-go: add balance, and each request deducts its exact cost. There is no subscription or minimum spend.`}</P>
+      <P>{`Billing is prepaid pay-as-you-go: each request deducts its exact cost from your balance. There is no subscription or minimum spend.`}</P>
       <H2>How a request is priced</H2>
       <CodeBlock
         lang="text"
@@ -295,12 +297,19 @@ export function billing() {
         <li>Failed requests (4xx/5xx) that produced no usage are not charged.</li>
       </UL>
       <H2>Adding balance</H2>
-      <UL>
-        <li>Top up any amount by card from the <Link className={A} href="/dashboard/billing">Billing</Link> page.</li>
-        <li>Enable <strong>auto-recharge</strong> to top up automatically when your balance drops below a threshold.</li>
-        <li>Redeem codes are credited instantly.</li>
-        <li>When the balance is exhausted, requests fail with <C>402 insufficient_balance</C> until you add funds.</li>
-      </UL>
+      {ctx.customerBilling ? (
+        <UL>
+          <li>Top up any amount by card from the <Link className={A} href="/dashboard/billing">Billing</Link> page.</li>
+          <li>Enable <strong>auto-recharge</strong> to top up automatically when your balance drops below a threshold.</li>
+          <li>Redeem codes are credited instantly.</li>
+          <li>When the balance is exhausted, requests fail with <C>402 insufficient_balance</C> until you add funds.</li>
+        </UL>
+      ) : (
+        <UL>
+          <li>Your balance is managed by your administrator: ask them to top it up. You can see it at any time on your dashboard.</li>
+          <li>When the balance is exhausted, requests fail with <C>402 insufficient_balance</C> until it is topped up.</li>
+        </UL>
+      )}
       <H2>Spend controls</H2>
       <P>Set a lifetime <strong>spend limit per key</strong> and a monthly spend limit for your account to cap exposure. Reaching a limit returns <C>402 spend_limit_reached</C>.</P>
       <P>See your spend by model, key and endpoint on the Usage page, and every request in Logs.</P>
@@ -320,7 +329,7 @@ export function errors() {
       <CodeBlock
         lang="json"
         title="OpenAI-compatible endpoints"
-        code={`{ "error": { "message": "Insufficient balance", "type": "insufficient_balance", "code": "insufficient_balance", "param": null } }`}
+        code={`{ "error": { "message": "Insufficient balance. Add credit to continue.", "type": "billing_error", "code": "insufficient_balance", "param": null } }`}
       />
       <CodeBlock
         lang="json"
@@ -345,7 +354,9 @@ export function errors() {
         ])}
       />
       <Callout kind="tip">
-        Retry <C>429</C>, <C>502</C>, <C>503</C> and <C>504</C> with exponential backoff and honour <C>retry-after</C>. Do not retry <C>400</C>, <C>401</C>, <C>402</C>, <C>403</C> or <C>404</C> without changing something first.
+        Retry <C>429</C>, <C>500</C>, <C>502</C>, <C>503</C> and <C>504</C> with exponential backoff and honour <C>retry-after</C>; after a few failed retries of a <C>503</C>, tell the user the
+        service is temporarily unavailable instead of retrying forever. Do not retry <C>400</C>, <C>401</C>, <C>402</C>, <C>403</C> or <C>404</C> without changing something first.
+        Every response carries an <C>x-request-id</C>: include it when contacting support.
       </Callout>
     </>
   );
