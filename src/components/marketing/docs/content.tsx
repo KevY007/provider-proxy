@@ -27,7 +27,7 @@ const RENDER: Record<string, (ctx: DocCtx) => ReactNode> = {
   "openai/videos": B.videosGuide,
   batches: B.batchesGuide,
   "rate-limits": () => B.rateLimits(),
-  billing: () => B.billing(),
+  billing: (ctx) => B.billing(ctx),
   "pricing-api": B.pricingApi,
   errors: () => B.errors(),
   "clients/codex-cli": B.codexCli,

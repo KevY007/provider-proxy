@@ -35,7 +35,7 @@ DeepSeek, Mistral, Together, Fireworks, OpenRouter, fal.ai, Replicate or Custom
 | Timeout | Headers timeout per attempt, from the end of the upload. Default 600000 ms. |
 | Max concurrency | Slots across all of the provider's keys (blank = no provider cap) |
 | Extra headers (JSON) | Sent on every upstream request. Credential-like values (`authorization`, `*key*`, `*token*`, `*secret*`, ...) are stored encrypted and shown as `[encrypted]`; leave that value as it is to keep it |
-| Settings (JSON) | `anthropicVersion`, `anthropicBaseUrl`, `geminiBaseUrl`, `openaiBaseUrl`, `azureApiVersion`, `stripFields: [...]`, `forceStreamUsage` (default true), `http2: true` (opt-in upstream HTTP/2, https only), `idleTimeoutSec` (cut a silent stream), `noCooldown: true` (transient 5xx / network / timeout failures never put this provider's keys on cooldown: for a single-key reseller a cooldown only turns flaky answers into "no provider available" for everyone; 429 / 402 / bad keys still apply), `streamUpstream: true` (non-streaming chat / responses / messages requests are sent upstream as streams and the reply is assembled back into the normal JSON: keeps long generations alive through relays behind a proxy read timeout, e.g. Cloudflare's 120 s, and any failure before the end is retried invisibly), `pricingUrl` (where the provider publishes its prices, see below), fal: `falMode` `sync`/`queue`/`auto`, `queueBaseUrl`, `falSyncTimeoutMs`; Replicate: `replicateWait` (seconds, opt in to `Prefer: wait`) |
+| Settings (JSON) | `anthropicVersion`, `anthropicBaseUrl`, `geminiBaseUrl`, `openaiBaseUrl`, `azureApiVersion`, `stripFields: [...]`, `forceStreamUsage` (default true), `http2: true` (opt-in upstream HTTP/2, https only), `idleTimeoutSec` (cut a silent stream), `noCooldown: true` (transient 5xx / network / timeout failures never put this provider's keys on cooldown: for a single-key reseller a cooldown only turns flaky answers into "no provider available" for everyone; 429 / 402 / bad keys still apply), `streamUpstream: true` (non-streaming chat / responses / messages requests are sent upstream as streams and the reply is assembled back into the normal JSON: keeps long generations alive through relays behind a proxy read timeout, e.g. Cloudflare's 120 s, and any failure before the end is retried invisibly), `badGatewayRetrySec` / `badGatewayRetryEverySec` (this provider's own retry window for 502 / 503 / 504 / 52x and connection failures, instead of the global settings; 0 = off), `billsDroppedStreams` (the upstream bills a stream it closed before any output, so such a retried attempt's reported usage is added to our cost, never to the customer price; default on for the relay preset), `pricingUrl` (where the provider publishes its prices, see below), fal: `falMode` `sync`/`queue`/`auto`, `queueBaseUrl`, `falSyncTimeoutMs`; Replicate: `replicateWait` (seconds, opt in to `Prefer: wait`) |
 
 **Test connection / Fetch pricing.** The provider form (new or saved) has two buttons that use the values currently in
 the form, so a provider can be checked before you save it. Type an API key just for the test (never stored), or leave
@@ -66,9 +66,19 @@ Secrets are encrypted with `ENCRYPTION_KEY`. Only the last 4 characters are ever
 | Extra (JSON) | Org id, project id, Azure deployment map, ... |
 | Status | ACTIVE, DISABLED, COOLDOWN (automatic, until `cooldownUntil`), INVALID (automatic after 2 consecutive 401s, or 403s whose message says the key itself is bad; a 403 about balance / quota is a 10-minute COOLDOWN, and any other 403 (a model or endpoint this key may not use, e.g. a reseller group without Claude) fails over without touching the key's status), EXHAUSTED |
 
-Automatic key health: a 429 puts the key in cooldown until `retry-after` (or `keyCooldownSeconds`, 60). A 402 means
-the account is out of credit and gives a 10 min cooldown. 5xx and timeouts count toward `failuresBeforeCooldown` (3).
-A successful request or health probe resets the counters and revives INVALID keys. Actions available: **Test** (one
+Automatic key health: a 429 puts the key in cooldown until `retry-after` (or `keyCooldownSeconds`, 60). A 402 (or a
+403 about balance / quota) means the account is out of credit and gives a 10 min cooldown. 5xx and timeouts count
+toward `failuresBeforeCooldown` (3). A successful request or health probe resets the counters and revives INVALID
+keys. When no key can take a request, customers are told why: every key cooling down after a 429 gives 429
+`rate_limited`, every key out of credit gives 503 `upstream_insufficient_balance` ("The upstream model is out of
+capacity / funding. Please retry later."), and anything else (bad keys, disabled keys) 503 `no_available_provider`,
+each with `retry-after` set to the soonest cooldown. The reason is the key's last error, stored on the key, so every
+instance gives the same answer.
+
+Transient upstream failures (502, 503, 504, Cloudflare 520-524, or a connection that failed or timed out before any
+output) are retried every `badGatewayRetryEverySec` (30 s, or the upstream's `retry-after`), the provider's keys taking
+turns, for up to `badGatewayRetrySec` (180 s) after the request arrived, as long as nothing has reached the client.
+This comes on top of the normal `maxAttempts` failover. Actions available: **Test** (one
 key), test all, enable/disable selected, **Reset** (clear failures and cooldown), rotate secret, delete.
 
 **Live slots.** The provider page shows "in use / max" per key and per provider (auto-refresh, `GET
@@ -151,6 +161,7 @@ A group is a pricing tier and routing pool. The seed creates `standard` 1.0x (de
 | Field | Effect |
 |---|---|
 | Price multiplier | Applied to the customer price (0.8 = 20% off, 1.2 = 20% markup) |
+| Price basis | **% of model price** (the multiplier applies to the model's customer price) or **% of upstream cost** (it applies to the cost of the route that served the request, never above the official price). Customers never see this: they see every pool as a share of the official price ("50% of official"), also in the `x-price-multiplier` header and `/api/pricing`. |
 | Provider tags | If set, only routes whose provider has one of these tags |
 | Allowed models | Empty = every public model |
 | Default | Pool for new customers and for keys/users without a pool (exactly one) |
@@ -176,8 +187,13 @@ New self-service sign-ups are switched on and off under Settings > Access > **Si
 account can always sign up). The detail page shows:
 - **Profile & controls**: status (suspend / activate), role, verify email, group (pool), price multiplier (stacks on
   the group's), billing mode (PREPAID / POSTPAID), credit limit (how far below $0 the balance may go), monthly spend
-  limit, max concurrency (across all their keys), and **Extra pools for API keys** (private pools this customer may
-  put their keys in, besides their own pool).
+  limit, max concurrency (across all their keys), **Extra pools for API keys** (private pools this customer may
+  put their keys in, besides their own pool), **Free when the balance runs out** (requests are never refused for
+  funds; the balance is charged while it lasts and never goes below 0, the rest is recorded as waived and counted as
+  a loss in analytics; key and monthly spend caps still apply; see
+  [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md#free-when-the-balance-runs-out)) and **Notification copies** (up to
+  10 extra addresses that get a BCC of balance and billing emails, never security emails; customers can set the same
+  list in their Settings).
 - **Balance**: **Add credit** with type **Promotional credit** (ledger ADJUSTMENT), **Refund** (REFUND) or
   **Correction** (ADJUSTMENT, may be negative), plus a required reason. **Grant credit** applies to many customers
   selected in the list. **Adjust balance** is also available.
@@ -199,7 +215,12 @@ account can always sign up). The detail page shows:
   id, customer price, our cost, margin, official price and savings, latency / TTFT / queue wait, every upstream
   attempt, the admin-only internal error, and request/response bodies when `logBodies` is on.
 - **`/admin/analytics`**: revenue, cost and profit by model, provider, customer and group. Error breakdown by code,
-  latency percentiles, token volume, range picker and CSV export.
+  latency percentiles, token volume, range picker and CSV export. Revenue is price minus waived (free-when-empty
+  usage) and profit is reduced by the waived amount. Token totals here, on the Overview and on the customer usage
+  pages are fresh input + output; cache reads are shown separately. Times are shown in the viewer's local timezone.
+- **Overview** (`/admin`): totals, top models and customers, upstream account balances (red below
+  `upstreamBalanceLowUsd`) and recent errors. Recent errors hide a mid-answer stream drop that the same key retried
+  successfully within a minute (it stays in Logs).
 - **`/admin/latency`**: p50 / p95 total latency, time to first token and queue wait per provider, provider key and
   model, the latest call per row ("last ping") and a latency history chart, with range / granularity / model /
   provider filters. Every number comes from real customer calls (`RequestLog`); the proxy never pings upstreams on a
@@ -207,7 +228,8 @@ account can always sign up). The detail page shows:
   real call, p50 and first token over 24 h). Customers see their own latency (p50 / p95 / first token, history, per
   model) under **Usage**, and per-model speed over the last 24 h (platform-wide, no provider names) under
   **Models & Pricing**.
-- **`/admin/billing`**: payments, ledger and redeem codes (generate, disable, delete).
+- **`/admin/billing`**: payments, ledger and redeem codes (generate, disable, delete). Ledger views have no
+  "By" (admin) column; who made a manual change is in the audit log.
 - **`/admin/audit`**: who changed what, when and from where.
 
 ## Settings (`/admin/settings`)
@@ -216,8 +238,13 @@ account can always sign up). The detail page shows:
 |---|---|
 | Access | `signupEnabled` (true), `requireEmailVerification` (true), `requireStaffTwoFactor` (true in production), `defaultGroupSlug` ("standard"). What visitors who are not signed in may see: `publicPricing` (true; off hides the home-page price table and savings, `/pricing` and `/api/pricing`), `publicModels` (true; off also hides model names, counts and vendors on the home page and status page, real model ids in the docs, and public pricing), `publicStatus` (true; off sends `/status` to sign-in). `portalOnly` (false) turns the whole public site off for an internal deployment: visitors who are not signed in get only the login page (and signup, if signups are on), `/`, `/docs`, `/pricing`, `/status` and `/api/pricing` require signing in whatever the three switches say, `/` sends signed-in staff to `/admin` and customers to `/dashboard`, and `robots.txt` disallows everything. Signed-in users always see everything, and `/api/pricing` always answers a request carrying a valid customer API key (its own prices), so price fetchers keep working while pricing is private; private pricing is sent with `cache-control: private, no-store`. |
 | Billing | `trialCredit` ($0), `requireCardForTrial` (false), `minTopup` ($5), `maxTopup` ($1000), `minBalanceToCall` ($0; reject when balance + credit limit <= this), `lowBalanceEmail` (true), `autoRechargeMaxPerDay` (3) |
-| Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never), `autoPriceSyncHours` (6), `autoPriceSyncCalls` (100) |
-| Monitoring and background work | All off by default, so an idle server does nothing. `activeHealthChecks` (false; **Uptime monitoring**: ping every upstream key with a free model-list request every `healthCheckIntervalMin` (5) minutes and record uptime + ping history even when nobody calls), `backgroundJobs` (false; run upkeep every `maintenanceIntervalMin` (5) minutes and billing hourly on a timer instead of only during activity). Timers need a running instance; see [ARCHITECTURE.md](ARCHITECTURE.md#background-jobs). |
+| Gateway | `logBodies` (false; privacy and storage impact), `maxAttempts` (3), `badGatewayRetrySec` (180; how long 502 / 503 / 504 / 52x and connection failures are retried before the client sees an error, 0 = off), `badGatewayRetryEverySec` (30), `keyCooldownSeconds` (60), `failuresBeforeCooldown` (3), `queueTimeoutMs` (20000), `defaultKeyConcurrency` (50), `defaultCustomerConcurrency` (20), `passUpstreamRateLimits` (true), `streamHeartbeatSec` (15, 0 = off), `maxRequestBodyMb` (0 = unlimited), `upstreamIdleTimeoutSec` (0 = never), `autoPriceSyncHours` (6), `autoPriceSyncCalls` (100) |
+| Monitoring and background work | Timers and pings are off by default, so an idle server does nothing. `activeHealthChecks` (false; **Uptime monitoring**: ping every upstream key with a free model-list request every `healthCheckIntervalMin` (5) minutes and record uptime + ping history even when nobody calls), `backgroundJobs` (false; run upkeep every `maintenanceIntervalMin` (5) minutes and billing hourly on a timer instead of only during activity). Also here, and run during activity or on the timer:
+`priceSyncAuto` (true; automatic AI price sync for providers with "Update automatically") every `priceSyncIntervalMin`
+(360) minutes, `upstreamBalanceIntervalMin` (60; 0 = only on Refresh) for reading upstream account balances, and
+`upstreamBalanceLowUsd` ($5; below it an account shows red on the Overview and the active admins get one email per
+drop, sent again only after it was back above). Jobs are due once per wall-clock slot of their interval, so jobs with
+the same interval run together. Timers need a running instance; see [ARCHITECTURE.md](ARCHITECTURE.md#background-jobs). |
 | General | `siteName`, `supportEmail` |
 
 **Announcements** (on the settings page) appear in the portal's announcements bell and on the customer overview.

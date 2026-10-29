@@ -110,13 +110,19 @@ Errors come in the native shape of the format you called:
 | `payload_too_large` | 413 | Only when the admin set `maxRequestBodyMb` |
 | `unsupported_media_type` | 415 | Unknown `Content-Encoding` |
 | `insufficient_balance` / `spend_limit_reached` | 402 | Not enough funds for the worst case of this request (the upstream was not called); key, monthly or account limit reached |
-| `rate_limited` | 429 | RPM/TPM or concurrency limit (`retry-after`) |
+| `rate_limited` | 429 | RPM/TPM or concurrency limit; also when every upstream key for the model is cooling down after an upstream 429 (`retry-after` = when the first one is free again) |
 | `no_capacity` | 429 | All upstream slots busy past the queue timeout |
-| `no_available_provider` | 503 | No usable upstream right now (also our upstream account's 401/402/403) |
+| `upstream_insufficient_balance` | 503 | Our upstream account is out of credit ("The upstream model is out of capacity / funding. Please retry later."), with `retry-after` |
+| `no_available_provider` | 503 | No usable upstream right now (also our upstream account's 401/403 key problems) |
 | `upstream_error` / `upstream_timeout` | 502 / 504 | Upstream unreachable or no answer |
 | upstream 408 / 429 / 5xx / 529 | as upstream | Mirrored after our own failover: same status, `retry-after`, `x-ratelimit-*` / `anthropic-ratelimit-*`, native error body (provider identity scrubbed) |
 | `client_closed` | 499 | You disconnected (logged only) |
 | `internal_error` | 500 | Our bug; quote `x-request-id` |
+
+Before you see an upstream 502 / 503 / 504 / 52x or a connection failure, the gateway keeps retrying it (every 30 s
+by default, honouring the upstream's `retry-after`, for up to 3 minutes after your request arrived, as long as nothing
+has been sent to you yet), so a slow answer can mean an upstream hiccup was ridden out. A stream that the upstream
+drops before any output is retried invisibly; you are never billed for the dropped attempt.
 
 Upstream 4xx validation errors are passed through, scrubbed. Inside a stream, upstream error events are passed
 through verbatim. If the upstream connection drops mid-stream, your connection is dropped too (no fake `[DONE]`), so
@@ -183,6 +189,12 @@ Each request records **your price** and the **official price** (what the same us
 price). Savings = official price - your price. The dashboard shows totals and savings over time, and the logs show
 Official / Charged / Saved per request. Both values are snapshots taken at request time, so later price changes never
 rewrite history. Details: [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md).
+
+Billable responses carry `x-pool` (the pool that served and billed the call) and `x-price-multiplier`: that pool's
+price as a share of the official price (0.3 = 30% of official). `GET /v1/requests/{x-request-id}` returns one of your
+calls as it was metered: pool, usage, `charged_usd` and `list_usd` (it can answer 404 with `retry-after` for a second
+or two right after the call). The `group.multiplier` / `groups[].multiplier` fields of `/api/pricing` are the same
+share of the official price.
 
 **Prices from the API** (to keep your own price tables in sync; the in-app docs page `/docs/pricing-api` has examples):
 

@@ -25,7 +25,7 @@ export async function generateMetadata({ params }: { params: Promise<Params> }):
 }
 
 async function buildCtx(): Promise<DocCtx> {
-  const [siteName, vis] = await Promise.all([getSetting("siteName"), publicVisibility()]);
+  const [siteName, vis, customerBilling] = await Promise.all([getSetting("siteName"), publicVisibility(), getSetting("customerBilling")]);
   // examples use real model ids only when the model list is visible to this visitor (generic ids otherwise)
   const models = vis.models ? await getCatalogModels().catch(() => []) : [];
   const pick = (pred: (m: (typeof models)[number]) => boolean, fallback: string) => models.find(pred)?.slug ?? fallback;
@@ -33,6 +33,7 @@ async function buildCtx(): Promise<DocCtx> {
     appUrl,
     base: `${appUrl}/v1`,
     siteName,
+    customerBilling,
     m: {
       chat: pick((m) => m.capabilities.includes("chat") && m.vendor === "openai", pick((m) => m.capabilities.includes("chat"), "gpt-6-sol")),
       claude: pick((m) => m.vendor === "anthropic" && m.capabilities.includes("chat"), "claude-sonnet-5-5"),

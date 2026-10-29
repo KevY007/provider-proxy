@@ -16,7 +16,7 @@ export const ERROR_CODES: ErrorCodeInfo[] = [
   { code: "model_not_found", http: 404, meaning: "No model with that name exists in the catalog.", fix: "Call `GET /v1/models` or see Models & Pricing for valid model ids." },
   { code: "model_not_allowed", http: 403, meaning: "The model exists but your key or pool is not allowed to use it.", fix: "Edit the key's allowed models, or switch the key to a pool that includes the model." },
   { code: "unsupported_endpoint", http: 400, meaning: "The model does not support this endpoint (for example chat on an embeddings model).", fix: "Use the right endpoint for the model's capabilities." },
-  { code: "insufficient_balance", http: 402, meaning: "Your balance is too low to run this request.", fix: "Add funds on the Billing page; consider enabling auto-recharge." },
+  { code: "insufficient_balance", http: 402, meaning: "Your balance is too low to run this request.", fix: "Top up your balance on the Billing page (or ask your administrator if they manage your balance)." },
   { code: "spend_limit_reached", http: 402, meaning: "The key's spend limit or your monthly spend limit has been reached.", fix: "Raise the limit on the key or in your billing settings." },
   { code: "rate_limited", http: 429, meaning: "Too many requests per minute/tokens, or too many concurrent requests.", fix: "Back off and retry after the `retry-after` header; lower concurrency or raise the key limits." },
   { code: "no_capacity", http: 429, meaning: "All capacity was busy for longer than the queue timeout.", fix: "Retry after the `retry-after` header. Official SDKs do this automatically." },

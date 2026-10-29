@@ -29,22 +29,26 @@ The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 - Model control: the public model slug can map to any provider and upstream model through weighted, prioritised
   routes. Routes can be limited to pools, carry param overrides and output clamps, and the upstream model name is
   masked in responses.
-- Failover across upstream keys and routes before the response is committed. Key health tracking (cooldown on 429,
-  INVALID on repeated 401/403, cooldown after repeated 5xx).
+- Failover across upstream keys and routes before the response is committed. Upstream 502/503/504/52x and
+  connection failures are retried for up to 3 minutes (configurable) before the client sees an error. Key health
+  tracking (cooldown on 429, 10-minute cooldown when the upstream account is out of credit, INVALID on repeated
+  401/403, cooldown after repeated 5xx).
 - Concurrency slots per upstream key, provider, customer key, customer and pool. Requests queue for a free upstream
   slot. Requests-per-minute and tokens-per-minute limits.
 - Faithful 1:1 proxying: client aborts abort the upstream request, upstream failures are mirrored to the client in
   native shape, nothing is compressed, request bodies have no size limit and are streamed, and idle SSE streams get
   keep-alive comments. Evidence is in [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md).
 - Funds protection: credit holds are placed before any upstream call. When funds are short the gateway answers 402
-  without contacting the upstream, and a stream stops when it reaches its hold.
+  without contacting the upstream, and a stream stops when it reaches its hold. Admins can instead mark a customer
+  "free when the balance runs out" (never refused; the uncovered part is recorded as waived).
 - Durable batched metering writer with a dead-letter file and replay.
 - Cold by default: an idle server runs no timers and contacts no provider, so a serverless container platform can
   scale it to zero. Background upkeep runs while calls are served; optional timed uptime pings and jobs (Settings > Monitoring) for 24/7 checks.
 
 **Billing**
 - Prepaid pay-as-you-go with Stripe top-ups (saved card or Checkout), auto-recharge, low-balance emails, postpaid
-  customers with a credit limit, redeem codes, trial credit, refunds and chargebacks, and a full ledger.
+  customers with a credit limit, redeem codes, trial credit, refunds and chargebacks, and a full ledger. Balance and
+  billing emails can be copied to up to 10 extra addresses per account.
 - Pricing rules per model: fixed, percent of official, markup over cost, or percent of our cost, each with an optional
   +/- adjustment. Route costs can follow the price a provider publishes through its API, refreshed during calls
   (every N calls or X hours, never on a timer). Pools (groups) and per-customer multipliers, long-context
@@ -58,7 +62,7 @@ The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
   **status** (uptime/downtime bars, ping history, background mode), settings (including the signup switch and whether
   visitors may see pricing, the model list and the status page) and the audit log.
 - Customer portal (`/dashboard`): overview with savings, API keys, usage (including their own latency), logs,
-  playground (chat and images), models and pricing (with per-model speed), billing and account settings with 2FA.
+  playground (chat and images, with a pool picker), models and pricing (with per-model speed), billing and account settings with 2FA.
 - Public site: landing page, `/pricing`, `/status` and the customer API docs at **`/docs`** (including a Pricing API
   guide). Prices are also machine-readable: `GET /v1/models` (OpenRouter-style `pricing`), `GET /v1/model/info`
   (LiteLLM) and the public `GET /api/pricing`. For an internal deployment, the admin setting "Portal only" turns the

@@ -598,7 +598,7 @@ serves `handle()` over a real socket the way Next does).
    interval the response is committed anyway so heartbeats can keep the client connection alive (`streamHeartbeatSec`, default 15, 0 = off; SSE only, never Gemini JSON-array streams).
 3. *Error mirroring.* After pool failover is exhausted, 408/429/5xx (incl. 529) are returned with the LAST upstream's real status, `retry-after`/`x-ratelimit-*`/`anthropic-ratelimit-*`/`x-should-retry`,
    its request id as `x-upstream-request-id`, and its native error document rebuilt from whitelisted fields (type/code/param/message kept, message scrubbed of provider name, host, key, upstream model).
-   Deliberate exceptions: upstream 401/402/403 are OUR account problems (a 401 would make SDKs blame the customer's key) -> 503 `no_available_provider`; failures with no upstream answer
+   Deliberate exceptions: upstream 401/402/403 are OUR account problems (a 401 would make SDKs blame the customer's key) -> 503 `no_available_provider` (an account out of credit, i.e. 402 or a 403 about balance: 503 `upstream_insufficient_balance`); failures with no upstream answer
    at all (connect error, reset before headers, headers timeout) have no status to mirror -> 502/504 native error (every SDK retries those exactly like a network error).
    The gateway's own error code stays in `RequestLog.errorCode`.
 4. *Headers.* Allow-list only (`headers.ts`): rate-limit family, `retry-after`, `x-should-retry`, request id renamed, media headers on downloads, `x-goog-upload-*` on Gemini uploads. Never forwarded:

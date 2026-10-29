@@ -61,6 +61,16 @@ The group is the key's group, else the customer's group, else the default. The s
 `pro` 0.8 and `enterprise` 0.6. The multiplier applies to **everything** the customer pays (token and flat parts).
 It never applies to our cost.
 
+A pool has a **price basis** (`Group.priceBasis`), shown to admins as "% of model price" or "% of upstream cost".
+`model` (default) applies the multiplier to the model's customer price. `cost` applies it to the cost of the route that
+served the request, never above what the same usage costs at the official price.
+
+Customers never see a cost-based pool's own factor. They see every pool as a share of the official price ("50% of
+official"; `poolListShare()` in `src/gateway/pool-prices.ts`): the multiplier for a model-basis pool, and for a
+cost-basis pool the average input-price share over its models that have an official price. That share is also what
+the `x-price-multiplier` response header carries (0.3 = 30% of official), and what `group.multiplier` /
+`groups[].multiplier` in `/api/pricing` mean.
+
 ## The formula (`computeAmount` / `priceRequest`)
 
 ```
@@ -158,6 +168,16 @@ It is also checked against the key's remaining spend limit and the customer's re
 Customers whose balance + credit limit is used up get 402 on the next request. That is how postpaid limits and
 "suspend below -creditLimit" are enforced.
 
+### Free when the balance runs out
+
+An admin switch per customer (**Free when the balance runs out** on the admin customer page, `User.freeWhenEmpty`).
+Such a customer is never refused for funds: no 402, no output clamp and no stream cutoff for balance
+(`FREE_WHEN_EMPTY_HEADROOM` in `reserve.ts`). The balance is charged while it lasts and never goes below 0; the part
+it cannot cover is recorded as `RequestLog.waived` (`waiveUncovered` in `meter-writer.ts`, newest requests first).
+The full price is still recorded and reported (response headers, logs, `/v1/requests/{id}`), and key `spent` counts
+it, so key spend caps and monthly caps still apply. Admin analytics count revenue as price - waived, and profit
+minus the waived amount (a waived request is a loss).
+
 ## Ledger
 
 Every balance movement **except** per-request usage is a `LedgerEntry` with `balanceAfter`. Each one is written in
@@ -199,6 +219,12 @@ auto-recharge is switched off and the customer is emailed.
 
 **Low-balance email**: sent when the balance drops below `lowBalanceAlertAt` (or the auto-recharge threshold), at
 most once per 24 h. It is skipped when auto-recharge will handle it silently. The global switch is `lowBalanceEmail`.
+
+**Notification copies** (`User.notifyCc`, up to 10 addresses): every balance and billing notification sent to the
+account (low balance, balance used up, auto-recharge disabled, payment failed, and for admins the upstream
+low-balance alert) also goes to these addresses as a BCC (`sendNotification` in `src/lib/email.ts`). The customer sets
+them in Settings > **Notification copies**, or an admin on the customer page. Security emails (password reset,
+verification, email change, 2FA, invites) are never copied.
 
 ## Postpaid
 

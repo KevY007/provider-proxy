@@ -8,6 +8,8 @@ export interface DocCtx {
   /** `${appUrl}/v1` */
   base: string;
   siteName: string;
+  /** customers top up themselves (Stripe); false = the operator manages balances */
+  customerBilling: boolean;
   m: { chat: string; claude: string; gemini: string; image: string; embed: string };
 }
 
