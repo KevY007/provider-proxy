@@ -76,7 +76,7 @@ export function CustomerLogsTable({ logs, userId }: { logs: CustomerDetail["logs
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Time (UTC)</TableHead>
+              <TableHead>Time</TableHead>
               <TableHead>Model</TableHead>
               <TableHead>Endpoint</TableHead>
               <TableHead>Status</TableHead>
@@ -123,7 +123,7 @@ export function PaymentsTable({ payments }: { payments: CustomerDetail["payments
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Date (UTC)</TableHead>
+            <TableHead>Date</TableHead>
             <TableHead>Kind</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="text-right">Amount</TableHead>
@@ -164,12 +164,11 @@ export function LedgerTable({ ledger }: { ledger: CustomerDetail["ledger"] }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Date (UTC)</TableHead>
+            <TableHead>Date</TableHead>
             <TableHead>Type</TableHead>
             <TableHead className="text-right">Amount</TableHead>
             <TableHead className="text-right">Balance after</TableHead>
             <TableHead>Description</TableHead>
-            <TableHead>By</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -188,7 +187,6 @@ export function LedgerTable({ ledger }: { ledger: CustomerDetail["ledger"] }) {
               <TableCell className="max-w-xs truncate" title={l.description}>
                 {l.description}
               </TableCell>
-              <TableCell className="text-xs text-muted-foreground">{l.createdBy ?? "-"}</TableCell>
             </TableRow>
           ))}
         </TableBody>
@@ -204,7 +202,7 @@ export function SessionsTable({ sessions }: { sessions: CustomerDetail["sessions
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Started (UTC)</TableHead>
+            <TableHead>Started</TableHead>
             <TableHead>IP</TableHead>
             <TableHead>Device</TableHead>
             <TableHead>Expires</TableHead>

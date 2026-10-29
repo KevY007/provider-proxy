@@ -22,4 +22,3 @@ live-output
 .next-*
 *.pem
 tsconfig.tsbuildinfo
-scripts/live-workload

@@ -66,7 +66,7 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
           <Table className="[&_td]:px-1.5 [&_th]:px-1.5">
             <TableHeader className="bg-muted/40">
               <TableRow>
-                <TableHead>Time (UTC)</TableHead>
+                <TableHead>Time</TableHead>
                 <TableHead>Customer</TableHead>
                 <TableHead>Key</TableHead>
                 <TableHead>Model → upstream</TableHead>

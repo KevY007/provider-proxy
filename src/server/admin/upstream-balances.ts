@@ -1,10 +1,10 @@
-// Upstream account balances (money left at the provider, e.g. the relay credit) for the admin Overview and
+// Upstream account balances (money left at the provider, e.g. relay credit) for the admin Overview and
 // Providers pages. Display only: customer wallets are separate and always credited by hand.
 //
 // Refreshed by the "balances" background job (Settings > Monitoring, default hourly) or the Refresh button, and stored
 // as one snapshot (Setting `upstreamBalanceSnapshot`) so page loads never call the upstream.
 //
-// Accounts: one upstream account can sit behind several providers (the relay: one wallet, many groups / keys).
+// Accounts: one upstream account can sit behind several providers (e.g. a relay: one wallet, many groups / keys).
 // Keys are grouped into one account when
 //   1. their providers share `settings.sharedConcurrency.group` or `settings.upstreamAccount` (explicit, preferred), or
 //   2. they report the very same balance to the micro-dollar at the same moment (the same wallet).
@@ -13,7 +13,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
 import { audit } from "@/lib/audit";
-import { emailTemplates, sendTemplate } from "@/lib/email";
+import { emailTemplates, sendNotification } from "@/lib/email";
 import { logger } from "@/lib/logger";
 import { getSettings } from "@/lib/settings";
 import { assertPublicUrl } from "@/gateway/ssrf";
@@ -148,9 +148,10 @@ export async function alertLowBalances(snap: BalanceSnapshot): Promise<string[]>
   const value = [...after] as unknown as Prisma.InputJsonValue;
   await db.setting.upsert({ where: { key: ALERTED_KEY }, create: { key: ALERTED_KEY, value }, update: { value } });
   if (!fresh.length) return [];
-  const admins = await db.user.findMany({ where: { role: "ADMIN", status: "ACTIVE" }, select: { email: true } });
+  // each admin's own notification copies (notifyCc) get the alert too
+  const admins = await db.user.findMany({ where: { role: "ADMIN", status: "ACTIVE" }, select: { email: true, notifyCc: true } });
   for (const a of fresh) {
-    for (const ad of admins) await sendTemplate(ad.email, emailTemplates.upstreamBalanceLow({ account: a.name, balance: a.balance!, limit }));
+    for (const ad of admins) await sendNotification(ad, emailTemplates.upstreamBalanceLow({ account: a.name, balance: a.balance!, limit }));
     await audit(null, "billing.upstream_balance_low", { type: "UpstreamAccount", id: a.id }, { balance: a.balance, limit });
   }
   return fresh.map((a) => a.id);

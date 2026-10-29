@@ -70,8 +70,9 @@ export function UsageClient(props: UsageClientProps) {
   const savings = summarizeSavings(totals.official, totals.comparable);
   const hasSavingsData = totals.official > 0;
   const valueFmt = metric === "cost" ? (v: number) => formatUSD(v) : (v: number) => formatCompact(v);
-  const timeRows = series.map((p) => ({ x: p.bucket, cost: p.spend, official: p.official > 0 ? p.official + (p.spend - p.comparable) : p.spend, input: p.inputTokens, output: p.outputTokens }));
-  const tokens = (r: UsageBreakdownRow) => r.inputTokens + r.outputTokens;
+  const timeRows = series.map((p) => ({ x: p.bucket, cost: p.spend, official: p.official > 0 ? p.official + (p.spend - p.comparable) : p.spend, input: Math.max(0, p.inputTokens - (p.cachedTokens ?? 0)), output: p.outputTokens }));
+  // fresh input + output: cache reads are billed at a fraction of input and would inflate the figure
+  const tokens = (r: UsageBreakdownRow) => Math.max(0, r.inputTokens - r.cachedTokens) + r.outputTokens;
   const barRows = (rows: UsageBreakdownRow[]) =>
     rows
       .map((r) => ({ name: r.name, value: metric === "cost" ? r.spend : tokens(r) }))
@@ -139,7 +140,7 @@ export function UsageClient(props: UsageClientProps) {
           hint={hasSavingsData ? <>official price <MoneyText value={totals.official} /></> : "No priced requests yet"}
         />
         <StatCard label="Requests" icon={Activity} value={formatNumber(totals.requests)} />
-        <StatCard label="Tokens" icon={Hash} value={formatCompact(totals.inputTokens + totals.outputTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
+        <StatCard label="Tokens" icon={Hash} value={formatCompact(Math.max(0, totals.inputTokens - totals.cachedTokens) + totals.outputTokens)} hint={`${formatCompact(Math.max(0, totals.inputTokens - totals.cachedTokens))} in / ${formatCompact(totals.outputTokens)} out`} />
         <StatCard label="Cached tokens" icon={Layers} value={formatCompact(totals.cachedTokens)} hint={totals.inputTokens ? `${formatPercent(totals.cachedTokens / totals.inputTokens)} of input` : undefined} />
         <StatCard label="Error rate" icon={AlertCircle} value={formatPercent(totals.requests ? totals.errors / totals.requests : 0)} hint={`${formatNumber(totals.errors)} failed`} />
         <StatCard label="Avg latency" icon={Clock} value={totals.requests ? formatDuration(totals.avgLatencyMs) : "-"} />

@@ -12,7 +12,6 @@ export interface LedgerRow {
   /** Admin views only. */
   userId?: string;
   userEmail?: string;
-  createdById?: string | null;
 }
 
 export interface PaymentRow {

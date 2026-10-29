@@ -70,7 +70,7 @@ export default async function AnalyticsPage({ searchParams }: { searchParams: Pr
         <StatCard label="Requests" icon={Activity} value={formatNumber(totals.requests)} trend={trendPct(totals.requests, prevTotals.requests)} hint={`${formatNumber(totals.activeCustomers)} customers`} />
         <StatCard label="Error rate" icon={AlertTriangle} value={formatPercent(totals.errorRate)} invertTrend trend={trendPct(totals.errorRate, prevTotals.errorRate)} hint={`${formatNumber(totals.errorRequests)} errors`} />
         <StatCard label="Latency p50 / p95" icon={Gauge} value={`${formatDuration(totals.p50LatencyMs)} / ${formatDuration(totals.p95LatencyMs)}`} hint={`avg ${formatDuration(totals.avgLatencyMs)}`} />
-        <StatCard label="Tokens" icon={Zap} value={formatCompact(totals.totalTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
+        <StatCard label="Tokens" icon={Zap} value={formatCompact(totals.totalTokens)} hint={`${formatCompact(Math.max(0, totals.inputTokens - totals.cachedTokens))} in / ${formatCompact(totals.outputTokens)} out, +${formatCompact(totals.cachedTokens)} cache reads`} />
       </div>
 
       <div className="mb-6">

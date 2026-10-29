@@ -70,7 +70,8 @@ export default async function DashboardPage() {
   const savings = summarizeSavings(week.official, week.comparable);
   const hasSavings = week.official > 0;
   const curl = buildSnippets({ appUrl, siteName })[0].blocks[0];
-  const tokens7 = week.inputTokens + week.outputTokens;
+  // fresh input + output (cache reads are cheap and would inflate it)
+  const tokens7 = Math.max(0, week.inputTokens - week.cachedTokens) + week.outputTokens;
   const errorRate = week.requests ? week.errors / week.requests : 0;
   const spendByModel = models.some((m) => m.spend > 0);
   const balanceLow = user.balance.lte(0);

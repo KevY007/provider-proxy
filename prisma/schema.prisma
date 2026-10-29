@@ -153,6 +153,8 @@ model User {
   // admin switch: once the balance is used up, requests are free instead of refused - the balance never goes below 0;
   // each request still records its full price, and what the balance could not cover is `RequestLog.waived`
   freeWhenEmpty          Boolean     @default(false)
+  // extra addresses that get a BCC copy of every notification email to this account (never the security emails)
+  notifyCc               String[]    @default([])
   createdAt              DateTime    @default(now())
   updatedAt              DateTime    @updatedAt
 
@@ -733,6 +735,7 @@ model Announcement {
 model EmailOutbox {
   id        String    @id @default(cuid())
   to        String
+  bcc       String[]  @default([])
   subject   String
   html      String
   sentAt    DateTime?

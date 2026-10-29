@@ -19,7 +19,7 @@ describes the code as it stands.
 | UI | `src/app/admin`, `src/app/dashboard`, `src/app/(marketing)`, `src/app/(auth)` | Route guard in `src/proxy.ts` (Next 16 name for middleware) |
 | Data | PostgreSQL 16 via Prisma 7 (`@prisma/adapter-pg`) | Money is `Decimal(24,12)` in USD; prices are USD per 1M units |
 | Shared state | Redis 7 (optional) | Slots, holds, balance cache, rate limits, sticky responses, config invalidation. Each has an in-memory fallback. |
-| Background jobs | `src/server/maintenance.ts`, optional `src/app/api/cron/{health,billing}` | Activity-driven by default (no timers, no pings); optional timers and Cloud Scheduler routes |
+| Background jobs | `src/server/maintenance.ts`, optional `src/app/api/cron/{health,billing}` | Activity-driven by default (no timers, no pings); optional timers and scheduler routes |
 
 ```mermaid
 flowchart TB
@@ -230,8 +230,8 @@ Cold by default: `upkeep` (health from traffic, video/batch sweeps, dead-letter 
 authentication and from the admin layout), throttled to every 5 minutes / hourly. `probes` (uptime pings) run only
 on a timer and only with `activeHealthChecks`. With `backgroundJobs` / `activeHealthChecks` on, an in-process timer
 (armed at start-up by `src/instrumentation.ts` and whenever settings change) runs them on the admin's intervals. The
-`/api/cron/health` and `/api/cron/billing` routes (`Authorization: Bearer $CRON_SECRET`) run the same jobs for Cloud
-Scheduler. Runs are claimed atomically in `JobRun`. Details: [OPERATIONS.md](OPERATIONS.md#background-jobs-cold-by-default).
+`/api/cron/health` and `/api/cron/billing` routes (`Authorization: Bearer $CRON_SECRET`) run the same jobs for an
+external scheduler. Runs are claimed atomically in `JobRun`.
 
 ## Other HTTP endpoints
 

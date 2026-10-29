@@ -997,8 +997,8 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
       status: "UPSTREAM_ERROR",
       httpStatus: timeout ? 504 : 502,
       errorCode: timeout ? "upstream_timeout" : "upstream_error",
-      errorMessage: timeout ? "The upstream provider timed out." : "The upstream provider returned an error.",
-      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started; client connection dropped${info.error ? ` (${describeNetworkError(info.error)})` : ""}`,
+      errorMessage: timeout ? "The model stopped responding mid-answer." : "The model's connection dropped mid-answer. Retry the request.",
+      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started (output already sent, so not retryable here); client connection dropped${info.error ? ` (${describeNetworkError(info.error)})` : ""}`,
       usage,
       ttftMs: info.firstOutputMs,
     });

@@ -30,7 +30,7 @@ function ledgerRow(e: {
     description: e.description,
     paymentId: e.paymentId,
     createdAt: iso(e.createdAt),
-    ...(e.user ? { userId: e.userId, userEmail: e.user.email, createdById: e.createdById ?? null } : {}),
+    ...(e.user ? { userId: e.userId, userEmail: e.user.email } : {}),
   };
 }
 

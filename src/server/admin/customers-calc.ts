@@ -1,5 +1,6 @@
 /** Pure helpers for the admin customers pages (no server-only imports; unit tested). */
 import { z } from "zod";
+import { notifyCcField } from "@/lib/notify-cc";
 
 export const CUSTOMER_SORTS = ["created", "balance", "spend", "active"] as const;
 export type CustomerSort = (typeof CUSTOMER_SORTS)[number];
@@ -103,6 +104,8 @@ export const customerSettingsSchema = z.object({
   monthlySpendLimit: optMoney,
   maxConcurrency: optIntField,
   freeWhenEmpty: z.boolean().default(false),
+  /** Notification copies (BCC). Omitted = leave unchanged; the own-address check runs in the action. */
+  notifyCc: notifyCcField.optional(),
 });
 export type CustomerSettingsInput = z.input<typeof customerSettingsSchema>;
 

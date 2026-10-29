@@ -15,7 +15,7 @@ export function SpendOverTimeCard({ data }: { data: SpendPoint[] }) {
   const rows = data.map((p) => ({ x: p.bucket, spend: p.spend, requests: p.requests }));
   const empty = data.every((p) => p.requests === 0);
   return (
-    <ChartCard title="Spend over time" description="Last 14 days (UTC days)" empty={empty} emptyText="No usage yet. Make your first API request to see spend here." className="lg:col-span-2">
+    <ChartCard title="Spend over time" description="Last 14 days" empty={empty} emptyText="No usage yet. Make your first API request to see spend here." className="lg:col-span-2">
       <AreaChart
         data={rows}
         xKey="x"

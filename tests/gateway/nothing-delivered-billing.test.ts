@@ -1,6 +1,6 @@
 /**
  * A stream that ends (client cancel, upstream break) before the client received anything, with no usage reported by the
- * upstream, is not billed on an estimate: the upstream does not bill it either (reconciled against the relay).
+ * upstream, is not billed on an estimate: the upstream does not bill it either (reconciled against a relay's own usage report).
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createHarness, dbOk } from "./harness";

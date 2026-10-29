@@ -115,7 +115,7 @@ export const PROVIDERS: ProviderSeed[] = [
   },
   {
     slug: "codex-everywhere",
-    name: "the relay",
+    name: "Relay (pool pricing)",
     preset: "codex-everywhere",
     baseUrl: "https://codex-everywhere.com/v1",
     authStyle: "BEARER",

@@ -5,7 +5,7 @@
 //               uptime-history pruning. No provider is contacted unless a video job or batch is actually open.
 //  - "billing": auto-recharge, postpaid settlement, stale payment reconciliation (Stripe).
 //  - "probes":  uptime pings of every upstream key (free model-list request). Only with the activeHealthChecks setting.
-//  - "balances": reads the account balance of every upstream that publishes one (the relay /v1/usage) every
+//  - "balances": reads the account balance of every upstream that publishes one (the relay's /v1/usage) every
 //               `upstreamBalanceIntervalMin` (default 60) and stores the snapshot for the admin pages.
 //  - "priceSync": AI price sync of the providers whose automatic sync is on (each at its own interval, e.g. 10 h);
 //               checked hourly. Nothing at all happens while no provider has it on.

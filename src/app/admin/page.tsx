@@ -92,7 +92,7 @@ export default async function AdminOverviewPage({ searchParams }: { searchParams
         <StatCard label="Active customers" icon={Users} value={formatNumber(totals.activeCustomers)} trend={trendPct(totals.activeCustomers, prevTotals.activeCustomers)} hint="with requests" />
         <StatCard label="Latency p50" icon={Gauge} value={formatDuration(totals.p50LatencyMs)} hint={`avg ${formatDuration(totals.avgLatencyMs)}`} />
         <StatCard label="Latency p95" icon={Gauge} value={formatDuration(totals.p95LatencyMs)} hint="successful requests" />
-        <StatCard label="Tokens" icon={Zap} value={formatCompact(totals.totalTokens)} hint={`${formatCompact(totals.inputTokens)} in / ${formatCompact(totals.outputTokens)} out`} />
+        <StatCard label="Tokens" icon={Zap} value={formatCompact(totals.totalTokens)} hint={`${formatCompact(Math.max(0, totals.inputTokens - totals.cachedTokens))} in / ${formatCompact(totals.outputTokens)} out, +${formatCompact(totals.cachedTokens)} cache reads`} />
       </div>
 
       <div className="mb-6">

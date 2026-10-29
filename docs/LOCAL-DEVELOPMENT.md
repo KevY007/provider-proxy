@@ -141,7 +141,7 @@ pnpm e2e                                            # tests/gateway only
 | Redis | a Redis at `GW_TEST_REDIS_URL` (default `redis://localhost:6380`). Skipped when unreachable. | `slots-redis`, `holds-redis`, `cache-redis` |
 | Opt-in heavy | `GW_LOAD=1` (or `pnpm loadtest`), `GW_LOAD_N`; `GW_CHAOS_HEAVY=1` (`GW_BIG_MULTIPART_MB`, `GW_BIG_JSON_MB`) | `load.test.ts`, `bigbody.test.ts` |
 | Container | Docker | `pnpm chaos --docker <image> [--scenarios] [--h2] [--bigbody 1024 --bigjson 200]` |
-| Live | `LIVE_*` keys, running dev server | `pnpm e2e:live`, `scripts/live-workload/run.ts` |
+| Live | `LIVE_*` keys, running dev server | `pnpm e2e:live` |
 
 Vitest forces `REDIS_URL=""` (memory backends) and fixed test secrets (`vitest.config.mts`). The gateway harness
 (`tests/gateway/harness.ts`) creates uniquely named users, keys and providers per run and tags providers `iso-<suffix>`,

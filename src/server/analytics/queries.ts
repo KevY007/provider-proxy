@@ -145,7 +145,8 @@ export async function getTotals(f: AnalyticsFilter): Promise<Totals> {
     inputTokens,
     outputTokens,
     cachedTokens: num(r.cached_tokens),
-    totalTokens: inputTokens + outputTokens,
+    // fresh input + output: cache reads are billed at a fraction of input and would inflate the figure (shown apart)
+    totalTokens: Math.max(0, inputTokens - num(r.cached_tokens)) + outputTokens,
     avgLatencyMs: num(r.avg_latency),
     p50LatencyMs: num(r.p50),
     p95LatencyMs: num(r.p95),
@@ -170,7 +171,7 @@ export async function getTimeSeries(f: AnalyticsFilter, gran?: Granularity): Pro
       coalesce(sum(r."price" - r."waived"), 0)::float8 AS revenue,
       coalesce(sum(r."cost"), 0)::float8 AS cost,
       coalesce(sum(r."profit" - r."waived"), 0)::float8 AS profit,
-      coalesce(sum(r."inputTokens" + r."outputTokens"), 0)::float8 AS tokens
+      coalesce(sum(greatest(r."inputTokens" - r."cachedTokens", 0) + r."outputTokens"), 0)::float8 AS tokens
     FROM "RequestLog" r
     ${where(f)}
     GROUP BY 1
@@ -253,7 +254,7 @@ export async function getBreakdown(
       coalesce(sum(r."profit" - r."waived"), 0)::float8 AS profit,
       coalesce(sum(r."inputTokens"), 0)::float8 AS input_tokens,
       coalesce(sum(r."outputTokens"), 0)::float8 AS output_tokens,
-      coalesce(sum(r."inputTokens" + r."outputTokens"), 0)::float8 AS tokens,
+      coalesce(sum(greatest(r."inputTokens" - r."cachedTokens", 0) + r."outputTokens"), 0)::float8 AS tokens,
       coalesce(avg(r."latencyMs"), 0)::float8 AS avg_latency,
       coalesce(percentile_cont(0.95) WITHIN GROUP (ORDER BY r."latencyMs"), 0)::float8 AS p95
     FROM "RequestLog" r
@@ -289,10 +290,18 @@ export async function getBreakdown(
 
 export async function getRecentErrors(f: AnalyticsFilter, limit = 10, opts: { includeInternal?: boolean; maxAgeHours?: number } = {}): Promise<RecentError[]> {
   const from = opts.maxAgeHours ? new Date(Math.max(f.from.getTime(), Date.now() - opts.maxAgeHours * 3_600_000)) : f.from;
+  // a stream the upstream broke mid-way, followed within a minute by a successful call on the same key, is a dropped
+  // connection the client recovered from by retrying: it stays in Logs, but is not a "recent error" worth attention
+  const recovered = await db.$queryRaw<Array<{ id: string }>>`
+    SELECT e."id" FROM "RequestLog" e
+    WHERE e."createdAt" >= ${from} AND e."createdAt" <= ${f.to} AND e."status" = 'UPSTREAM_ERROR' AND e."stream" AND e."apiKeyId" IS NOT NULL
+      AND EXISTS (SELECT 1 FROM "RequestLog" r WHERE r."apiKeyId" = e."apiKeyId" AND r."status" = 'SUCCESS'
+        AND r."createdAt" > e."createdAt" AND r."createdAt" <= e."createdAt" + (e."latencyMs" * interval '1 millisecond') + interval '60 seconds')`;
   const rows = await db.requestLog.findMany({
     where: {
       createdAt: { gte: from, lte: f.to },
       status: { in: ["CLIENT_ERROR", "UPSTREAM_ERROR", "GATEWAY_ERROR"] },
+      ...(recovered.length ? { id: { notIn: recovered.map((r) => r.id) } } : {}),
       ...(f.userId ? { userId: f.userId } : {}),
       ...(f.modelSlug ? { modelSlug: f.modelSlug } : {}),
       ...(f.providerId ? { providerId: f.providerId } : {}),

@@ -20,7 +20,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         </Alert>
       )}
       <SettingsClient
-        user={{ name: user.name, email: user.email, emailVerified: !!user.emailVerifiedAt, totpEnabled: user.totpEnabled, balance: user.balance.toString() }}
+        user={{ name: user.name, email: user.email, emailVerified: !!user.emailVerifiedAt, totpEnabled: user.totpEnabled, balance: user.balance.toString(), notifyCc: user.notifyCc }}
         sessions={sessions.map((s) => ({ id: s.id, ip: s.ip, userAgent: s.userAgent, createdAt: s.createdAt.toISOString(), current: s.current }))}
       />
     </>

@@ -155,10 +155,6 @@ export async function getCustomerDetail(id: string) {
       },
     }),
   ]);
-  const adminIds = [...new Set(ledger.map((l) => l.createdById).filter((x): x is string => !!x))];
-  const admins = adminIds.length ? await db.user.findMany({ where: { id: { in: adminIds } }, select: { id: true, email: true } }) : [];
-  const adminEmail = new Map(admins.map((a) => [a.id, a.email]));
-
   return {
     user: {
       id: user.id,
@@ -178,6 +174,7 @@ export async function getCustomerDetail(id: string) {
       monthlySpendLimit: dstr(user.monthlySpendLimit),
       maxConcurrency: user.maxConcurrency,
       freeWhenEmpty: user.freeWhenEmpty,
+      notifyCc: user.notifyCc,
       stripeCustomerId: user.stripeCustomerId,
       autoRechargeEnabled: user.autoRechargeEnabled,
       signupIp: user.signupIp,
@@ -215,7 +212,6 @@ export async function getCustomerDetail(id: string) {
       amount: dstr0(l.amount),
       balanceAfter: dstr0(l.balanceAfter),
       description: l.description,
-      createdBy: l.createdById ? (adminEmail.get(l.createdById) ?? l.createdById) : null,
     })),
     sessions: sessions.map((s) => ({
       id: s.id.slice(0, 10),

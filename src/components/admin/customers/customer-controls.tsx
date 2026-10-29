@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { StatusBadge } from "@/components/common/status-badge";
-import { CheckField, NumberField, SelectField, SwitchField } from "@/components/admin/fields";
+import { CheckField, NumberField, SelectField, SwitchField, TextAreaField } from "@/components/admin/fields";
 import { useAction } from "@/components/admin/use-action";
 import { fmtDateTime } from "@/components/admin/format";
 import { describePercent, multiplierToPercent, percentToMultiplier } from "@/lib/percent";
@@ -36,6 +36,7 @@ export function CustomerControls({
   const [monthlyLimit, setMonthlyLimit] = useState(user.monthlySpendLimit ?? "");
   const [maxConc, setMaxConc] = useState(user.maxConcurrency?.toString() ?? "");
   const [freeWhenEmpty, setFreeWhenEmpty] = useState(user.freeWhenEmpty);
+  const [notifyCc, setNotifyCc] = useState((user.notifyCc ?? []).join("\n"));
   const staff = user.role !== "CUSTOMER";
   const suspended = user.status === "SUSPENDED";
   const unverified = !user.emailVerifiedAt || user.status === "PENDING_VERIFICATION";
@@ -55,8 +56,8 @@ export function CustomerControls({
               {user.totpEnabled && <StatusBadge status="ACTIVE" label="2FA on" dot={false} />}
             </div>
             <p className="text-xs text-muted-foreground">
-              {user.emailVerifiedAt ? `Email verified ${fmtDateTime(user.emailVerifiedAt, false)} UTC` : "Email not verified"} · last login{" "}
-              {user.lastLoginAt ? `${fmtDateTime(user.lastLoginAt, false)} UTC` : "never"}
+              {user.emailVerifiedAt ? <>Email verified {fmtDateTime(user.emailVerifiedAt, false)}</> : "Email not verified"} · last login{" "}
+              {user.lastLoginAt ? fmtDateTime(user.lastLoginAt, false) : "never"}
             </p>
           </div>
           <div className="ml-auto flex flex-wrap gap-2">
@@ -94,7 +95,7 @@ export function CustomerControls({
           onSubmit={(e) => {
             e.preventDefault();
             void run(() =>
-              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc, freeWhenEmpty }),
+              updateCustomerSettings({ userId: user.id, groupId, extraGroupIds: extraGroupIds.filter((id) => id !== groupId), priceMultiplier: percentToMultiplier(pct), billingMode, creditLimit, monthlySpendLimit: monthlyLimit, maxConcurrency: maxConc, freeWhenEmpty, notifyCc }),
             );
           }}
         >
@@ -147,6 +148,16 @@ export function CustomerControls({
             onChange={setFreeWhenEmpty}
             disabled={!isAdmin}
             description="Requests keep working at $0 instead of being refused. The balance is charged while it lasts and never goes below $0; every request still records its full price, and the uncovered part is waived (it shows as a loss in analytics)."
+          />
+          <TextAreaField
+            label="Notification copies"
+            value={notifyCc}
+            onChange={setNotifyCc}
+            rows={3}
+            placeholder="one address per line"
+            description="These addresses also get a copy (BCC) of balance and billing notifications sent to this account. Up to 10. Security emails (password reset, sign-in, 2FA) still go only to the account's own address."
+            error={fieldErrors.notifyCc}
+            disabled={!isAdmin}
           />
           <div className="space-y-2">
             <p className="text-sm font-medium">Extra pools for API keys</p>

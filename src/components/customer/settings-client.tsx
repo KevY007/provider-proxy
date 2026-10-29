@@ -2,13 +2,14 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { KeyRound, Laptop, Loader2, LogOut, Mail, ShieldCheck, ShieldOff, Trash2, User as UserIcon } from "lucide-react";
+import { BellRing, KeyRound, Laptop, Loader2, LogOut, Mail, ShieldCheck, ShieldOff, Trash2, User as UserIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { FieldGroup } from "@/components/ui/field";
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Textarea } from "@/components/ui/textarea";
 import { PasswordField, SubmitButton, TextField } from "@/components/common/form-fields";
 import { CopyButton } from "@/components/common/copy-button";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
@@ -23,7 +24,8 @@ import {
 } from "@/lib/auth/actions";
 import type { TotpSetup } from "@/lib/auth/totp";
 import type { ActionResult } from "@/lib/auth/types";
-import { deleteAccountAction, updateProfileAction } from "@/server/customer/account";
+import { deleteAccountAction, updateNotifyCcAction, updateProfileAction } from "@/server/customer/account";
+import { NOTIFY_CC_MAX } from "@/lib/notify-cc";
 import { LocalTime } from "./local-time";
 
 export interface SessionItem {
@@ -35,7 +37,7 @@ export interface SessionItem {
 }
 
 export interface SettingsClientProps {
-  user: { name: string | null; email: string; emailVerified: boolean; totpEnabled: boolean; balance: string };
+  user: { name: string | null; email: string; emailVerified: boolean; totpEnabled: boolean; balance: string; notifyCc: string[] };
   sessions: SessionItem[];
 }
 
@@ -76,6 +78,7 @@ export function SettingsClient({ user, sessions }: SettingsClientProps) {
     <div className="max-w-3xl space-y-6">
       <ProfileSection name={user.name} email={user.email} verified={user.emailVerified} />
       <EmailSection />
+      <NotifyCcSection initial={user.notifyCc} />
       <PasswordSection />
       <TwoFactorSection enabled={user.totpEnabled} />
       <SessionsSection sessions={sessions} />
@@ -103,6 +106,52 @@ function ProfileSection({ name, email, verified }: { name: string | null; email:
         </FieldGroup>
         <SubmitButton pending={f.pending} disabled={value === (name ?? "")}>
           Save profile
+        </SubmitButton>
+      </form>
+    </Section>
+  );
+}
+
+function NotifyCcSection({ initial }: { initial: string[] }) {
+  const [saved, setSaved] = useState(initial.join("\n"));
+  const [text, setText] = useState(saved);
+  const f = useForm();
+  return (
+    <Section icon={BellRing} title="Notification copies" description="These addresses also get a copy of balance and billing notifications sent to you.">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          f.run(
+            () => updateNotifyCcAction({ notifyCc: text }),
+            (r) => {
+              const list = ((r.data as { notifyCc?: string[] } | undefined)?.notifyCc ?? []).join("\n");
+              setSaved(list);
+              setText(list);
+            },
+          );
+        }}
+        className="space-y-4"
+      >
+        <Field data-invalid={!!f.errors.notifyCc}>
+          <FieldLabel htmlFor="notify-cc">Addresses</FieldLabel>
+          <Textarea
+            id="notify-cc"
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={3}
+            placeholder={"teammate@example.com\nbilling@example.com"}
+            aria-invalid={!!f.errors.notifyCc}
+            spellCheck={false}
+            autoComplete="off"
+          />
+          {f.errors.notifyCc ? (
+            <FieldError role="alert">{f.errors.notifyCc}</FieldError>
+          ) : (
+            <FieldDescription>One address per line, up to {NOTIFY_CC_MAX}. Each copy is sent as BCC, so recipients don&apos;t see each other. Password, sign-in and other security emails go only to you.</FieldDescription>
+          )}
+        </Field>
+        <SubmitButton pending={f.pending} disabled={text === saved}>
+          Save copies
         </SubmitButton>
       </form>
     </Section>

@@ -99,13 +99,13 @@ describe.skipIf(!dbOk)("effort routing through the gateway", () => {
 
   beforeAll(async () => {
     await h.start();
-    const reseller = await h.makeProvider("ce", { formats: ["openai_chat", "openai_responses"], keys: [{ s: "ce1" }] });
+    const reseller = await h.makeProvider("relay", { formats: ["openai_chat", "openai_responses"], keys: [{ s: "rl1" }] });
     const officialP = await h.makeProvider("off", { formats: ["openai_chat", "openai_responses"], keys: [{ s: "of1" }] });
-    await db.provider.update({ where: { id: reseller.id }, data: { tags: [`ce-${h.sfx}`] } });
+    await db.provider.update({ where: { id: reseller.id }, data: { tags: [`relay-${h.sfx}`] } });
     await db.provider.update({ where: { id: officialP.id }, data: { tags: [`off-${h.sfx}`] } });
     const standard = await db.group.create({ data: { name: h.name("std"), slug: h.name("std"), priceMultiplier: "1", providerTags: [`off-${h.sfx}`] } });
     const studio = await db.group.create({
-      data: { name: h.name("studio"), slug: h.name("studio"), priceMultiplier: "0.3", providerTags: [`ce-${h.sfx}`], effortRoutes: [{ models: [], minEffort: "xhigh", groupId: standard.id }] },
+      data: { name: h.name("studio"), slug: h.name("studio"), priceMultiplier: "0.3", providerTags: [`relay-${h.sfx}`], effortRoutes: [{ models: [], minEffort: "xhigh", groupId: standard.id }] },
     });
     h.ids.groups.push(standard.id, studio.id);
     Object.assign(S, { reseller: reseller.id, official: officialP.id, standard: standard.slug, standardId: standard.id, studio: studio.slug, studioId: studio.id });

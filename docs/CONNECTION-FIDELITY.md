@@ -76,10 +76,10 @@ provider settings and delete their fixtures.
 1. Upstream 401 / 402 / 403 are returned as 503 `no_available_provider`: they are OUR account problem; a mirrored 401 would make SDKs blame the customer's key. The real code stays in `RequestLog.errorCode`.
 2. Failures with no upstream answer (connect error, reset before headers, headers timeout) have no status to mirror -> native-shaped 502 / 504 (every SDK retries these like a network error).
 3. A stream is complete only when the upstream's terminal event arrived; a missing terminal (RST, FIN, idle cutoff) drops the client connection instead of faking an end. Heartbeats exist only on SSE, only after the response started or the upstream stayed silent for one interval.
-4. JSON bodies need about 3x their size in memory (parsed once for validation, funds estimate and usage fallback). Multipart does not. Documented in deploy/README.
-5. Upstream HTTP/2 is OPT-IN (`provider.settings.http2: true`, https only, default off). Lead decision: one lost h2 connection ends every stream multiplexed on it. Live-checked against OpenAI (`--live-h2`, passes), documented in the admin provider settings help text and deploy/README.
+4. JSON bodies need about 3x their size in memory (parsed once for validation, funds estimate and usage fallback). Multipart does not. Size the container memory for the largest JSON body you accept.
+5. Upstream HTTP/2 is OPT-IN (`provider.settings.http2: true`, https only, default off). Lead decision: one lost h2 connection ends every stream multiplexed on it. Live-checked against OpenAI (`--live-h2`, passes), documented in the admin provider settings help text.
 6. `VideoJob` is left as is. New sticky objects (files, uploads, Gemini upload sessions) use `UpstreamObject`.
-7. Multipart spool uses `os.tmpdir()` (memory-backed on Cloud Run, see deploy/README); no per-request disk quota.
+7. Multipart spool uses `os.tmpdir()` (memory-backed on serverless container platforms); no per-request disk quota.
 
 ## Stream start hold (relays that fail right after accepting a request)
 
@@ -93,7 +93,7 @@ chaos suite pins the hold to one heartbeat interval where it times the heartbeat
 ## Limits and not covered (stated plainly)
 
 - A TCP RST discards whatever the peer had not read yet, so after an upstream reset the client may miss the last few events (real providers behave the same).
-- Cloud Run force-kills 10 s after SIGTERM: only graceful shutdowns (deploys, idle scale-in, `docker stop -t`) are lossless.
+- A serverless container platform may force-kill shortly after SIGTERM (e.g. 10 s): only graceful shutdowns (deploys, idle scale-in, `docker stop -t`) are lossless.
 - Not covered by an end-to-end test: `GATEWAY_ERROR` through a real socket (StreamSession unit test only); a dedicated video-content abort test (shares the Files content code path); live Files APIs against real OpenAI / Anthropic / Gemini; billing of the hidden `files` model (implemented, untested).
 - Lookups of file ids hit the database each time (no Redis-shared `UpstreamObject` cache).
 - Existing providers need `openai_files` / `anthropic_files` / `gemini_files` in their formats: Admin > Providers > provider > "Apply preset formats" (one click, with confirm), or pick them in the formats multi-select.

@@ -71,7 +71,7 @@ export function LogDetailSheet({ id, onClose }: { id: string | null; onClose: ()
               <div className="flex flex-wrap items-center gap-2">
                 <StatusBadge status={d.status} label={st.label} tone={st.tone} className="text-sm" />
                 <span className="text-sm text-muted-foreground">HTTP {d.httpStatus}</span>
-                <span className="text-sm text-muted-foreground">· {fmtDateTime(d.createdAt)} UTC</span>
+                <span className="text-sm text-muted-foreground">· {fmtDateTime(d.createdAt)}</span>
               </div>
               {st.hint && <p className="-mt-3 text-sm text-muted-foreground">{st.hint}</p>}
 

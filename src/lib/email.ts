@@ -12,6 +12,8 @@ import { formatUSD, type MoneyLike } from "./money";
  */
 export interface SendEmailInput {
   to: string;
+  /** Hidden copies (BCC): the recipients don't see each other's addresses. */
+  bcc?: string[];
   subject: string;
   html: string;
   text?: string;
@@ -40,15 +42,28 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+/** BCC list without blanks, duplicates or the `to` address itself. */
+function cleanBcc(to: string, bcc: string[] | undefined): string[] {
+  const own = to.trim().toLowerCase();
+  const out = new Set<string>();
+  for (const raw of bcc ?? []) {
+    const a = raw.trim().toLowerCase();
+    if (a && a !== own) out.add(a);
+  }
+  return [...out];
+}
+
 export async function sendEmail(input: SendEmailInput): Promise<{ ok: boolean; id?: string; error?: string }> {
   const t = getTransporter();
+  const bcc = cleanBcc(input.to, input.bcc);
   if (!t) {
     try {
       const row = await db.emailOutbox.create({
-        data: { to: input.to, subject: input.subject, html: input.html },
+        data: { to: input.to, bcc, subject: input.subject, html: input.html },
       });
       logger.info("email (no SMTP configured; stored in EmailOutbox)", {
         to: input.to,
+        bcc: bcc.length ? bcc : undefined,
         subject: input.subject,
         outboxId: row.id,
         preview: htmlToText(input.html).slice(0, 600),
@@ -65,6 +80,7 @@ export async function sendEmail(input: SendEmailInput): Promise<{ ok: boolean; i
     await t.sendMail({
       from: env.EMAIL_FROM,
       to: input.to,
+      ...(bcc.length ? { bcc } : {}),
       subject: input.subject,
       html: input.html,
       text: input.text ?? htmlToText(input.html),
@@ -72,11 +88,12 @@ export async function sendEmail(input: SendEmailInput): Promise<{ ok: boolean; i
     });
     return { ok: true };
   } catch (err) {
-    logger.error("smtp send failed", { to: input.to, subject: input.subject, err });
+    logger.error("smtp send failed", { to: input.to, bcc: bcc.length ? bcc : undefined, subject: input.subject, err });
     try {
       await db.emailOutbox.create({
         data: {
           to: input.to,
+          bcc,
           subject: input.subject,
           html: input.html,
           error: err instanceof Error ? err.message : String(err),
@@ -319,8 +336,16 @@ export const emailTemplates = {
   },
 };
 
-/** Render a template and send it. */
-export async function sendTemplate(to: string, tpl: Promise<TemplateResult> | TemplateResult) {
+/**
+ * Render a template and send it. `opts.bcc` is for notification copies (see `sendNotification`); never pass it for the
+ * owner-only security emails (password reset, verification, email change, 2FA, invites, sign-in alerts).
+ */
+export async function sendTemplate(to: string, tpl: Promise<TemplateResult> | TemplateResult, opts: { bcc?: string[] } = {}) {
   const t = await tpl;
-  return sendEmail({ to, subject: t.subject, html: t.html });
+  return sendEmail({ to, bcc: opts.bcc, subject: t.subject, html: t.html });
+}
+
+/** A notification to an account (balance, billing): the owner plus a BCC copy to the account's `notifyCc` addresses. */
+export async function sendNotification(user: { email: string; notifyCc?: string[] | null }, tpl: Promise<TemplateResult> | TemplateResult) {
+  return sendTemplate(user.email, tpl, { bcc: user.notifyCc ?? [] });
 }

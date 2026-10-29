@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 # ProviderProxy - one image serves the UI + gateway AND can run `prisma migrate deploy`
-# (Cloud Run Job uses the same image with a different command; see deploy/migrate.sh).
+# (a migration job runs the same image with: cd /prisma-cli && node node_modules/prisma/build/index.js migrate deploy).
 
 # pinned by digest (reproducible builds; dependabot proposes updates). Override with --build-arg NODE_IMAGE=...
 ARG NODE_IMAGE=node:24-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
@@ -50,10 +50,10 @@ COPY --from=build --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=build --chown=nextjs:nodejs /app/.next/static ./.next/static
 COPY --from=build --chown=nextjs:nodejs /app/public ./public
 # server.mjs wraps Next's generated server.js: HTTP/1.1 + cleartext HTTP/2 (h2c) on ONE port, no HTTP/1 request timeout,
-# 620 s keep-alive, graceful SIGTERM drain (see the header of server.mjs and deploy/README.md).
+# 620 s keep-alive, graceful SIGTERM drain (see the header of server.mjs).
 COPY --from=build --chown=nextjs:nodejs /app/server.mjs ./server.mjs
 # One-file seed (first admin, settings, pools, provider presets, model catalog): `node seed.mjs`, e.g. as a Cloud Run
-# Job on this image (deploy/README.md step 9). Idempotent.
+# Job on this image. Idempotent.
 COPY --from=build --chown=nextjs:nodejs /app/dist/seed.mjs ./seed.mjs
 COPY --from=migrator --chown=nextjs:nodejs /prisma-cli /prisma-cli
 # KEEP_ALIVE_TIMEOUT must exceed Google's 600 s load-balancer idle timeout; SHUTDOWN_DRAIN_SECONDS bounds the SIGTERM drain

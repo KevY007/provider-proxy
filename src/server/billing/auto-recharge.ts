@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { emailTemplates, sendTemplate } from "@/lib/email";
+import { emailTemplates, sendNotification } from "@/lib/email";
 import { logger } from "@/lib/logger";
 import { getSetting } from "@/lib/settings";
 import { formatUSD, toDbString, toDecimal } from "@/lib/money";
@@ -84,6 +84,7 @@ export async function runAutoRecharge(userId: string): Promise<AutoRechargeOutco
         id: true,
         email: true,
         name: true,
+        notifyCc: true,
         status: true,
         balance: true,
         autoRechargeEnabled: true,
@@ -160,7 +161,7 @@ export async function runAutoRecharge(userId: string): Promise<AutoRechargeOutco
 }
 
 async function failed(
-  user: { id: string; email: string; name: string | null },
+  user: { id: string; email: string; name: string | null; notifyCc: string[] },
   paymentId: string,
   amount: string,
   reason: string,
@@ -173,7 +174,7 @@ async function failed(
       await db.user.update({ where: { id: user.id }, data: { autoRechargeEnabled: false } });
       await audit(null, DISABLED_AUDIT_ACTION, { type: "User", id: user.id }, { failures: streak, reason });
       await invalidateGatewayConfig("users", user.id).catch(() => undefined);
-      await sendTemplate(user.email, emailTemplates.autoRechargeDisabled({ name: user.name, reason })).catch(() => undefined);
+      await sendNotification(user, emailTemplates.autoRechargeDisabled({ name: user.name, reason })).catch(() => undefined);
       disabled = true;
       logger.warn("auto-recharge disabled after repeated failures", { userId: user.id, failures: streak });
     } else {
@@ -204,6 +205,7 @@ export async function maybeSendLowBalanceAlert(userId: string): Promise<void> {
       select: {
         email: true,
         name: true,
+        notifyCc: true,
         status: true,
         balance: true,
         creditLimit: true,
@@ -232,7 +234,7 @@ export async function maybeSendLowBalanceAlert(userId: string): Promise<void> {
     const template = exhausted
       ? emailTemplates.balanceExhausted({ name: user.name, balance: user.balance, creditLeft: balance.add(toDecimal(user.creditLimit)) })
       : emailTemplates.lowBalance({ name: user.name, balance: user.balance });
-    await sendTemplate(user.email, await template);
+    await sendNotification(user, await template);
     await audit(null, action, { type: "User", id: userId }, { balance: toDbString(user.balance), level: toDbString(level) });
     logger.info(exhausted ? "balance exhausted alert sent" : "low balance alert sent", { userId, balance: formatUSD(user.balance) });
   } catch (err) {

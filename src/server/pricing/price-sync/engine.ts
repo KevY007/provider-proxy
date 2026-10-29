@@ -1,5 +1,5 @@
 // AI price sync: our route costs (and, for a vendor's own provider, the official list prices) kept in line with the
-// pricing pages the providers publish - OpenAI, Anthropic and resellers like the relay have no pricing API, so
+// pricing pages the providers publish - OpenAI, Anthropic and reseller relays have no pricing API, so
 // the pages are read by an AI (see ./ai.ts: one of our own pools, billed at our cost) and turned into PROPOSALS.
 //
 // Accuracy first:
@@ -14,7 +14,7 @@
 //  - "official": the page lists this provider's own prices (OpenAI, Anthropic). Route cost = page price; when the
 //    provider is the model's vendor the model's official list price is updated too (customer prices that are
 //    "% of official" follow through recomputeModelPrices).
-//  - "pool": a reseller billing a % of the official price (the relay "Pro Pool 0.05x"). The AI reads the
+//  - "pool": a reseller billing a % of the official price (e.g. a relay's "Pro Pool 0.05x"). The AI reads the
 //    pool's percentage, which models it serves and whether it charges cache writes; route cost = official x percent.
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -50,7 +50,7 @@ export const DEFAULT_SOURCES: Record<string, string[]> = {
   "codex-everywhere": ["https://docs.codex-everywhere.com/models/"],
 };
 
-/** "CE Pro Pool (0.05x)" -> "Pro Pool". */
+/** Pool name from a provider name: drops the "(0.05x)" multiplier and the relay's short name prefix, e.g. "Relay Pro Pool (0.05x)" -> "Relay Pro Pool". */
 export function poolNameFromProvider(name: string): string {
   return name.replace(/^\s*CE\s+/i, "").replace(/\([^)]*\)/g, "").trim();
 }

@@ -1,6 +1,6 @@
 # Security audit (Phase 6)
 
-**Date:** 2026-10-19 · **Scope:** gateway, web app, billing, secrets handling, infrastructure + dependencies (HANDOFF §6 Step D).
+**Date:** 2026-10-19 · **Scope:** gateway, web app, billing, secrets handling, infrastructure + dependencies (Phase 6 audit step).
 
 **Method:** five parallel reviewers, one per area, read the code end to end. Each finding was then checked against the
 code, or reproduced with a scratch script, before it was fixed. Every fix ships with a regression test where one can be
@@ -49,7 +49,7 @@ Severity is what the finding allowed **before** the fix. Status values:
 | B3 | Medium | If an admin disabled the model, batch results were recorded at $0; if the key was gone, metering failed until the hold expired. | `batches.ts` | Fail closed: metering is postponed (logged as an error) while the model is missing, and the sweep keeps the hold of every unmetered batch in place. | |
 | B4 | Medium | The batch hold ignored `n` (choices per request). | `batches.ts` `worstPrice` | The output estimate is multiplied by `n` (capped at 128). | |
 | B5 | Medium | Trial credit can be farmed with one card across many accounts (no card-fingerprint check). | `src/lib/auth/service.ts`, `stripe.ts` | **Fixed (follow-up).** `User.trialCardFingerprint`: a card-gated trial is granted once per card fingerprint across accounts (advisory lock per fingerprint). | `B5` (audit-regressions) |
-| B6 | Medium | The metering dead-letter file defaults to `os.tmpdir()`, which on Cloud Run is per-instance memory and is lost on shutdown. | `meter-writer.ts` | **Fixed (follow-up).** Dead-letter rows are mirrored into a Redis list (`meter:deadletter`) and replayed from it by any instance; replay is idempotent, so a row present in both places is written once. Also logged as `METER_DEAD_LETTER`. | |
+| B6 | Medium | The metering dead-letter file defaults to `os.tmpdir()`, which on a serverless container platform is per-instance memory and is lost on shutdown. | `meter-writer.ts` | **Fixed (follow-up).** Dead-letter rows are mirrored into a Redis list (`meter:deadletter`) and replayed from it by any instance; replay is idempotent, so a row present in both places is written once. Also logged as `METER_DEAD_LETTER`. | |
 | B7 | Low | A foreign-key error (deleted provider key) also dropped the user's debit. | `meter-writer.ts` `writeRow` | Provider references are dropped first; the user debit is kept. | |
 | B8 | Low | The same log id twice in one flush was charged twice. | `meter-writer.ts` `writeBatch` | Entries are de-duplicated by id before insert and financials. | `B8` |
 | B9 | Low | Auto-recharge could double-charge when Redis is down (in-memory lock only). | `auto-recharge.ts` | **Fixed (follow-up).** The in-flight / daily-cap / cooldown check and the PENDING payment are created under a Postgres advisory lock per customer. | billing tests |
@@ -78,17 +78,17 @@ Severity is what the finding allowed **before** the fix. Status values:
 | ID | Sev | Finding | Where | Fix | Test |
 |---|---|---|---|---|---|
 | S1 | High (reported) | "`.env` is copied into the Docker image." | `.dockerignore`, `Dockerfile` | **Not reproduced:** `.dockerignore` already excludes `.env` and `.env.*`. Defence in depth: the build stage now runs `rm -f .env .env.*` before `next build`. | |
-| I1 | Medium | Client-IP spoofing (`x-real-ip` fallback; direct `*.run.app` calls behind a load balancer) bypassed the per-key IP allowlist. | `src/lib/http.ts`, `deploy/README.md` | `x-real-ip` removed; `TRUSTED_PROXY_HOPS=0` mode; docs require `--ingress=internal-and-cloud-load-balancing` with a load balancer. | |
+| I1 | Medium | Client-IP spoofing (`x-real-ip` fallback; direct calls to the platform's default service URL behind a load balancer) bypassed the per-key IP allowlist. | `src/lib/http.ts`, deployment config | `x-real-ip` removed; `TRUSTED_PROXY_HOPS=0` mode; docs require the service to accept traffic only from the load balancer when one is used. | |
 | I2 | Medium | No browser security headers. | `next.config.ts` | App pages get `frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy`, `Permissions-Policy`, and HSTS in production. The gateway paths (`/v1`, `/v1beta`, `/upload`) are left untouched (faithful proxy). | |
-| I3 | Medium | Slowloris / idle-connection exhaustion on the self-hosted listener. | `server.mjs` | **Fixed (follow-up):** first bytes within 15 s, `MAX_CONNECTIONS` cap per instance (default 20000). h2 `maxSessionMemory` stays at 256 MB (large-body throughput, see CONNECTION-FIDELITY); Cloud Run's front end absorbs the rest. | |
+| I3 | Medium | Slowloris / idle-connection exhaustion on the self-hosted listener. | `server.mjs` | **Fixed (follow-up):** first bytes within 15 s, `MAX_CONNECTIONS` cap per instance (default 20000). h2 `maxSessionMemory` stays at 256 MB (large-body throughput, see CONNECTION-FIDELITY); the platform's front end absorbs the rest. | |
 | I4 | Low | Build context can carry `live-output/`, `.next-*`, `*.pem` into the standalone trace. | `.dockerignore` | Added. | |
-| I5 | Low | IAM too broad (project-wide `secretAccessor`, `run.admin`). | `deploy/README.md` | Per-secret bindings, `run.developer`. | |
+| I5 | Low | IAM too broad (project-wide secret access, full service-admin role). | deployment config | Per-secret bindings, a narrower deploy role. | |
 | I6 | Low | An invalid `NODE_ENV` (e.g. `staging`) silently dropped every env var, which opened the health cron. | `src/lib/env.ts`, `api/cron/health` | Invalid env outside dev/test fails hard; the health cron is unauthenticated only with `NODE_ENV=development`. | |
 | I7 | Low | Session cookie `Secure` depended on `APP_URL` being https. | `session.ts`, `proxy.ts` | Always `Secure` in production, except a plain-http localhost `APP_URL`. | |
 | S2 | Low | A Gemini query key (`?key=`) could reach admin-visible error columns (`RequestLog.attempts`, `ProviderKey.lastError`, health checks) through fetch errors quoting the URL. | `util.ts`, `health.ts`, `providers-actions.ts` | `redactUrlSecrets` in `describeNetworkError` and the health probe; provider base URLs must parse. | `S2` |
 | S3 | Low | Dead-letter log lines carried request/response bodies; the file was world-readable. | `meter-writer.ts` | Bodies are left out of the log line; the file is written with mode 0600. | |
 | I8 | Low | Base image not pinned by digest; the migration CLI is installed without a lockfile. | `Dockerfile` | **Fixed (follow-up).** `NODE_IMAGE` pinned by digest (dependabot updates it); the migration CLI is installed with `npm ci` from `prisma/migrator/package-lock.json`. | |
-| I9 | Info | Dev compose publishes Postgres and Redis on all interfaces; prod compose defaulted `POSTGRES_PASSWORD`; Cloud SQL public IP. | compose files, deploy docs | **Fixed (follow-up)** for compose: dev Postgres / Redis bound to 127.0.0.1; prod requires `POSTGRES_PASSWORD`. Cloud SQL private IP is a deployment choice (documented). | |
+| I9 | Info | Dev compose publishes Postgres and Redis on all interfaces; prod compose defaulted `POSTGRES_PASSWORD`; managed Postgres public IP. | compose files, deploy docs | **Fixed (follow-up)** for compose: dev Postgres / Redis bound to 127.0.0.1; prod requires `POSTGRES_PASSWORD`. A private IP for the managed Postgres is a deployment choice. | |
 | S4 | Info | Provider `extraHeaders` and key `extra.headers` are stored in plaintext and shown to admins. | schema | **Fixed (follow-up).** Credential-like header values (`auth`, `key`, `token`, `secret`, `cookie` ...) are stored encrypted (`enc:`), decrypted only for the upstream request, and shown to admins as `[encrypted]` (saving it back keeps the value). | `S4` |
 | S5 | Info | Whether Google echoes `key=` into the resumable-upload session URL stored in `UpstreamObject.meta.url` is unverified. | `files.ts` | **Fixed (follow-up)** defensively: the stored session URL is encrypted at rest (older rows still read). | |
 | D1 | High (dev-only) | lodash code injection / prototype pollution through prisma studio. | `pnpm audit` | `pnpm-workspace.yaml` override to `^4.18.1`. | `pnpm audit` |
@@ -113,7 +113,7 @@ Severity is what the finding allowed **before** the fix. Status values:
   - The strict HTTP parser is used (no request smuggling).
   - Customer-facing errors are scrubbed (key, host, provider name).
   - CORS `*` is set only on the gateway and the public pricing endpoint, never with credentials.
-- **Container:** non-root user, no secrets in layers, Secret Manager for every secret.
+- **Container:** non-root user, no secrets in layers, a secret store for every secret.
 
 ## Follow-up round (2026-10-19, same day)
 

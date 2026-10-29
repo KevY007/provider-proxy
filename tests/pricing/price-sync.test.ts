@@ -28,11 +28,12 @@ describe("page text", () => {
   it("finds model names as whole tokens only", () => {
     expect(nameOnPage("gpt-5.6-sol", "| gpt-5.6-sol* | $5 |")).toBe(true);
     expect(nameOnPage("gpt-6-sol", "gpt-6-sol-mini only")).toBe(false);
-    expect(nameOnPage("Pro Pool", "Codex Plus Pool 0.03x · Pro Pool 0.05x")).toBe(true);
+    expect(nameOnPage("Relay Pro Pool", "Relay Plus Pool 0.03x · Relay Pro Pool 0.05x")).toBe(true);
   });
   it("derives the pool name from a provider name", () => {
-    expect(poolNameFromProvider("CE Pro Pool (0.05x)")).toBe("Pro Pool");
-    expect(poolNameFromProvider("CE Max Pool (0.08x)")).toBe("Max Pool");
+    expect(poolNameFromProvider("Relay Pro Pool (0.05x)")).toBe("Relay Pro Pool");
+    // the short relay prefix the regex strips (a matched token, not display text)
+    expect(poolNameFromProvider("CE Relay Max Pool (0.08x)")).toBe("Relay Max Pool");
   });
   it("reads the AI's JSON even with prose / code fences around it", () => {
     const r = parseAiJson('Here you go:\n```json\n{"models":[{"id":"m1","found":true,"input":"$2.00","output":10}]}\n```');
@@ -117,13 +118,13 @@ describe("buildProposals: official basis", () => {
 });
 
 describe("buildProposals: pool basis", () => {
-  const POOL_PAGE = page("https://p/pool", "Codex Plus Pool 0.03x · Pro Pool 0.05x\ngpt-a gpt-img\nCE does not charge cache writes. Images $0.015 per image.");
+  const POOL_PAGE = page("https://p/pool", "Relay Plus Pool 0.03x · Relay Pro Pool 0.05x\ngpt-a gpt-img\nThe relay does not charge cache writes. Images $0.015 per image.");
   const routes = [
     route("p1", "gpt-a", { inputCost: "0.4", outputCost: "2.5", cachedInputCost: "0.05", cacheWriteCost: "0.5" }, { officialInputPrice: "10", officialOutputPrice: "50", officialCachedPrice: "1", officialCacheWritePrice: "12.5" }),
     route("p2", "gpt-img", { inputCost: "0", outputCost: "0", imageCost: "0.02" }, { capabilities: ["images"], officialInputPrice: "5", officialOutputPrice: "30" }),
     route("p3", "gpt-unlisted", { inputCost: "0.1", outputCost: "0.5" }, { officialInputPrice: "2", officialOutputPrice: "10" }),
   ];
-  const run = (poolPct: number, poolName = "Pro Pool") =>
+  const run = (poolPct: number, poolName = "Relay Pro Pool") =>
     buildProposals({
       basis: "pool",
       poolName,
@@ -132,7 +133,7 @@ describe("buildProposals: pool basis", () => {
       routes: routes as never,
       modelSources: {},
       pages: [POOL_PAGE],
-      ai: ai([], { name: "Pro Pool (0.05x)", percent: poolPct, charges_cache_writes: false, image_price: 0.015, models: ["gpt-a", "gpt-img"] }),
+      ai: ai([], { name: "Relay Pro Pool (0.05x)", percent: poolPct, charges_cache_writes: false, image_price: 0.015, models: ["gpt-a", "gpt-img"] }),
     });
 
   it("cost = official x the pool's %, cache writes 0 when the pool does not charge them", () => {

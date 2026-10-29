@@ -2,7 +2,7 @@
 // recorded for that key, day by day. A difference shows requests the upstream billed that we did not (or the other way
 // round): e.g. a generation the upstream finished and billed after the client had gone.
 //
-// Supported: the relay (`GET /v1/usage` with the key: daily totals in Asia/Shanghai days, balance) and any
+// Supported: the relay preset (`GET /v1/usage` with the key: daily totals in Asia/Shanghai days, balance) and any
 // provider with `settings.usageUrl` answering the same shape. Read-only, on demand; never on a timer.
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/lib/db";
@@ -52,7 +52,7 @@ export function usageEndpoint(p: { preset: string; baseUrl: string; settings: un
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)) ? Number(v) : null);
 
-/** Parse a the relay-style usage document. */
+/** Parse a usage document in the relay's `/v1/usage` shape. */
 export function parseUsageDoc(doc: unknown): { balance: number | null; total: number | null; days: Array<{ date: string; requests: number | null; cost: number | null }> } {
   const d = (doc && typeof doc === "object" ? doc : {}) as Record<string, unknown>;
   const daily = Array.isArray(d.daily_usage) ? d.daily_usage : [];

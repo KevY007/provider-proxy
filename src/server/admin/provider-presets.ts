@@ -20,7 +20,7 @@ const FALLBACK: ProviderPreset[] = [
   { id: "azure", name: "Azure OpenAI", baseUrl: "https://YOUR-RESOURCE.openai.azure.com", authStyle: "AZURE_API_KEY", formats: ["openai_chat", "openai_embeddings"], settings: { azureApiVersion: "2024-10-21" } },
   {
     id: "codex-everywhere",
-    name: "the relay",
+    name: "Relay (pool pricing)",
     baseUrl: "https://codex-everywhere.com/v1",
     authStyle: "BEARER",
     formats: ["openai_chat", "openai_responses", "openai_images", "anthropic_messages", "gemini", "openai_embeddings"],

@@ -94,6 +94,10 @@ export async function updateCustomerSettings(input: unknown) {
       const found = await db.group.count({ where: { id: { in: d.extraGroupIds } } });
       if (found !== d.extraGroupIds.length) throw new ActionFail("Pool not found", { extraGroupIds: "Pool not found" });
     }
+    if (d.notifyCc?.includes(target.email.toLowerCase())) {
+      const msg = "The account's own address already gets these emails; remove it from the list";
+      throw new ActionFail(msg, { notifyCc: msg });
+    }
     await db.user.update({
       where: { id: d.userId },
       data: {
@@ -105,6 +109,7 @@ export async function updateCustomerSettings(input: unknown) {
         monthlySpendLimit: d.monthlySpendLimit,
         maxConcurrency: d.maxConcurrency,
         freeWhenEmpty: d.freeWhenEmpty,
+        ...(d.notifyCc !== undefined ? { notifyCc: d.notifyCc } : {}),
       },
     });
     const { userId: _u, ...changes } = d;
@@ -344,6 +349,7 @@ export async function deleteCustomer(userId: string) {
             autoRechargeEnabled: false,
             defaultPaymentMethodId: null,
             lowBalanceAlertAt: null,
+            notifyCc: [],
             signupIp: null,
           },
         }),

@@ -1,16 +1,20 @@
-/** Hydration-safe date formatting for admin tables (always UTC, so server and client render identically). */
-export function fmtDateTime(iso: string | Date | null | undefined, withSeconds = true): string {
-  if (!iso) return "-";
-  const d = typeof iso === "string" ? new Date(iso) : iso;
-  if (Number.isNaN(d.getTime())) return "-";
-  const s = d.toISOString();
-  return `${s.slice(0, 10)} ${s.slice(11, withSeconds ? 19 : 16)}`;
-}
+import { LocalTime } from "@/components/customer/local-time";
 
-export function fmtDate(iso: string | Date | null | undefined): string {
+/** Plain-text UTC date (strings: CSV, titles); on screen use fmtDateTime / fmtDate (the viewer's local time). */
+export function utcDate(iso: string | Date | null | undefined): string {
   if (!iso) return "-";
   const d = typeof iso === "string" ? new Date(iso) : iso;
   return Number.isNaN(d.getTime()) ? "-" : d.toISOString().slice(0, 10);
+}
+
+/** Date and time in the viewer's local timezone (UTC while server-rendering, swapped right after hydration). */
+export function fmtDateTime(iso: string | Date | null | undefined, withSeconds = true): React.ReactNode {
+  return <LocalTime iso={iso} mode="full" seconds={withSeconds} />;
+}
+
+/** Date in the viewer's local timezone. */
+export function fmtDate(iso: string | Date | null | undefined): React.ReactNode {
+  return <LocalTime iso={iso} mode="date" />;
 }
 
 /** "5m ago" style relative time (computed from `now`, pass a stable value from the server when SSR matters). */
@@ -23,5 +27,5 @@ export function timeAgo(iso: string | Date | null | undefined, now: number = Dat
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   if (s < 86400 * 60) return `${Math.floor(s / 86400)}d ago`;
-  return fmtDate(iso);
+  return utcDate(iso);
 }

@@ -25,4 +25,4 @@ are async, ...). Read the matching guide in `node_modules/next/dist/docs/` befor
 - **Pricing vocabulary**: Official price, Your price (customer), Customer price (admin), Our cost, Savings, Margin.
 - **Secrets**: upstream keys never leave the server (only `secretHint` is shown); never log request headers or keys.
 - **Tests** that touch the database create uniquely named fixtures and clean them up (see `tests/gateway/harness.ts`).
-- Live provider tests (`pnpm e2e:live`, `scripts/live-workload`) cost money and need `LIVE_*` keys in your own `.env`.
+- Live provider tests (`pnpm e2e:live`) cost money and need `LIVE_*` keys in your own `.env`.

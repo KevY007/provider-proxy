@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
 import { logger } from "@/lib/logger";
-import { emailTemplates, sendTemplate } from "@/lib/email";
+import { emailTemplates, sendNotification } from "@/lib/email";
 import { Decimal, toDbString, toDecimal, type MoneyLike } from "@/lib/money";
 import type { LedgerType, Payment, PaymentStatus } from "@/generated/prisma/client";
 import { afterLedgerCommit, appendEntryTx } from "./ledger";
@@ -128,9 +128,9 @@ export async function findPaymentForIntent(pi: {
 /** Email the customer about a failed payment. Never throws. */
 export async function notifyPaymentFailed(userId: string, amount: MoneyLike, reason?: string | null): Promise<void> {
   try {
-    const user = await db.user.findUnique({ where: { id: userId }, select: { email: true, name: true } });
+    const user = await db.user.findUnique({ where: { id: userId }, select: { email: true, name: true, notifyCc: true } });
     if (!user) return;
-    await sendTemplate(user.email, emailTemplates.paymentFailed({ name: user.name, amount, reason }));
+    await sendNotification(user, emailTemplates.paymentFailed({ name: user.name, amount, reason }));
   } catch (err) {
     logger.warn("payment failed email not sent", { userId, err });
   }

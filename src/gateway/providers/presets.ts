@@ -183,7 +183,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
   {
     id: "codex-everywhere",
-    name: "the relay",
+    name: "Relay (pool pricing)",
     baseUrl: "https://codex-everywhere.com/v1",
     authStyle: "BEARER",
     formats: ["openai_chat", "openai_responses", "openai_images", "anthropic_messages", "gemini", "openai_embeddings"],
@@ -192,7 +192,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     docsUrl: "https://codex-everywhere.com",
     sampleModels: ["gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-luna", "gpt-image-2", "claude-sonnet-5", "gemini-3.1-pro", "grok-4.7", "deepseek-flash"],
     description:
-      "the relay relay. What a key may call depends on its CE group (OpenAI-only, Claude, Gemini...): untick the formats your key's group does not allow (requests in those formats are then translated), and add one provider per group key. CE publishes no machine-readable prices: enter costs by hand.",
+      "Reseller relay billing a share of the official price per pool. What a key may call depends on its relay group (OpenAI-only, Claude, Gemini...): untick the formats your key's group does not allow (requests in those formats are then translated), and add one provider per group key. The relay publishes no machine-readable prices: enter costs by hand.",
     tags: ["reseller"],
   },
   {

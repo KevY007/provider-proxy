@@ -10,8 +10,8 @@ provider can have any number of upstream keys/accounts. Every request is metered
 the margin and the official list price, so customers can see their savings.
 
 Stack: Next.js 16 (App Router, TypeScript strict) - Prisma 7 + PostgreSQL 16 - Redis 7 (optional, every use has an
-in-memory fallback) - Tailwind v4 + shadcn/ui - Stripe - Vitest. It ships as one container (UI + gateway) on Google
-Cloud Run, with the database on Supabase (any Postgres 16+ works).
+in-memory fallback) - Tailwind v4 + shadcn/ui - Stripe - Vitest. It ships as one container (UI + gateway) on a
+serverless container platform, with the database on a managed Postgres (any Postgres 16+ works).
 
 The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 
@@ -39,8 +39,8 @@ The authoritative design contract is [docs/PLAN.md](docs/PLAN.md).
 - Funds protection: credit holds are placed before any upstream call. When funds are short the gateway answers 402
   without contacting the upstream, and a stream stops when it reaches its hold.
 - Durable batched metering writer with a dead-letter file and replay.
-- Cold by default: an idle server runs no timers and contacts no provider, so Cloud Run scales to zero. Background
-  upkeep runs while calls are served; optional timed uptime pings and jobs (Settings > Monitoring) for 24/7 checks.
+- Cold by default: an idle server runs no timers and contacts no provider, so a serverless container platform can
+  scale it to zero. Background upkeep runs while calls are served; optional timed uptime pings and jobs (Settings > Monitoring) for 24/7 checks.
 
 **Billing**
 - Prepaid pay-as-you-go with Stripe top-ups (saved card or Checkout), auto-recharge, low-balance emails, postpaid
@@ -79,7 +79,7 @@ flowchart LR
   G --> MW --> PG[(PostgreSQL)]
   UI --> PG
   G <-.->|slots, holds, rate limits, cache invalidation| R[(Redis, optional)]
-  S[Cloud Scheduler - optional] -.->|/api/cron/health, /api/cron/billing| UI
+  S[Scheduler - optional] -.->|/api/cron/health, /api/cron/billing| UI
   ST[Stripe] -->|/api/stripe/webhook| UI
 ```
 
@@ -145,9 +145,9 @@ Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `DATABASE_URL` | `postgresql://proxy:proxy@localhost:5433/proxy` | Postgres connection (Supabase: the IPv4 pooler URL; `?schema=name` for a dedicated schema) |
-| `DATABASE_CA_CERT` | unset | CA the database server must chain to (Supabase's certificate, PEM or base64): verify-full TLS |
-| `DIRECT_URL` | unset | Migrations only, when `DATABASE_URL` is a transaction pooler (Supabase: session pooler, port 5432) |
+| `DATABASE_URL` | `postgresql://proxy:proxy@localhost:5433/proxy` | Postgres connection (managed Postgres: its IPv4 pooler URL; `?schema=name` for a dedicated schema) |
+| `DATABASE_CA_CERT` | unset | CA the database server must chain to (your managed Postgres's certificate, PEM or base64): verify-full TLS |
+| `DIRECT_URL` | unset | Migrations only, when `DATABASE_URL` is a transaction pooler (e.g. a session pooler, port 5432) |
 | `DB_POOL_SIZE` | `20` | Postgres pool size per instance |
 | `REDIS_URL` | unset | Optional. Shared slots, holds, rate limits, balance cache and config invalidation. Without it these are in-memory and per instance. |
 | `APP_URL` | `http://localhost:3000` | Public base URL (links in emails, Stripe redirects) |
@@ -157,9 +157,9 @@ Defined in `.env.example` and validated in `src/lib/env.ts`. Blank values count 
 | `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | unset | Optional. Without them billing shows "Stripe not configured" and only redeem codes and admin credits work. |
 | `SMTP_URL` | unset | `smtp://user:pass@host:587`. Unset: emails go to the console and the `EmailOutbox` table. |
 | `EMAIL_FROM` | `ProviderProxy <no-reply@example.com>` | Sender |
-| `CRON_SECRET` | unset | Bearer token for the optional Cloud Scheduler routes `/api/cron/*` (not needed otherwise: background jobs run during calls). `/api/cron/billing` refuses to run without it. `/api/cron/health` runs without it only when `NODE_ENV=development`. |
+| `CRON_SECRET` | unset | Bearer token for the optional scheduler routes `/api/cron/*` (not needed otherwise: background jobs run during calls). `/api/cron/billing` refuses to run without it. `/api/cron/health` runs without it only when `NODE_ENV=development`. |
 | `MOCK_UPSTREAM_URL` | `http://localhost:4010` | Where the dev seed points the "Mock Upstream" provider |
-| `TRUSTED_PROXY_HOPS` | `1` | Trusted reverse proxies in front of the app, used for client-IP detection (Cloud Run = 1, behind a Global LB = 2). `0` = nothing in front: the socket address is used and any client-sent `X-Forwarded-For` is ignored (`docker-compose.prod.yml` sets this). |
+| `TRUSTED_PROXY_HOPS` | `1` | Trusted reverse proxies in front of the app, used for client-IP detection (one platform front end = 1, plus a load balancer in front of it = 2). `0` = nothing in front: the socket address is used and any client-sent `X-Forwarded-For` is ignored (`docker-compose.prod.yml` sets this). |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `SEARCH_INDEXING` | unset (indexed) | `off` keeps the deployment out of search engines: `robots.txt` disallows everything and pages carry `X-Robots-Tag: noindex` (API paths untouched) |
 
@@ -179,7 +179,7 @@ Optional, **dev only** (gitignored `.env`, never commit them, never needed in pr
 
 | Variable | Used by |
 |---|---|
-| `LIVE_OPENAI_API_KEY` | `pnpm setup:live`, `pnpm e2e:live`, live-workload runner |
+| `LIVE_OPENAI_API_KEY` | `pnpm setup:live`, `pnpm e2e:live` |
 | `LIVE_ANTHROPIC_API_KEY` | same |
 | `LIVE_FAL_KEY` | same (fal.ai images) |
 | `LIVE_REPLICATE_API_TOKEN` | same (Replicate images) |
@@ -203,10 +203,11 @@ the `LIVE_*` keys and spend real money.
 
 ## Deploying
 
-Google Cloud Run (scales to zero by default) + Supabase Postgres + Secret Manager (Memorystore Redis and Cloud Scheduler optional):
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), with the full copy/paste walkthrough in
-[deploy/README.md](deploy/README.md). Any Docker host also works: set `POSTGRES_PASSWORD` (required) and the
-secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --build`.
+The image runs anywhere containers run (a serverless container platform that scales to zero works well). It needs
+PostgreSQL 16+, and optionally Redis for more than one instance. Apply migrations with `pnpm db:deploy` (or the same
+command inside the image: `cd /prisma-cli && node node_modules/prisma/build/index.js migrate deploy`). On a single
+Docker host: set `POSTGRES_PASSWORD` (required) and the secrets in `.env`, then run
+`docker compose -f docker-compose.prod.yml up -d --build`.
 
 ## Documentation
 
@@ -214,15 +215,11 @@ secrets in `.env`, then run `docker compose -f docker-compose.prod.yml up -d --b
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Components, request pipeline, translation, stateful objects, caching, metering, background jobs |
 | [docs/LOCAL-DEVELOPMENT.md](docs/LOCAL-DEVELOPMENT.md) | Bring-up, multiple dev servers, mock upstream markers, tests, Windows notes |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production on Google Cloud |
 | [docs/ADMIN-GUIDE.md](docs/ADMIN-GUIDE.md) | Running the admin console |
 | [docs/API-GUIDE.md](docs/API-GUIDE.md) | Endpoint inventory and behaviour for integrators. Examples are in the in-app `/docs`. |
 | [docs/PRICING-AND-BILLING.md](docs/PRICING-AND-BILLING.md) | Pricing vocabulary, rules, holds, Stripe, ledger |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | Runbook: background jobs, dead letters, key rotation, incidents, monitoring, backups |
 | [docs/PLAN.md](docs/PLAN.md) | Architecture contract (authoritative) |
 | [docs/CONNECTION-FIDELITY.md](docs/CONNECTION-FIDELITY.md) | Fidelity evidence (chaos, drain, big bodies) |
-| [docs/LIVE-WORKLOAD-REPORT.md](docs/LIVE-WORKLOAD-REPORT.md) | Live workload test results |
-| [docs/HANDOFF.md](docs/HANDOFF.md), [docs/FOUNDATION.md](docs/FOUNDATION.md), [docs/FIXES-PROGRESS.md](docs/FIXES-PROGRESS.md) | Development history and conventions |
 | [CONTRIBUTING.md](CONTRIBUTING.md), [SECURITY.md](SECURITY.md) | Contributing, reporting vulnerabilities |
 
 ## Project map
@@ -240,7 +237,6 @@ src/lib/                 db, env, crypto, money, redis, ratelimit, settings, aud
 src/components/          ui (shadcn), shell, common, admin, customer, billing, marketing (docs content)
 scripts/                 mock upstream, chaos, live setup / e2e, init-env, h2c check
 tests/                   vitest suites (gateway, billing, admin, customer, pricing, lib)
-deploy/                  Cloud Build config, migrate script, Google Cloud walkthrough
 ```
 
 ## License

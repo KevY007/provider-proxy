@@ -11,6 +11,7 @@ import type { ActionResult } from "@/lib/auth/types";
 import { randomToken } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { getClientIp } from "@/lib/http";
+import { parseNotifyCc } from "@/lib/notify-cc";
 import { fail, invalidInput, withUser } from "./action-utils";
 
 export async function updateProfileAction(input: unknown): Promise<ActionResult> {
@@ -19,6 +20,19 @@ export async function updateProfileAction(input: unknown): Promise<ActionResult>
   return withUser("updateProfile", async (s) => {
     await db.user.update({ where: { id: s.user.id }, data: { name: parsed.data.name?.trim() || null } });
     return { ok: true, message: "Profile updated" };
+  });
+}
+
+/** Notification copies: the signed-in user's own list of BCC addresses for balance and billing notifications. */
+export async function updateNotifyCcAction(input: unknown): Promise<ActionResult<{ notifyCc: string[] }>> {
+  const raw = (input as { notifyCc?: unknown } | null)?.notifyCc;
+  return withUser<{ notifyCc: string[] }>("updateNotifyCc", async (s) => {
+    const r = parseNotifyCc(raw, s.user.email);
+    if (!r.ok) return fail(r.error, { notifyCc: r.error });
+    await db.user.update({ where: { id: s.user.id }, data: { notifyCc: r.value } });
+    const ip = getClientIp(await headers());
+    await audit(s.user.id, "account.notify_cc", { type: "User", id: s.user.id }, { notifyCc: r.value }, ip);
+    return { ok: true, data: { notifyCc: r.value }, message: r.value.length ? "Notification copies saved" : "Notification copies removed" };
   });
 }
 
@@ -52,6 +66,7 @@ export async function deleteAccountAction(input: unknown): Promise<ActionResult<
           totpSecret: null,
           totpEnabled: false,
           autoRechargeEnabled: false,
+          notifyCc: [],
           signupIp: null,
         },
       }),
