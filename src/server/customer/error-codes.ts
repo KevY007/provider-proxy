@@ -21,7 +21,7 @@ export const ERROR_CODES: ErrorCodeInfo[] = [
   { code: "rate_limited", http: 429, meaning: "Too many requests per minute/tokens, or too many concurrent requests.", fix: "Back off and retry after the `retry-after` header; lower concurrency or raise the key limits." },
   { code: "no_capacity", http: 429, meaning: "All capacity was busy for longer than the queue timeout.", fix: "Retry after the `retry-after` header. Official SDKs do this automatically." },
   { code: "no_available_provider", http: 503, meaning: "This model is temporarily unavailable.", fix: "Retry shortly; check the Status page." },
-  { code: "upstream_insufficient_balance", http: 503, meaning: "This model is temporarily out of capacity (not your balance).", fix: "Retry later. If it persists, contact support." },
+  { code: "upstream_insufficient_balance", http: 503, meaning: "The upstream model is out of capacity / funding (not your balance).", fix: "Retry later. If it persists, contact support." },
   { code: "upstream_timeout", http: 504, meaning: "The model took too long to respond.", fix: "Retry; use streaming for long generations." },
   { code: "upstream_error", http: 502, meaning: "The model returned an error or was unreachable.", fix: "Retry with backoff. If it persists, share the request id with support." },
   { code: "invalid_request", http: 400, meaning: "The request body or parameters are invalid.", fix: "Check the error message for the offending field and compare with the API reference." },

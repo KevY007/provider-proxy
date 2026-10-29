@@ -58,6 +58,8 @@ export interface KeyRec {
   dailyBudget: Decimal | null;
   cooldownUntil: number | null;
   consecutiveFailures: number;
+  /** last upstream failure as stored ("<status>: <message>"), so every instance knows why a key is paused */
+  lastError?: string | null;
   extra: JsonObject;
 }
 
@@ -224,6 +226,7 @@ async function loadSnapshot(): Promise<ConfigSnapshot> {
       dailyBudget: k.dailyBudget ? toDecimal(k.dailyBudget) : null,
       cooldownUntil: k.cooldownUntil ? k.cooldownUntil.getTime() : null,
       consecutiveFailures: k.consecutiveFailures,
+      lastError: k.lastError,
       extra: asRecord(k.extra),
     };
     const arr = keysByProvider.get(k.providerId);
