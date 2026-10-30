@@ -945,7 +945,8 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else if (info.reason !== "completed" && TOKEN_OPS.has(path.op)) {
     // a stream that did not reach its end has no final usage (Anthropic reports output_tokens: 1 in message_start and
     // the real count only in message_delta): bill at least what the client received
-    const seen = await countTokens(processor.outputText());
+    // (thinking that was streamed counts too: it is output the client received, and the upstream bills it)
+    const seen = await countTokens(processor.outputText() + (processor.reasoningText?.() ?? ""));
     if (seen > usage.outputTokens) usage = { ...usage, outputTokens: seen, estimated: true };
   }
 
@@ -1000,14 +1001,18 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else if (info.inband && err) {
     // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
     recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
-    const unbilled = providerSettings(cand.route.provider).unbilledStreamErrors && !hasReportedUsage(reported);
+    // an upstream that does not bill a stream it ends with an error: nothing is billed when the client received nothing;
+    // output that was already streamed is billed to the customer, our cost is 0
+    const upstreamUnbilled = !!providerSettings(cand.route.provider).unbilledStreamErrors && !hasReportedUsage(reported);
+    const unbilled = upstreamUnbilled && !delivered;
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: err.status >= 400 ? err.status : 502,
       errorCode: err.status === 429 ? "rate_limited" : err.status === 529 ? "upstream_overloaded" : "upstream_error",
       errorMessage: "The upstream provider returned an error.",
-      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}${unbilled ? " (not billed: the upstream does not bill a stream it ends with an error)" : ""}`,
+      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}${unbilled ? " (not billed: the upstream does not bill a stream it ends with an error)" : upstreamUnbilled ? " (the delivered output is billed; our cost 0: the upstream does not bill a stream it ends with an error)" : ""}`,
       usage: unbilled ? emptyUsage() : usage,
+      ...(upstreamUnbilled && delivered ? { upstreamUnbilled: true } : {}),
       ttftMs: info.firstOutputMs,
     });
   } else {
