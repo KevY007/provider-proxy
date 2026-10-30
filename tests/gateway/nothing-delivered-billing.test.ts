@@ -74,7 +74,7 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     expect(log.outputTokens).toBeGreaterThan(0);
     expect(Number(log.price)).toBeGreaterThan(0);
   });
-  it("unbilledStreamErrors: a stream the upstream ends with its own error event is not billed, even after output", async () => {
+  it("unbilledStreamErrors: a stream the upstream ends with its own error event costs us nothing; the output the client received is still billed", async () => {
     const run = async (model: string) => {
       const res = await h.call("/v1/chat/completions", key, { model, stream: true, messages: [{ role: "user", content: "write [[words:200]]" }] }, { headers: { "x-mock-mode": "error-after:8" } });
       const text = await res.text();
@@ -86,9 +86,11 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     expect(Number(billed.price)).toBeGreaterThan(0);
     const unbilled = await run(unbilledSlug);
     expect(unbilled.status).toBe("UPSTREAM_ERROR");
-    expect(Number(unbilled.price)).toBe(0);
+    expect(unbilled.outputTokens).toBeGreaterThan(0);
+    expect(Number(unbilled.price)).toBeGreaterThan(0);
     expect(Number(unbilled.cost)).toBe(0);
-    expect(unbilled.internalError).toMatch(/not billed/);
+    expect(Number(unbilled.profit)).toBe(Number(unbilled.price));
+    expect(unbilled.internalError).toMatch(/our cost 0/);
   }, 30_000);
   it("OpenAI does not bill a cancelled stream: the customer pays the delivered output, our cost is 0", async () => {
     const cancelAfterText = async (model: string) => {

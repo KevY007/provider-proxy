@@ -306,7 +306,7 @@ export function providerSettings(p: { settings: JsonObject }) {
     // the upstream ignores max_output_tokens: the gateway enforces it on the streamed output and ends with response.incomplete
     enforceMaxOutputTokens: s.enforceMaxOutputTokens === true,
     // the upstream does not bill a stream it ends with its own error event (e.g. a relay with a ~900 s cap, "Upstream
-    // service temporarily unavailable"): such a stream is not billed to the customer either, even if output was delivered
+    // service temporarily unavailable"): our cost is 0, and the customer is billed only for output that reached them
     unbilledStreamErrors: s.unbilledStreamErrors === true,
     // several providers on ONE upstream account share its concurrency limit (e.g. a relay: 20 per account, over
     // all its pools): { group: "<any id>", max: 20 }. Requests beyond it wait in the queue.
