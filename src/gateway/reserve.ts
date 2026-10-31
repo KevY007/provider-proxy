@@ -250,17 +250,17 @@ export async function reserveFunds(ctx: Ctx): Promise<void> {
   const slope = plan.textOut ? priceOf(ctx, usageAt(1_000_000)).minus(flat).div(1_000_000).div(n) : ZERO; // per output token of ONE choice
 
   const minBalance = new Decimal(snap.settings.minBalanceToCall);
-  const headroomExtra = user.creditLimit.minus(minBalance);
+  // free when empty (admin switch): no balance check, no clamp, no stream cutoff - the request always runs and the
+  // meter writer takes from the balance only what it still covers (it never goes below 0). Key and monthly spend
+  // limits are customer-set caps and still apply. The headroom goes into headroomExtra, not the balance: a shared
+  // (Redis) balance and the DB re-check below both replace `base`, the headroom applies either way.
+  const freeWhenEmpty = user.freeWhenEmpty;
+  const headroomExtra = user.creditLimit.minus(minBalance).plus(freeWhenEmpty ? FREE_WHEN_EMPTY_HEADROOM : ZERO);
   const monthlyLimit = user.monthlySpendLimit;
   const monthlyRemaining = monthlyLimit ? monthlyLimit.minus(await userMonthlySpend(user.id)) : null;
   const keyRemaining = key.spendLimit ? key.spendLimit.minus(key.spent).minus(ctx.auth!.spentDelta) : null;
 
   let base = await getBalance(user.id, { balance: user.balance, at: ctx.auth!.loadedAt });
-  // free when empty (admin switch): no balance check, no clamp, no stream cutoff - the request always runs and the
-  // meter writer takes from the balance only what it still covers (it never goes below 0). Key and monthly spend
-  // limits are customer-set caps and still apply.
-  const freeWhenEmpty = user.freeWhenEmpty;
-  if (freeWhenEmpty) base = base.plus(FREE_WHEN_EMPTY_HEADROOM);
   let confirmedWithDb = false;
   let clamped = false;
   let last: { reason: "balance" | "monthly" | "key"; amount: Decimal; available: Decimal; affordTokens: number | null; internal: string } | null = null;
@@ -369,9 +369,9 @@ export async function reserveBatchHold(ctx: Ctx, amount: Decimal): Promise<HoldR
   const monthlyRemaining = user.monthlySpendLimit ? user.monthlySpendLimit.minus(await userMonthlySpend(user.id)) : null;
   const keyRemaining = key.spendLimit ? key.spendLimit.minus(key.spent).minus(ctx.auth!.spentDelta) : null;
   let base = await getBalance(user.id, { balance: user.balance, at: ctx.auth!.loadedAt });
-  if (user.freeWhenEmpty) base = base.plus(FREE_WHEN_EMPTY_HEADROOM);
+  const headroomExtra = user.creditLimit.minus(minBalance).plus(user.freeWhenEmpty ? FREE_WHEN_EMPTY_HEADROOM : ZERO);
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await reserveHold({ id, userId: user.id, keyId: key.id, amount, base, headroomExtra: user.creditLimit.minus(minBalance), monthlyRemaining, keyRemaining, ttlMs: BATCH_HOLD_TTL_MS });
+    const r = await reserveHold({ id, userId: user.id, keyId: key.id, amount, base, headroomExtra, monthlyRemaining, keyRemaining, ttlMs: BATCH_HOLD_TTL_MS });
     if (r.ok) return amount.gt(0) ? { id, userId: user.id, keyId: key.id, backend: r.backend, createdAt: Date.now() } : null;
     const internal = `batch hold=${amount.toFixed(6)} available=${r.available.toFixed(6)} reason=${r.reason}`;
     if (r.reason === "balance" && attempt === 0) {

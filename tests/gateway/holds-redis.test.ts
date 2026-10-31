@@ -70,6 +70,16 @@ describe.skipIf(!up)("credit holds (Redis backend)", () => {
     expect(res[0].sharedBalance?.toString()).toBe("1"); // the check reports the shared balance it used (stale-low recovery)
   });
 
+  it("a seeded shared balance replaces `base`; headroomExtra always applies (free-when-empty headroom goes there)", async () => {
+    const u = uid();
+    made.push(u);
+    expect((await holds.reserveHold(input(u, "f0", "0", { base: new D("0.019") }))).ok).toBe(true); // seeds bal = 0.019
+    // headroom added to base is ignored once the shared balance exists
+    expect((await holds.reserveHold(input(u, "f1", "1.73", { base: new D("1000000.019") }))).ok).toBe(false);
+    // the same headroom as headroomExtra is honoured
+    expect((await holds.reserveHold(input(u, "f2", "1.73", { base: new D("0.019"), headroomExtra: new D("1000000") }))).ok).toBe(true);
+  });
+
   it("every hold has its own expiry", async () => {
     const u = uid();
     made.push(u);
