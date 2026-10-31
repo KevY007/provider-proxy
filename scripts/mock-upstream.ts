@@ -1154,6 +1154,16 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
   }
   frames.push(ev("response.created", { response: base("in_progress", [], null) }));
   frames.push(ev("response.in_progress", { response: base("in_progress", [], null) }));
+  // `[[summary:N]]`: a reasoning item whose summary streams N words first (one delta each), like a reasoning model
+  const summaryWords = Number(/\[\[summary:(\d+)\]\]/.exec(JSON.stringify(b))?.[1] ?? 0);
+  if (summaryWords > 0) {
+    const rsId = `rs_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    const words = Array.from({ length: summaryWords }, (_, i) => `step${i} `);
+    frames.push(ev("response.output_item.added", { output_index: 0, item: { id: rsId, type: "reasoning", summary: [] } }));
+    frames.push(ev("response.reasoning_summary_part.added", { item_id: rsId, output_index: 0, summary_index: 0, part: { type: "summary_text", text: "" } }));
+    for (const w of words) frames.push(ev("response.reasoning_summary_text.delta", { item_id: rsId, output_index: 0, summary_index: 0, delta: w }));
+    frames.push(ev("response.reasoning_summary_text.done", { item_id: rsId, output_index: 0, summary_index: 0, text: words.join("") }));
+  }
   extra.forEach((item, i) => {
     frames.push(ev("response.output_item.added", { output_index: i, item: { ...item, status: "in_progress" } }));
     frames.push(ev("response.output_item.done", { output_index: i, item }));

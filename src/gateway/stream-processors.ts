@@ -194,6 +194,7 @@ export class ResponsesStreamPassthrough extends Base {
   private lastSeq = -1;
   private visibleChars = 0;
   private stopped = false;
+  private thinking = new TextAcc(500_000);
 
   constructor(
     private readonly publicModel: string | null,
@@ -204,6 +205,10 @@ export class ResponsesStreamPassthrough extends Base {
 
   halted(): boolean {
     return this.stopped;
+  }
+
+  reasoningText(): string {
+    return this.thinking.toString();
   }
 
   /** The client's output cap was reached (the upstream ignores it): end like OpenAI does, with response.incomplete. */
@@ -268,6 +273,11 @@ export class ResponsesStreamPassthrough extends Base {
         this.stopped = true;
         return [modified ? emit(ev, d) : rawBlock(ev), this.capEvent()];
       }
+    }
+    // streamed reasoning (summary or raw text) is output too, like Anthropic thinking: billed if the stream is cut early
+    else if ((type === "response.reasoning_summary_text.delta" || type === "response.reasoning_text.delta") && typeof d.delta === "string") {
+      this.text.add(d.delta);
+      this.thinking.add(d.delta);
     }
     else if (type === "response.completed" || type === "response.incomplete") {
       this.done = true;

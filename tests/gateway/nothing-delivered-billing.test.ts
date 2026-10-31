@@ -13,6 +13,7 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
   let slug = "";
   let unbilledSlug = "";
   let openaiSlug = "";
+  let respSlug = "";
   const before = { hold: 0, beat: 0 };
 
   beforeAll(async () => {
@@ -27,6 +28,8 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     unbilledSlug = (await h.makeModel("u", { caps: ["chat"], providerId: relay.id })).slug;
     const oa = await h.makeProvider("oa", { formats: ["openai_chat"], preset: "openai", keys: [{ s: "o1" }] });
     openaiSlug = (await h.makeModel("o", { caps: ["chat"], providerId: oa.id })).slug;
+    const rp = await h.makeProvider("rp", { formats: ["openai_responses"], settings: { badGatewayRetrySec: 0 }, keys: [{ s: "rp1" }] });
+    respSlug = (await h.makeModel("r", { caps: ["chat", "responses"], providerId: rp.id })).slug;
     const u = await h.makeUser("u", { balance: "50" });
     key = (await h.makeKey("k", u.id)).key;
   });
@@ -91,6 +94,29 @@ describe.skipIf(!dbOk)("billing when nothing was delivered", () => {
     expect(Number(unbilled.cost)).toBe(0);
     expect(Number(unbilled.profit)).toBe(Number(unbilled.price));
     expect(unbilled.internalError).toMatch(/our cost 0/);
+  }, 30_000);
+  it("Responses stream cut while only the reasoning summary had streamed: the streamed reasoning is billed", async () => {
+    // (slow enough that the response is committed by the start hold first, as in production, so the cut is not failed over)
+    const res = await h.call("/v1/responses", key, { model: respSlug, stream: true, input: "think [[summary:200]]" }, { headers: { "x-mock-mode": "rst-after:120,early-headers", "x-mock-delay-ms": "20" } });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const dec = new TextDecoder();
+    let text = "";
+    try {
+      for (;;) {
+        const r = await reader.read();
+        if (r.done) break;
+        text += dec.decode(r.value, { stream: true });
+      }
+    } catch {
+      /* the connection breaks the way the upstream's did */
+    }
+    expect(text).toMatch(/reasoning_summary_text\.delta/);
+    expect(text).not.toMatch(/output_text\.delta/); // cut before any answer text
+    const log = await h.logOf(res);
+    expect(log.status).toBe("UPSTREAM_ERROR");
+    expect(log.outputTokens).toBeGreaterThan(50); // ~115 summary deltas reached the client
+    expect(Number(log.price)).toBeGreaterThan(0);
   }, 30_000);
   it("OpenAI does not bill a cancelled stream: the customer pays the delivered output, our cost is 0", async () => {
     const cancelAfterText = async (model: string) => {
