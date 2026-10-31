@@ -945,8 +945,8 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else if (info.reason !== "completed" && TOKEN_OPS.has(path.op)) {
     // a stream that did not reach its end has no final usage (Anthropic reports output_tokens: 1 in message_start and
     // the real count only in message_delta): bill at least what the client received
-    // (thinking that was streamed counts too: it is output the client received, and the upstream bills it)
-    const seen = await countTokens(processor.outputText() + (processor.reasoningText?.() ?? ""));
+    // (the processors' output text includes the thinking that was streamed: it reached the client and the upstream bills it)
+    const seen = await countTokens(processor.outputText());
     if (seen > usage.outputTokens) usage = { ...usage, outputTokens: seen, estimated: true };
   }
 
