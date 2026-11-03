@@ -847,7 +847,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
     heartbeatMs,
     startedAt: t0,
     isPreamble: (ev) => isPreambleEvent(prepared.upstreamFormat, ev),
-    guard: ctx.funds?.outputTokens
+    guard: ctx.funds?.outputTokens && ctx.funds.cutAtTokens
       ? {
           exceeded: () => streamExceedsHold(ctx, processor),
           events: () => {

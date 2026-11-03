@@ -61,4 +61,22 @@ describe.skipIf(!dbOk)("free when empty", () => {
     const look = await h.call(`/v1/requests/${lc.id}`, key);
     expect(Number(((await look.json()) as { charged_usd: number }).charged_usd)).toBeCloseTo(4.5, 6);
   });
+
+  it("on: a stream is never cut by the funds guard (no cutoff), so the upstream is called once", async () => {
+    // regression: cutAtTokens 0 ("no cutoff") made the guard cut every stream at its first event (0 >= 0), so the first
+    // upstream attempt was dropped before any output and retried - the upstream billed both attempts
+    const u = await h.makeUser("stream", { balance: "10" });
+    await db.user.update({ where: { id: u.id }, data: { freeWhenEmpty: true } });
+    await invalidateGatewayConfig("users", u.id);
+    const { key } = await h.makeKey("stream", u.id);
+    const res = await h.call("/v1/chat/completions", key, { model: slug, stream: true, messages: [{ role: "user", content: "write [[words:300]]" }] });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("[DONE]");
+    expect(text).not.toMatch(/insufficient_balance|balance was used up/);
+    const log = await h.logOf(res);
+    expect(log.status).toBe("SUCCESS");
+    expect((log.attempts as unknown[]).length).toBe(1);
+    expect(log.outputTokens).toBeGreaterThanOrEqual(300);
+  });
 });
