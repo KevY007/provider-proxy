@@ -439,7 +439,8 @@ export function streamOutputTokens(f: FundsState, p: StreamProcessor): number {
  */
 export function streamExceedsHold(ctx: Ctx, p: StreamProcessor): boolean {
   const f = ctx.funds;
-  if (!f || !f.outputTokens || f.cut) return false;
+  // cutAtTokens 0 = no cutoff (free when empty): `0 >= 0` would otherwise cut every stream at its first event
+  if (!f || !f.outputTokens || !f.cutAtTokens || f.cut) return false;
   if (p.completed()) return false;
   return streamOutputTokens(f, p) >= f.cutAtTokens;
 }
