@@ -288,6 +288,61 @@ describe("provider adapters", () => {
     expect(h({ extraHeaders: { authorization: "Bearer evil", "x-team": "a" } }, "openai_chat")).toMatchObject({ authorization: "Bearer SECRET", "x-team": "a" });
   });
 
+  describe("settings.userAgent", () => {
+    const ua = (settings: Record<string, unknown>, inbound?: Headers) =>
+      buildUpstreamHeaders({ provider: mk({ authStyle: "X_API_KEY", settings }), format: "anthropic_messages", secret: "S", stream: false, inbound });
+    const cli = new Headers({ "user-agent": "claude-cli/2.1.318 (external, cli)", "x-app": "cli" });
+
+    it("defaults to passthrough: the client's user-agent and x-app go upstream", () => {
+      const h = ua({}, cli);
+      expect(h["user-agent"]).toBe("claude-cli/2.1.318 (external, cli)");
+      expect(h["x-app"]).toBe("cli");
+    });
+
+    it("passthrough sends no user-agent or x-app when the client sent none (no gateway identity is invented)", () => {
+      for (const h of [ua({}, new Headers()), ua({})]) {
+        expect(h["user-agent"]).toBeUndefined();
+        expect(h["x-app"]).toBeUndefined();
+      }
+    });
+
+    it("'passthrough' spelled out behaves like the default", () => {
+      expect(ua({ userAgent: "passthrough" }, cli)["user-agent"]).toBe("claude-cli/2.1.318 (external, cli)");
+      expect(ua({ userAgent: "passthrough" }, new Headers())["user-agent"]).toBeUndefined();
+    });
+
+    it("never sends the old ProviderProxy/1.0 identity", () => {
+      for (const s of [{}, { userAgent: "passthrough" }, { userAgent: "claude-code" }, { userAgent: "x" }]) {
+        expect(JSON.stringify(ua(s, new Headers()))).not.toContain("ProviderProxy");
+      }
+    });
+
+    it("a known preset name sends that client's user-agent regardless of the caller", () => {
+      const h = ua({ userAgent: "claude-code" }, new Headers({ "user-agent": "curl/8.0" }));
+      expect(h["user-agent"]).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
+      expect(h["x-app"]).toBe("cli");
+    });
+
+    it("any other value is sent as the user-agent verbatim", () => {
+      expect(ua({ userAgent: "Acme-Agent/9.9" }, cli)["user-agent"]).toBe("Acme-Agent/9.9");
+    });
+
+    it("ignores a non-string or blank setting (passthrough)", () => {
+      expect(ua({ userAgent: 5 }, cli)["user-agent"]).toBe("claude-cli/2.1.318 (external, cli)");
+      expect(ua({ userAgent: "  " }, cli)["user-agent"]).toBe("claude-cli/2.1.318 (external, cli)");
+    });
+
+    it("strips control characters from a client user-agent before forwarding", () => {
+      const h = ua({}, new Headers({ "user-agent": "evil\tagent" }));
+      expect(h["user-agent"]).not.toMatch(/[\u0000-\u001f\u007f]/);
+    });
+
+    it("admin extraHeaders can still override the user-agent", () => {
+      const h = buildUpstreamHeaders({ provider: mk({ authStyle: "X_API_KEY", extraHeaders: { "user-agent": "Pinned/1" } }), format: "anthropic_messages", secret: "S", stream: false, inbound: cli });
+      expect(h["user-agent"]).toBe("Pinned/1");
+    });
+  });
+
   it("forwards anthropic-version/beta (default 2023-06-01 or provider setting) and x-mock-* only to mock providers", () => {
     const inbound = new Headers({ "anthropic-version": "2024-01-01", "anthropic-beta": "tools-2024", "x-mock-delay-ms": "50", authorization: "Bearer customer-key" });
     const a = buildUpstreamHeaders({ provider: mk({ authStyle: "X_API_KEY" }), format: "anthropic_messages", secret: "S", stream: true, inbound });
