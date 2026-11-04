@@ -2,7 +2,7 @@ import "server-only";
 import { db } from "@/lib/db";
 import { toolUsageCsv, toolUsageMap } from "@/lib/tool-usage";
 import { dstr0 } from "./serialize";
-import { LOG_PAGE_SIZE, buildLogWhere, encodeCursor, type LogCursor, type LogFilters } from "./logs-query";
+import { LOG_PAGE_SIZE, buildLogWhere, encodeCursor, summarizeAttempts, type LogCursor, type LogFilters } from "./logs-query";
 
 const rowSelect = {
   id: true,
@@ -24,6 +24,7 @@ const rowSelect = {
   officialPrice: true,
   latencyMs: true,
   queueMs: true,
+  attempts: true,
   toolUsage: true,
   batchId: true,
   user: { select: { id: true, email: true } },
@@ -59,9 +60,21 @@ export interface LogRow {
   officialPrice: string;
   latencyMs: number;
   queueMs: number;
+  /** upstream attempts made, and how many failed before the request ended (the gateway's silent retries) */
+  attempts: number;
+  retries: number;
+  /** time spent in the failed attempts */
+  retryMs: number;
+  /** short texts of the failed attempts' errors */
+  retryErrors: string[];
   /** Server tools used ("web_search_request=2; ..."), "" when none. */
   serverTools: string;
   batchId: string | null;
+}
+
+function retryFields(raw: unknown) {
+  const s = summarizeAttempts(raw);
+  return { attempts: s.attempts, retries: s.failed, retryMs: s.failedMs, retryErrors: s.errors };
 }
 
 function toRow(r: Awaited<ReturnType<typeof fetchRows>>[number]): LogRow {
@@ -90,6 +103,7 @@ function toRow(r: Awaited<ReturnType<typeof fetchRows>>[number]): LogRow {
     officialPrice: dstr0(r.officialPrice),
     latencyMs: r.latencyMs,
     queueMs: r.queueMs,
+    ...retryFields(r.attempts),
     serverTools: toolUsageCsv(toolUsageMap(r.toolUsage)),
     batchId: r.batchId,
   };
