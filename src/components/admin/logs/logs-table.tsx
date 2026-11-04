@@ -51,7 +51,8 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
         <FilterSelect param="stream" label="Stream" options={[{ value: "yes", label: "Streaming" }, { value: "no", label: "Non-stream" }]} />
         <FilterInput param="endpoint" placeholder="Endpoint" className="w-40" />
         <FilterInput param="minLatency" placeholder="Min latency ms" type="number" className="w-36" />
-        <ResetFilters keys={["user", "key", "model", "provider", "providerKey", "status", "errorCode", "stream", "endpoint", "minLatency"]} />
+        <FilterSelect param="retried" label="Retries" options={[{ value: "yes", label: "Retried upstream" }]} />
+        <ResetFilters keys={["user", "key", "model", "provider", "providerKey", "status", "errorCode", "stream", "endpoint", "minLatency", "retried"]} />
         <Button variant="outline" size="sm" className="ml-auto" asChild>
           <a href={`/admin/logs/export${exportQuery ? `?${exportQuery}` : ""}`}>
             <Download className="size-4" /> Export CSV
@@ -127,6 +128,11 @@ export function LogsTable({ rows, hasOlder, hasNewer, olderCursor, newerCursor, 
                       {r.httpStatus}
                       {r.errorCode ? ` ${r.errorCode}` : ""}
                     </span>
+                    {r.retries > 0 && (
+                      <span className="mt-0.5 block text-xs font-medium text-amber-600 dark:text-amber-400" title={r.retryErrors.join("\n")}>
+                        {r.retries} failed attempt{r.retries === 1 ? "" : "s"} · {Math.round(r.retryMs / 1000)}s
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {formatNumber(r.inputTokens)} / {formatNumber(r.outputTokens)}

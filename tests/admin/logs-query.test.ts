@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildLogWhere, decodeCursor, encodeCursor, filtersToQuery, parseLogFilters } from "@/server/admin/logs-query";
+import { buildLogWhere, decodeCursor, encodeCursor, filtersToQuery, parseLogFilters, summarizeAttempts } from "@/server/admin/logs-query";
 
 describe("cursor", () => {
   it("roundtrips, including ids containing underscores", () => {
@@ -42,5 +42,51 @@ describe("buildLogWhere", () => {
   });
   it("filtersToQuery keeps only known keys", () => {
     expect(filtersToQuery({ model: "m", cursor: "x", evil: "1" })).toBe("model=m");
+  });
+});
+
+describe("summarizeAttempts", () => {
+  it("counts the failed attempts before the one that answered", () => {
+    const s = summarizeAttempts([
+      { status: 0, error: "stream failed before first event: terminated (ECONNRESET)", latencyMs: 36917 },
+      { status: 522, error: "codex 522: Connection timed out", latencyMs: 20865 },
+      { status: 200, latencyMs: 22278 },
+    ]);
+    expect(s).toEqual({ attempts: 3, failed: 2, failedMs: 57782, errors: ["stream failed before first event: terminated (ECONNRESET)", "codex 522: Connection timed out"] });
+  });
+
+  it("a single clean attempt has nothing to show", () => {
+    expect(summarizeAttempts([{ status: 200, latencyMs: 900 }])).toEqual({ attempts: 1, failed: 0, failedMs: 0, errors: [] });
+  });
+
+  it("tolerates junk, missing fields and non-arrays", () => {
+    expect(summarizeAttempts(null)).toEqual({ attempts: 0, failed: 0, failedMs: 0, errors: [] });
+    expect(summarizeAttempts([null, "x", { status: 503 }])).toMatchObject({ attempts: 3, failed: 1, errors: ["HTTP 503"] });
+  });
+
+  it("keeps the error list short and deduplicated", () => {
+    const many = Array.from({ length: 9 }, () => ({ status: 0, error: "terminated (ECONNRESET) " + "x".repeat(400) }));
+    const s = summarizeAttempts(many);
+    expect(s.failed).toBe(9);
+    expect(s.errors).toHaveLength(1);
+    expect(s.errors[0].length).toBeLessThanOrEqual(160);
+  });
+});
+
+describe("retried filter", () => {
+  const now = new Date("2026-05-01T12:00:00Z");
+  it("parses retried=yes and ignores anything else", () => {
+    expect(parseLogFilters({ retried: "yes" }, now).retried).toBe("yes");
+    expect(parseLogFilters({ retried: "maybe" }, now).retried).toBe("");
+    expect(parseLogFilters({}, now).retried).toBe("");
+  });
+  it("retried=yes needs a second upstream attempt; no filter adds nothing", () => {
+    const yes = JSON.stringify(buildLogWhere(parseLogFilters({ retried: "yes" }, now)));
+    expect(yes).toContain('"attempts"');
+    expect(yes).toContain('"path":["1","status"]');
+    expect(JSON.stringify(buildLogWhere(parseLogFilters({}, now)))).not.toContain("attempts");
+  });
+  it("travels with the CSV export link", () => {
+    expect(filtersToQuery({ retried: "yes", status: "SUCCESS" })).toContain("retried=yes");
   });
 });

@@ -12,6 +12,7 @@ const COLUMNS = [
   "id", "createdAt", "userId", "email", "keyPrefix", "modelSlug", "upstreamModel", "providerName", "providerKeyLabel",
   "endpoint", "status", "httpStatus", "errorCode", "stream", "inputTokens", "outputTokens", "cachedTokens",
   "serverTools", "batchId", "price", "cost", "profit", "officialPrice", "latencyMs", "queueMs",
+  "attempts", "retries", "retryMs",
 ] as const;
 
 export async function GET(req: Request) {

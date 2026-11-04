@@ -22,6 +22,8 @@ export interface LogFilters {
   stream: "" | "yes" | "no";
   endpoint: string;
   minLatency: number | null;
+  /** "yes": only requests the gateway had to retry upstream (a second attempt exists) */
+  retried: "" | "yes";
 }
 
 export interface LogCursor {
@@ -54,6 +56,7 @@ export function parseLogFilters(sp: SP, now = new Date()): LogFilters {
     stream: stream === "yes" || stream === "no" ? stream : "",
     endpoint: clip("endpoint"),
     minLatency: Number.isFinite(minLat) && minLat > 0 ? minLat : null,
+    retried: one(sp, "retried") === "yes" ? "yes" : "",
   };
 }
 
@@ -90,6 +93,8 @@ export function buildLogWhere(f: LogFilters, cursor?: LogCursor | null, dir: "ol
   if (f.stream) and.push({ stream: f.stream === "yes" });
   if (f.endpoint) and.push({ endpoint: f.endpoint });
   if (f.minLatency) and.push({ latencyMs: { gte: f.minLatency } });
+  // a second attempt exists when attempts[1].status is a number (0 = no response, so >= 0 matches every recorded status)
+  if (f.retried) and.push({ attempts: { path: ["1", "status"], gte: 0 } });
   if (cursor) {
     and.push(
       dir === "older"
@@ -100,9 +105,42 @@ export function buildLogWhere(f: LogFilters, cursor?: LogCursor | null, dir: "ol
   return { AND: and };
 }
 
+export interface AttemptsSummary {
+  /** upstream attempts made for the request */
+  attempts: number;
+  /** attempts that did not succeed (network break, 5xx, in-stream error ...): the silent retries */
+  failed: number;
+  /** time spent in those failed attempts */
+  failedMs: number;
+  /** distinct short error texts of the failed attempts (at most 3) */
+  errors: string[];
+}
+
+const ERROR_CLIP = 160;
+const MAX_ERRORS = 3;
+
+/** What the retry loop did behind a request, for the logs list. Tolerates anything stored in `attempts`. */
+export function summarizeAttempts(raw: unknown): AttemptsSummary {
+  const list = Array.isArray(raw) ? raw : [];
+  const out: AttemptsSummary = { attempts: list.length, failed: 0, failedMs: 0, errors: [] };
+  for (const a of list) {
+    if (!a || typeof a !== "object") continue;
+    const o = a as Record<string, unknown>;
+    const status = typeof o.status === "number" && Number.isFinite(o.status) ? o.status : null;
+    const error = typeof o.error === "string" && o.error.trim() ? o.error.replace(/\s+/g, " ").trim() : null;
+    if (status !== null && status >= 200 && status < 300 && !error) continue;
+    if (status === null && !error) continue; // nothing recorded: not counted as a failure
+    out.failed++;
+    if (typeof o.latencyMs === "number" && Number.isFinite(o.latencyMs)) out.failedMs += o.latencyMs;
+    const text = (error ?? (status === 0 ? "no response" : `HTTP ${status}`)).slice(0, ERROR_CLIP);
+    if (out.errors.length < MAX_ERRORS && !out.errors.includes(text)) out.errors.push(text);
+  }
+  return out;
+}
+
 /** Query-string for linking to the same filtered view (used by the CSV export button). */
 export function filtersToQuery(sp: SP): string {
-  const keys = ["range", "from", "to", "user", "key", "model", "provider", "providerKey", "status", "errorCode", "stream", "endpoint", "minLatency"];
+  const keys = ["range", "from", "to", "user", "key", "model", "provider", "providerKey", "status", "errorCode", "stream", "endpoint", "minLatency", "retried"];
   const out = new URLSearchParams();
   for (const k of keys) {
     const v = one(sp, k);
