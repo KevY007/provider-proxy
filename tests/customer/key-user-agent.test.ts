@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { keyFormSchema } from "@/server/customer/key-schemas";
+import { userAgentMode } from "@/lib/user-agents";
 
 const base = { name: "k" };
 
@@ -17,5 +18,23 @@ describe("key form: userAgent", () => {
   it("strips control characters and rejects overlong text", () => {
     expect(keyFormSchema.parse({ ...base, userAgent: "a\tb\nc" }).userAgent).toBe("a b c");
     expect(keyFormSchema.safeParse({ ...base, userAgent: "x".repeat(301) }).success).toBe(false);
+  });
+});
+
+describe("userAgentMode (what the selector shows)", () => {
+  it("empty / passthrough shows Passthrough", () => {
+    expect(userAgentMode("", false)).toBe("passthrough");
+    expect(userAgentMode("passthrough", false)).toBe("passthrough");
+  });
+  it("a preset id shows that preset, even if the Custom flag is still set", () => {
+    expect(userAgentMode("claude-code", false)).toBe("claude-code");
+    expect(userAgentMode("claude-code", true)).toBe("claude-code");
+  });
+  it("other text shows Custom", () => {
+    expect(userAgentMode("My-Tool/1", false)).toBe("custom");
+  });
+  it("Custom chosen but nothing typed yet stays on Custom (so the text box shows)", () => {
+    expect(userAgentMode("", true)).toBe("custom");
+    expect(userAgentMode("   ", true)).toBe("custom");
   });
 });

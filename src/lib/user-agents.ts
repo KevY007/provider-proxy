@@ -37,3 +37,16 @@ export function findUserAgentPreset(v: unknown): UserAgentPreset | null {
 export function cleanUserAgent(v: string): string {
   return v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300);
 }
+
+export type UserAgentMode = "passthrough" | "custom" | string;
+
+/**
+ * Which selector entry a stored value shows as. `customChosen` is the selector's own "Custom…" flag: it keeps the text
+ * box open while the custom value is still empty (an empty value alone would read as passthrough).
+ */
+export function userAgentMode(value: string, customChosen: boolean): UserAgentMode {
+  const preset = findUserAgentPreset(value);
+  if (preset) return preset.id;
+  if (isPassthrough(value)) return customChosen ? "custom" : PASSTHROUGH;
+  return "custom";
+}
