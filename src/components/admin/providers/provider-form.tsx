@@ -2,6 +2,9 @@
 
 import { MultiSelectField, NumberField, SelectField, TagsField, TextAreaField, JsonField } from "@/components/admin/fields";
 import { TextField } from "@/components/common/form-fields";
+import { UserAgentSelect } from "@/components/common/user-agent-select";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { isPassthrough } from "@/lib/user-agents";
 
 export interface ProviderFormState {
   name: string;
@@ -113,6 +116,7 @@ export function ProviderFormFields({
         <NumberField label="Priority" step="1" value={state.priority} onChange={(v) => set({ priority: v })} error={errors.priority} description="Higher is tried first." />
         <NumberField label="Max concurrency" step="1" min={1} placeholder="unlimited" value={state.maxConcurrency} onChange={(v) => set({ maxConcurrency: v })} error={errors.maxConcurrency} description="Cap across all keys." />
       </div>
+      <ProviderUserAgent settings={state.settings} onChange={(v) => set({ settings: v })} />
       <div className="grid gap-4 sm:grid-cols-2">
         <JsonField
           label="Extra headers (JSON)"
@@ -126,10 +130,48 @@ export function ProviderFormFields({
           value={state.settings}
           onChange={(v) => set({ settings: v })}
           error={errors.settings}
-          description="anthropicVersion, azureApiVersion, stripFields, forceStreamUsage, anthropicBaseUrl, geminiBaseUrl, idleTimeoutSec (cut a silent stream), noCooldown (true: transient errors never pause this provider's keys), streamUpstream (true: send non-streaming requests upstream as streams and assemble the JSON reply), stripCacheHints (true: remove prompt_cache_breakpoint / prompt_cache_options for an upstream that rejects or ignores them), serviceTiers (a list of the tiers it really serves, e.g. auto and default; requests for other tiers go elsewhere or get a 400), enforceMaxOutputTokens (true: the upstream ignores max_output_tokens, the gateway ends the stream with response.incomplete), userAgent (what this provider tells the upstream the client is. Unset or passthrough = the caller's own user-agent and x-app, nothing invented. claude-code or codex-cli = that client's identity. Any other text is sent as is. Needed by upstream groups that only accept one client), pricingUrl (a URL where this provider publishes its prices, for Fetch pricing), http2 (OPT-IN, default off: true = HTTP/2 to this https upstream; enable only for providers known to speak h2)."
+          description="anthropicVersion, azureApiVersion, stripFields, forceStreamUsage, anthropicBaseUrl, geminiBaseUrl, idleTimeoutSec (cut a silent stream), noCooldown (true: transient errors never pause this provider's keys), streamUpstream (true: send non-streaming requests upstream as streams and assemble the JSON reply), stripCacheHints (true: remove prompt_cache_breakpoint / prompt_cache_options for an upstream that rejects or ignores them), serviceTiers (a list of the tiers it really serves, e.g. auto and default; requests for other tiers go elsewhere or get a 400), enforceMaxOutputTokens (true: the upstream ignores max_output_tokens, the gateway ends the stream with response.incomplete), userAgent (set it with the Client identity selector above), pricingUrl (a URL where this provider publishes its prices, for Fetch pricing), http2 (OPT-IN, default off: true = HTTP/2 to this https upstream; enable only for providers known to speak h2)."
         />
       </div>
       <TextAreaField label="Notes" value={state.notes} onChange={(v) => set({ notes: v })} rows={2} description="Internal only." />
     </div>
+  );
+}
+
+/**
+ * Client identity selector for the provider: reads and writes `userAgent` inside the Settings JSON, so the saved
+ * form is unchanged. Passthrough removes the key. Disabled while the JSON does not parse.
+ */
+function ProviderUserAgent({ settings, onChange }: { settings: string; onChange: (json: string) => void }) {
+  let obj: Record<string, unknown> | null = null;
+  try {
+    const p = JSON.parse(settings || "{}");
+    if (p && typeof p === "object" && !Array.isArray(p)) obj = p as Record<string, unknown>;
+  } catch {
+    obj = null;
+  }
+  const current = obj && typeof obj.userAgent === "string" ? obj.userAgent : "";
+  return (
+    <Field>
+      <FieldLabel htmlFor="provider-ua">Client identity (user-agent)</FieldLabel>
+      <UserAgentSelect
+        id="provider-ua"
+        value={current}
+        disabled={!obj}
+        passthroughLabel="Passthrough (default): the key's choice, else the caller's own"
+        onChange={(v) => {
+          if (!obj) return;
+          const next = { ...obj };
+          if (isPassthrough(v) && v !== " ") delete next.userAgent;
+          else next.userAgent = v.trim() ? v : " ";
+          onChange(JSON.stringify(next, null, 2));
+        }}
+      />
+      <FieldDescription>
+        {obj
+          ? "What this provider tells the upstream the client is. Anything but passthrough overrides what customers set on their API keys. Needed by upstream groups that only accept one client."
+          : "Fix the Settings JSON below to use this selector."}
+      </FieldDescription>
+    </Field>
   );
 }

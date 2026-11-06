@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cleanUserAgent, isPassthrough } from "@/lib/user-agents";
 
 /** Validation shared by the key form (client UX) and the server actions (security). */
 
@@ -42,6 +43,13 @@ export const keyFormSchema = z.object({
     .max(50, "At most 50 entries")
     .default([])
     .refine((list) => list.every(isValidIpOrCidr), "Use valid IPs or CIDR ranges (e.g. 203.0.113.7 or 10.0.0.0/8)"),
+  /** Client identity sent upstream: a preset id or custom text. Blank / "passthrough" = the caller's own (stored as null). */
+  userAgent: z
+    .string()
+    .max(300, "At most 300 characters")
+    .nullable()
+    .optional()
+    .transform((v) => (isPassthrough(v) ? null : cleanUserAgent(v as string) || null)),
 });
 
 export type KeyFormInput = z.input<typeof keyFormSchema>;

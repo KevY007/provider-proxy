@@ -44,6 +44,7 @@ const dataFor = (v: KeyFormValues, groupId: string | null) => ({
   groupId,
   allowedModels: [...new Set(v.allowedModels)],
   ipAllowlist: [...new Set(v.ipAllowlist)],
+  userAgent: v.userAgent ?? null,
   rpmLimit: v.rpmLimit ?? null,
   tpmLimit: v.tpmLimit ?? null,
   maxConcurrency: v.maxConcurrency ?? null,

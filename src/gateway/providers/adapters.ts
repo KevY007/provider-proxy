@@ -1,4 +1,5 @@
 import { openHeaders } from "@/lib/secret-headers";
+import { cleanUserAgent, findUserAgentPreset, isPassthrough } from "@/lib/user-agents";
 import type { InboundFormat, JsonObject, Operation } from "../types";
 
 /**
@@ -217,6 +218,8 @@ export interface HeaderInput {
   hasBody?: boolean;
   /** Upstream operation (video content requests accept any media type and forward Range). */
   op?: Operation;
+  /** The calling API key's own user-agent choice (preset id or text); the provider's setting wins over it. */
+  clientUserAgent?: string | null;
 }
 
 function authHeaders(provider: AdapterProvider, surface: Surface, secret: string): Record<string, string> {
@@ -241,35 +244,32 @@ function authHeaders(provider: AdapterProvider, surface: Surface, secret: string
   }
 }
 
-/**
- * Well-known client identities a provider can present upstream (`settings.userAgent`). Some upstream groups only
- * accept requests that look like one specific client; `x-app` is the extra marker that client sends.
- */
-export const USER_AGENT_PRESETS: Record<string, { userAgent: string; headers?: Record<string, string> }> = {
-  "claude-code": { userAgent: "claude-cli/2.1.318 (external, cli)", headers: { "x-app": "cli" } },
-  "codex-cli": { userAgent: "codex_cli_rs/0.50.0" },
-};
+/** Re-exported for existing importers; the data lives in a client-safe module. */
+export { USER_AGENT_PRESETS } from "@/lib/user-agents";
 
-const stripControl = (v: string): string => v.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 300);
-
-/**
- * The user-agent (and client marker headers) sent upstream. `settings.userAgent`:
- *  - unset / "passthrough": exactly what the caller sent (user-agent and x-app); nothing is invented when it sent none
- *  - a preset name (USER_AGENT_PRESETS): that client's identity, whoever the caller is
- *  - anything else: sent verbatim
- */
-function clientIdentity(p: AdapterProvider, inbound?: Headers): Record<string, string> {
-  const raw = typeof p.settings.userAgent === "string" ? p.settings.userAgent.trim() : "";
-  const preset = USER_AGENT_PRESETS[raw];
+/** The identity a stored value stands for (preset or custom text), or null for passthrough. */
+function identityOf(v: unknown): Record<string, string> | null {
+  if (isPassthrough(v)) return null;
+  const preset = findUserAgentPreset(v);
   if (preset) return { "user-agent": preset.userAgent, ...preset.headers };
+  const ua = cleanUserAgent(v as string);
+  return ua ? { "user-agent": ua } : null;
+}
+
+/**
+ * The user-agent (and client marker headers) sent upstream, first match wins:
+ *  1. the provider's `settings.userAgent` when it is a preset or custom text (it bypasses the key's choice)
+ *  2. the API key's own choice (`clientUserAgent`), a preset or custom text
+ *  3. passthrough: exactly what the caller sent (user-agent and x-app); nothing is invented when it sent none
+ */
+function clientIdentity(p: AdapterProvider, inbound?: Headers, clientUserAgent?: string | null): Record<string, string> {
+  const set = identityOf(p.settings.userAgent) ?? identityOf(clientUserAgent);
+  if (set) return set;
   const out: Record<string, string> = {};
-  const custom = raw && raw !== "passthrough" ? stripControl(raw) : "";
-  const ua = custom || stripControl(inbound?.get("user-agent") ?? "");
+  const ua = cleanUserAgent(inbound?.get("user-agent") ?? "");
   if (ua) out["user-agent"] = ua;
-  if (!custom) {
-    const app = stripControl(inbound?.get("x-app") ?? "");
-    if (app) out["x-app"] = app;
-  }
+  const app = cleanUserAgent(inbound?.get("x-app") ?? "");
+  if (app) out["x-app"] = app;
   return out;
 }
 
@@ -278,7 +278,7 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
   const surface = surfaceOf(i.format);
   const h: Record<string, string> = {
     accept: i.stream ? "text/event-stream" : "application/json",
-    ...clientIdentity(p, i.inbound),
+    ...clientIdentity(p, i.inbound, i.clientUserAgent),
   };
   if (i.hasBody !== false) h["content-type"] = i.contentType || "application/json";
   if (i.op === "videos_content" || i.op === "files_content" || i.op === "containers_file_content" || i.op === "batches_results") {

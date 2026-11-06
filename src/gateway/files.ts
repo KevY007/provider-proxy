@@ -262,7 +262,7 @@ export function prepareRawUpstream(ctx: Ctx, cand: Candidate, secret: string): P
     const q = forwardQuery(ctx);
     url = buildUpstreamUrl({ provider, format, op, upstreamModel: "files", stream: false, keyExtra: cand.key.extra, objectId: st.upstreamId, query: q || undefined, secret });
   }
-  const headers = buildUpstreamHeaders({ provider, format, secret, stream: false, keyExtra: cand.key.extra, inbound: ctx.req.headers, contentType: hasBody ? ct : null, hasBody, op });
+  const headers = buildUpstreamHeaders({ provider, format, secret, stream: false, keyExtra: cand.key.extra, inbound: ctx.req.headers, clientUserAgent: ctx.auth?.key.userAgent ?? null, contentType: hasBody ? ct : null, hasBody, op });
   let body: Prepared["body"] = null;
   if (st.buffered) body = st.buffered;
   else if (ctx.rawBody) {
