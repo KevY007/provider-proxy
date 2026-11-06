@@ -12,6 +12,7 @@ import { createKeyAction, updateKeyAction, type CreatedKey } from "@/server/cust
 import { parseIpList } from "@/server/customer/key-schemas";
 import { poolSavingsLabel } from "@/server/customer/pricing";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
+import { UserAgentSelect } from "@/components/common/user-agent-select";
 import { ModelMultiSelect } from "./model-multi-select";
 import type { ModelOption } from "./snippet-tabs";
 
@@ -27,6 +28,7 @@ interface FormState {
   spend: string;
   expires: string; // yyyy-mm-dd
   ips: string;
+  userAgent: string;
 }
 
 function initial(k?: KeyRow | null): FormState {
@@ -39,6 +41,7 @@ function initial(k?: KeyRow | null): FormState {
     conc: k?.maxConcurrency?.toString() ?? "",
     spend: k?.spendLimit ? trimNum(k.spendLimit) : "",
     expires: k?.expiresAt ? k.expiresAt.slice(0, 10) : "",
+    userAgent: k?.userAgent ?? "",
     ips: k?.ipAllowlist.join("\n") ?? "",
   };
 }
@@ -102,6 +105,7 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
       spendLimit: spend as number | null,
       expiresAt,
       ipAllowlist: parseIpList(f.ips),
+      userAgent: f.userAgent.trim() || null,
     };
     start(async () => {
       setErrors({});
@@ -183,6 +187,15 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
             <Textarea id="ip-allow" rows={3} placeholder={"203.0.113.7\n10.0.0.0/8"} value={f.ips} onChange={(e) => set("ips", e.target.value)} className="font-mono text-xs" />
             <FieldDescription>One IP or CIDR per line. Empty allows any IP.</FieldDescription>
             {errors.ipAllowlist && <FieldError>{errors.ipAllowlist}</FieldError>}
+          </Field>
+
+          <Field data-invalid={!!errors.userAgent}>
+            <FieldLabel htmlFor="key-ua">Client identity (user-agent)</FieldLabel>
+            <UserAgentSelect id="key-ua" value={f.userAgent} onChange={(v) => set("userAgent", v)} />
+            <FieldDescription>
+              What this key tells the upstream the client is. Passthrough sends your tool&apos;s own. Some upstreams only accept one client (e.g. Claude Code). If the pool&apos;s provider sets its own identity, that one is used instead.
+            </FieldDescription>
+            {errors.userAgent && <FieldError>{errors.userAgent}</FieldError>}
           </Field>
         </FieldGroup>
         <DialogFooter>

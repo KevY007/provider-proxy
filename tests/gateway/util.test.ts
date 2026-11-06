@@ -337,6 +337,34 @@ describe("provider adapters", () => {
       expect(h["user-agent"]).not.toMatch(/[\u0000-\u001f\u007f]/);
     });
 
+    describe("per API key (clientUserAgent)", () => {
+      const withKey = (settings: Record<string, unknown>, key: string | null, inbound?: Headers) =>
+        buildUpstreamHeaders({ provider: mk({ authStyle: "X_API_KEY", settings }), format: "anthropic_messages", secret: "S", stream: false, inbound, clientUserAgent: key });
+      const curl = new Headers({ "user-agent": "curl/8.0" });
+
+      it("provider passthrough + key preset: the key's identity is sent", () => {
+        const h = withKey({}, "claude-code", curl);
+        expect(h["user-agent"]).toMatch(/^claude-cli\//);
+        expect(h["x-app"]).toBe("cli");
+      });
+      it("provider passthrough + key custom text: sent as the user-agent, caller's x-app is not forwarded", () => {
+        const h = withKey({ userAgent: "passthrough" }, "My-Tool/2", new Headers({ "user-agent": "curl/8.0", "x-app": "cli" }));
+        expect(h["user-agent"]).toBe("My-Tool/2");
+        expect(h["x-app"]).toBeUndefined();
+      });
+      it("provider preset beats the key", () => {
+        const h = withKey({ userAgent: "codex-cli" }, "claude-code", curl);
+        expect(h["user-agent"]).toMatch(/^codex_cli_rs\//);
+        expect(h["x-app"]).toBeUndefined();
+      });
+      it("provider custom text beats a key preset", () => {
+        expect(withKey({ userAgent: "Acme/1" }, "claude-code", curl)["user-agent"]).toBe("Acme/1");
+      });
+      it("no key value (null/blank/passthrough) falls through to the caller", () => {
+        for (const k of [null, "", "  ", "passthrough"]) expect(withKey({}, k, curl)["user-agent"]).toBe("curl/8.0");
+      });
+    });
+
     it("admin extraHeaders can still override the user-agent", () => {
       const h = buildUpstreamHeaders({ provider: mk({ authStyle: "X_API_KEY", extraHeaders: { "user-agent": "Pinned/1" } }), format: "anthropic_messages", secret: "S", stream: false, inbound: cli });
       expect(h["user-agent"]).toBe("Pinned/1");

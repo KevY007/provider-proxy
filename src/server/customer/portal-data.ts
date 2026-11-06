@@ -24,6 +24,8 @@ export interface KeyRow {
   groupSavingsPct: number | null;
   allowedModels: string[];
   ipAllowlist: string[];
+  /** user-agent this key presents upstream (preset id or text); null = the caller's own */
+  userAgent: string | null;
   rpmLimit: number | null;
   tpmLimit: number | null;
   maxConcurrency: number | null;
@@ -112,6 +114,7 @@ export async function getKeysPageData(user: SessionUser) {
     groupSavingsPct: k.groupId ? (pools.find((p) => p.id === k.groupId)?.savingsPct ?? null) : null,
     allowedModels: k.allowedModels,
     ipAllowlist: k.ipAllowlist,
+    userAgent: k.userAgent,
     rpmLimit: k.rpmLimit,
     tpmLimit: k.tpmLimit,
     maxConcurrency: k.maxConcurrency,

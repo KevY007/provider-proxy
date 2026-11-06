@@ -217,6 +217,7 @@ model ApiKey {
   group          Group?    @relation(fields: [groupId], references: [id])
   allowedModels  String[]  @default([]) // empty = all models the group allows
   ipAllowlist    String[]  @default([]) // CIDR or exact IPs, empty = any
+  userAgent      String? // user-agent this key presents upstream: preset id or text; null = pass the caller's through (a provider setting wins)
   rpmLimit       Int?
   tpmLimit       Int?
   maxConcurrency Int? // §9b

@@ -450,6 +450,8 @@ export interface AuthKey {
   groupId: string | null;
   allowedModels: Set<string> | null;
   ipAllowlist: string[];
+  /** the key's own user-agent choice (preset id or text); null = pass the caller's through */
+  userAgent: string | null;
   rpmLimit: number | null;
   tpmLimit: number | null;
   maxConcurrency: number | null;
@@ -478,6 +480,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       groupId: true,
       allowedModels: true,
       ipAllowlist: true,
+      userAgent: true,
       rpmLimit: true,
       tpmLimit: true,
       maxConcurrency: true,
@@ -520,6 +523,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       groupId: row.groupId,
       allowedModels: row.allowedModels.length ? new Set(row.allowedModels) : null,
       ipAllowlist: row.ipAllowlist,
+      userAgent: row.userAgent,
       rpmLimit: row.rpmLimit,
       tpmLimit: row.tpmLimit,
       maxConcurrency: row.maxConcurrency,

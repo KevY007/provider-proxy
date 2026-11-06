@@ -307,6 +307,7 @@ async function attempt(ctx: Ctx, cand: Candidate, settings: SettingValues, opts:
         form: ctx.form,
         stream: ctx.stream,
         inboundHeaders: ctx.req.headers,
+        clientUserAgent: ctx.auth?.key.userAgent ?? null,
         secret,
         responseId: opts.responseId ?? ctx.path!.responseId,
         videoId: opts.upstreamVideoId,
