@@ -1,20 +1,15 @@
 "use client";
 
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { PASSTHROUGH, USER_AGENT_PRESETS, findUserAgentPreset, isPassthrough } from "@/lib/user-agents";
+import { PASSTHROUGH, USER_AGENT_PRESETS, userAgentMode } from "@/lib/user-agents";
 
-const CUSTOM = "__custom";
-
-/** Which dropdown entry a stored value shows as. */
-function modeOf(value: string): string {
-  if (isPassthrough(value)) return PASSTHROUGH;
-  return findUserAgentPreset(value) ? value.trim() : CUSTOM;
-}
+const CUSTOM = "custom";
 
 /**
  * Pick the client identity sent upstream: pass the caller's through (default), a well-known client, or your own text.
- * `value` is the stored form: "" / "passthrough", a preset id, or custom text.
+ * `value` is the stored form: "" (passthrough), a preset id, or custom text. Choosing "Custom…" opens a text box.
  */
 export function UserAgentSelect({
   value,
@@ -29,15 +24,22 @@ export function UserAgentSelect({
   id?: string;
   passthroughLabel?: string;
 }) {
-  const mode = modeOf(value);
+  const [customChosen, setCustomChosen] = useState(() => userAgentMode(value, false) === CUSTOM);
+  const mode = userAgentMode(value, customChosen);
   return (
     <div className="space-y-2">
       <Select
         value={mode}
         disabled={disabled}
         onValueChange={(v) => {
-          if (v === CUSTOM) onChange(mode === CUSTOM ? value : " ");
-          else onChange(v === PASSTHROUGH ? "" : v);
+          if (v === CUSTOM) {
+            setCustomChosen(true);
+            // keep the text when already custom; a preset id is not custom text, so start empty
+            onChange(mode === CUSTOM ? value : "");
+          } else {
+            setCustomChosen(false);
+            onChange(v === PASSTHROUGH ? "" : v);
+          }
         }}
       >
         <SelectTrigger id={id} className="w-full">
@@ -56,11 +58,12 @@ export function UserAgentSelect({
       {mode === CUSTOM && (
         <Input
           aria-label="Custom user-agent"
-          placeholder="e.g. My-Tool/1.0"
+          placeholder="e.g. My-Tool/1.0 (sent exactly as written)"
           maxLength={300}
           disabled={disabled}
-          value={value === " " ? "" : value}
-          onChange={(e) => onChange(e.target.value || " ")}
+          autoFocus
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
           className="font-mono text-xs"
         />
       )}

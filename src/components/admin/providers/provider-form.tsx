@@ -162,8 +162,8 @@ function ProviderUserAgent({ settings, onChange }: { settings: string; onChange:
         onChange={(v) => {
           if (!obj) return;
           const next = { ...obj };
-          if (isPassthrough(v) && v !== " ") delete next.userAgent;
-          else next.userAgent = v.trim() ? v : " ";
+          if (isPassthrough(v)) delete next.userAgent;
+          else next.userAgent = v;
           onChange(JSON.stringify(next, null, 2));
         }}
       />
