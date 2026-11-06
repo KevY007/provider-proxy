@@ -452,6 +452,8 @@ export interface AuthKey {
   ipAllowlist: string[];
   /** the key's own user-agent choice (preset id or text); null = pass the caller's through */
   userAgent: string | null;
+  /** headers this key asks to strip from upstream requests (see lib/strip-headers) */
+  stripHeaders: string[];
   rpmLimit: number | null;
   tpmLimit: number | null;
   maxConcurrency: number | null;
@@ -481,6 +483,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       allowedModels: true,
       ipAllowlist: true,
       userAgent: true,
+      stripHeaders: true,
       rpmLimit: true,
       tpmLimit: true,
       maxConcurrency: true,
@@ -524,6 +527,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       allowedModels: row.allowedModels.length ? new Set(row.allowedModels) : null,
       ipAllowlist: row.ipAllowlist,
       userAgent: row.userAgent,
+      stripHeaders: row.stripHeaders,
       rpmLimit: row.rpmLimit,
       tpmLimit: row.tpmLimit,
       maxConcurrency: row.maxConcurrency,

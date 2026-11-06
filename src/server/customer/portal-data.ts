@@ -26,6 +26,8 @@ export interface KeyRow {
   ipAllowlist: string[];
   /** user-agent this key presents upstream (preset id or text); null = the caller's own */
   userAgent: string | null;
+  /** upstream request headers this key strips */
+  stripHeaders: string[];
   rpmLimit: number | null;
   tpmLimit: number | null;
   maxConcurrency: number | null;
@@ -115,6 +117,7 @@ export async function getKeysPageData(user: SessionUser) {
     allowedModels: k.allowedModels,
     ipAllowlist: k.ipAllowlist,
     userAgent: k.userAgent,
+    stripHeaders: k.stripHeaders,
     rpmLimit: k.rpmLimit,
     tpmLimit: k.tpmLimit,
     maxConcurrency: k.maxConcurrency,

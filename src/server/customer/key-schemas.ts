@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeStripList } from "@/lib/strip-headers";
 import { cleanUserAgent, isPassthrough } from "@/lib/user-agents";
 
 /** Validation shared by the key form (client UX) and the server actions (security). */
@@ -50,6 +51,8 @@ export const keyFormSchema = z.object({
     .nullable()
     .optional()
     .transform((v) => (isPassthrough(v) ? null : cleanUserAgent(v as string) || null)),
+  /** Upstream request headers this key strips (none by default); see lib/strip-headers. */
+  stripHeaders: z.array(z.string().max(100)).max(60).optional().transform((v) => normalizeStripList(v ?? [])),
 });
 
 export type KeyFormInput = z.input<typeof keyFormSchema>;

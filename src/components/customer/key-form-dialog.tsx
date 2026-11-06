@@ -12,6 +12,7 @@ import { createKeyAction, updateKeyAction, type CreatedKey } from "@/server/cust
 import { parseIpList } from "@/server/customer/key-schemas";
 import { poolSavingsLabel } from "@/server/customer/pricing";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
+import { StripHeadersSelect } from "@/components/common/strip-headers-select";
 import { UserAgentSelect } from "@/components/common/user-agent-select";
 import { ModelMultiSelect } from "./model-multi-select";
 import type { ModelOption } from "./snippet-tabs";
@@ -29,6 +30,7 @@ interface FormState {
   expires: string; // yyyy-mm-dd
   ips: string;
   userAgent: string;
+  stripHeaders: string[];
 }
 
 function initial(k?: KeyRow | null): FormState {
@@ -42,6 +44,7 @@ function initial(k?: KeyRow | null): FormState {
     spend: k?.spendLimit ? trimNum(k.spendLimit) : "",
     expires: k?.expiresAt ? k.expiresAt.slice(0, 10) : "",
     userAgent: k?.userAgent ?? "",
+    stripHeaders: k?.stripHeaders ?? [],
     ips: k?.ipAllowlist.join("\n") ?? "",
   };
 }
@@ -106,6 +109,7 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
       expiresAt,
       ipAllowlist: parseIpList(f.ips),
       userAgent: f.userAgent.trim() || null,
+      stripHeaders: f.stripHeaders,
     };
     start(async () => {
       setErrors({});
@@ -196,6 +200,12 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
               What this key tells the upstream the client is. Passthrough sends your tool&apos;s own. Some upstreams only accept one client (e.g. Claude Code). If the pool&apos;s provider sets its own identity, that one is used instead.
             </FieldDescription>
             {errors.userAgent && <FieldError>{errors.userAgent}</FieldError>}
+          </Field>
+
+          <Field>
+            <FieldLabel>Strip headers</FieldLabel>
+            <StripHeadersSelect value={f.stripHeaders} onChange={(v) => set("stripHeaders", v)} />
+            <FieldDescription>Headers removed from your requests before they reach the upstream. None are stripped by default. Credentials can&apos;t be stripped.</FieldDescription>
           </Field>
         </FieldGroup>
         <DialogFooter>
