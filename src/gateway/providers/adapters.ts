@@ -1,4 +1,5 @@
 import { openHeaders } from "@/lib/secret-headers";
+import { applyStripHeaders, normalizeStripList } from "@/lib/strip-headers";
 import { cleanUserAgent, findUserAgentPreset, isPassthrough } from "@/lib/user-agents";
 import type { InboundFormat, JsonObject, Operation } from "../types";
 
@@ -220,6 +221,8 @@ export interface HeaderInput {
   op?: Operation;
   /** The calling API key's own user-agent choice (preset id or text); the provider's setting wins over it. */
   clientUserAgent?: string | null;
+  /** The calling API key's own list of headers to strip (added to the provider's `stripHeaders`). */
+  clientStripHeaders?: string[] | null;
 }
 
 function authHeaders(provider: AdapterProvider, surface: Surface, secret: string): Record<string, string> {
@@ -315,6 +318,9 @@ export function buildUpstreamHeaders(i: HeaderInput): Record<string, string> {
       if (k.startsWith("x-mock-")) h[k] = v;
     });
   }
+
+  // headers the provider and the calling key asked to drop (nothing by default); admin extraHeaders and auth come after
+  applyStripHeaders(h, [...normalizeStripList(p.settings.stripHeaders), ...normalizeStripList(i.clientStripHeaders)]);
 
   Object.assign(h, p.extraHeaders);
   const extraKeyHeaders = i.keyExtra?.headers;

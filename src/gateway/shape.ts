@@ -30,6 +30,7 @@ export interface PrepareInput {
   inboundHeaders: Headers;
   /** The calling API key's own user-agent choice (see buildUpstreamHeaders). */
   clientUserAgent?: string | null;
+  clientStripHeaders?: string[] | null;
   secret: string;
   responseId?: string;
   /** Video lookups: UPSTREAM video id + raw query (e.g. "variant=thumbnail"). */
@@ -185,7 +186,7 @@ export function prepareUpstream(i: PrepareInput): Prepared {
         : "POST";
   const hasBody = body !== null;
   const streamUp = i.stream || !!i.forceStream;
-  const headers = buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: streamUp, keyExtra: key.extra, inbound: i.inboundHeaders, clientUserAgent: i.clientUserAgent, contentType, hasBody, op });
+  const headers = buildUpstreamHeaders({ provider, format: upFormat, secret: i.secret, stream: streamUp, keyExtra: key.extra, inbound: i.inboundHeaders, clientUserAgent: i.clientUserAgent, clientStripHeaders: i.clientStripHeaders, contentType, hasBody, op });
   if (body !== null && typeof body === "object" && !(body instanceof Uint8Array) && bodyLength !== null) headers["content-length"] = String(bodyLength);
   return {
     url: buildUpstreamUrl({ provider, format: upFormat, op, upstreamModel: route.upstreamModel, stream: streamUp, keyExtra: key.extra, responseId: i.responseId, videoId: i.videoId, query: i.query, secret: i.secret }),

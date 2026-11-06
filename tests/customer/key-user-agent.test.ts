@@ -38,3 +38,12 @@ describe("userAgentMode (what the selector shows)", () => {
     expect(userAgentMode("   ", true)).toBe("custom");
   });
 });
+
+describe("key form: stripHeaders", () => {
+  it("defaults to none", () => {
+    expect(keyFormSchema.parse({ name: "k" }).stripHeaders).toEqual([]);
+  });
+  it("normalises the list and drops credentials", () => {
+    expect(keyFormSchema.parse({ name: "k", stripHeaders: [" X-App ", "openai-beta", "authorization", "x-app"] }).stripHeaders).toEqual(["x-app", "openai-beta"]);
+  });
+});
