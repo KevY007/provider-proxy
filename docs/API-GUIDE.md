@@ -150,7 +150,7 @@ reaches its credit hold.
 - No request size limit by default. Bodies are streamed, and gzip/deflate/br/zstd request encodings are accepted.
   Responses are never compressed.
 - SSE streams get `: keep-alive` comment lines while the model is silent (every 15 s by default). Every SSE parser
-  ignores them.
+  ignores them. A comment line the upstream sends itself reaches you as that same line, never with its own text.
 - Disconnecting cancels the upstream request at once. Only what was produced is billed.
 - OpenAI chat streams always get upstream usage. The final usage-only chunk is removed if you did not ask for
   `stream_options.include_usage`.

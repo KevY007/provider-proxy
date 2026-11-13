@@ -272,6 +272,9 @@ function resolveRequestModel(ctx: Ctx): void {
   const model = resolveModel(snap, name);
   if (!model) throw new GatewayError("model_not_found", `The model '${name}' does not exist or you do not have access to it.`, { param: "model" });
   ctx.model = model;
+  // the key's own pool for now (an effort rule below may move the request): a refusal from here on answers with the
+  // pool's real price share in x-price-multiplier, never the 0 the field starts with
+  ctx.multiplier = effectiveMultiplier(ctx.auth!.user.priceMultiplier, ctx.group?.priceMultiplier);
   if (key.allowedModels && !key.allowedModels.has(model.slug)) throw new GatewayError("model_not_allowed");
   if (ctx.group?.allowedModels && !ctx.group.allowedModels.has(model.slug)) throw new GatewayError("model_not_allowed");
   if (path.capability && !model.capabilities.has(path.capability)) {

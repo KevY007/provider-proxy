@@ -186,6 +186,22 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     expect(await db.requestLog.count({ where: { id: row.id } })).toBe(1);
   });
 
+  it("a refused request never reports a price share of 0: x-price-multiplier is the pool's, or absent", async () => {
+    const u3 = await h.makeUser("u3", { balance: "5" });
+    const narrow = (await h.makeKey("k3", u3.id, { allowedModels: [M.other] })).key;
+    // a model this key may not use: the pool is known, nothing is priced
+    const refused = await h.call("/v1/responses", narrow, { model: M.tier, stream: true, input: "hi" });
+    expect(refused.status).toBe(403);
+    expect(refused.headers.get("x-request-id")).toBeTruthy();
+    expect(refused.headers.get("x-pool")).toBeTruthy();
+    expect(Number(refused.headers.get("x-price-multiplier"))).toBe(1);
+    // a request the gateway refuses before it knows the model: only the request id
+    const unknown = await h.call("/v1/responses", narrow, { model: "no-such-model", stream: true, input: "hi" });
+    expect(unknown.status).toBe(404);
+    expect(unknown.headers.get("x-request-id")).toBeTruthy();
+    expect(unknown.headers.get("x-price-multiplier")).toBeNull();
+  });
+
   it("count_tokens on a relay that does not offer it falls back to the local estimate", async () => {
     const res = await h.call("/v1/messages/count_tokens", null, { model: M.claude, messages: [{ role: "user", content: "count me please" }] }, { headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } });
     expect(res.status).toBe(200);

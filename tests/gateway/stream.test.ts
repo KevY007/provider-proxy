@@ -126,6 +126,21 @@ describe("StreamSession", () => {
     expect(finished[0].destroyed).toBeUndefined();
   });
 
+  it("an upstream's own comment lines reach the client as the neutral `: keep-alive` line: their text can name the upstream", async () => {
+    const frames = [": acme-relay keep-alive\n\n", chunk("Hel"), ": keepalive\n: OPENROUTER PROCESSING\n\n", chunk("lo", "stop"), data("[DONE]")];
+    for (const processor of [new OpenAIStreamPassthrough("public", true), new ResponsesStreamPassthrough(null)]) {
+      const { s, finished } = session(upstream([...frames]), { processor });
+      await s.prime();
+      const text = await drain(s.toReadable());
+      expect(text).not.toMatch(/acme|OPENROUTER|keepalive/);
+      // one neutral line per upstream comment block, in its place in the stream
+      expect(text.split(": keep-alive\n\n").length - 1).toBe(2);
+      expect(text.indexOf(": keep-alive")).toBeLessThan(text.indexOf("Hel"));
+      expect(text).toContain("[DONE]");
+      expect(finished[0].reason).toBe("completed");
+    }
+  });
+
   it("an upstream that ends without its terminal event -> the client stream is DESTROYED, no synthetic end", async () => {
     const { s, finished } = session(upstream([chunk("cut off")]));
     await s.prime();
