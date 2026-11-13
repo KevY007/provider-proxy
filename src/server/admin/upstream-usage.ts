@@ -59,7 +59,7 @@ export function parseUsageDoc(doc: unknown): { balance: number | null; total: nu
   const usage = (d.usage && typeof d.usage === "object" ? d.usage : {}) as Record<string, unknown>;
   const total = (usage.total && typeof usage.total === "object" ? usage.total : {}) as Record<string, unknown>;
   return {
-    balance: num(d.balance ?? d.remaining),
+    balance: num(d.balance ?? d.remaining ?? d.balance_usd),
     total: num(total.actual_cost),
     days: daily
       .filter((x): x is Record<string, unknown> => !!x && typeof x === "object" && typeof (x as Record<string, unknown>).date === "string")

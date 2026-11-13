@@ -29,6 +29,20 @@ describe("parseRemotePricing", () => {
     expect(m.get("gpt-x")?.prices).toEqual({ input: 1, output: 4 });
   });
 
+  it("flat-priced relay: one price per 1M tokens for input, output and cache writes, cache reads at their own rate", () => {
+    const m = parseRemotePricing(
+      { data: [{ id: "model-a", context_window: 1000000, max_output_tokens: 64000, pricing: { price_usd_per_mtok: 0.5, cache_read_usd_per_mtok: 0.05 } }, { id: "model-b", pricing: { price_usd_per_mtok: 0.05, cache_read_usd_per_mtok: 0.01, output_usd_per_mtok: 0.2 } }, { id: "model-c", pricing: { price_usd_per_mtok: 0.03 } }] },
+      "/v1/models",
+    );
+    expect(m.get("model-a")?.prices).toEqual({ input: 0.5, output: 0.5, cachedInput: 0.05, cacheWrite: 0.5 });
+    expect(m.get("model-a")?.contextWindow).toBe(1000000);
+    expect(m.get("model-a")?.maxOutput).toBe(64000);
+    // a separate output price wins over the flat one
+    expect(m.get("model-b")?.prices).toEqual({ input: 0.05, output: 0.2, cachedInput: 0.01, cacheWrite: 0.05 });
+    // no cache rate published: cache reads are simply not listed
+    expect(m.get("model-c")?.prices).toEqual({ input: 0.03, output: 0.03, cacheWrite: 0.03 });
+  });
+
   it("LiteLLM /model/info list and LiteLLM price map", () => {
     const list = parseRemotePricing({ data: [{ model_name: "m1", model_info: { input_cost_per_token: 1e-6, output_cost_per_token: 2e-6, output_cost_per_image: null, max_input_tokens: 32000 } }, { model_name: "img", model_info: { output_cost_per_image: 0.04 } }] }, "/model/info");
     expect(list.get("m1")?.prices).toEqual({ input: 1, output: 2 });
