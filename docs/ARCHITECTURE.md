@@ -93,8 +93,10 @@ flowchart TB
     translated back if needed, and the upstream model name is masked. Stream: the response is committed on the first
     upstream output event (or after one heartbeat interval of silence). Events are translated and masked, usage and
     TTFT are extracted, and `: keep-alive` comments are sent while the upstream is silent (`streamHeartbeatSec`,
-    default 15). A stream is complete only when the upstream's terminal event arrived. If the upstream resets or
-    closes early, the client connection is dropped the same way and no synthetic `[DONE]` is sent. When a stream
+    default 15). A stream is complete only when the upstream's terminal event arrived. If the upstream resets,
+    closes early or stalls after the response started, the client gets one native error event (`upstream_error` /
+    `upstream_timeout`, with the request id) and the stream ends; no synthetic `[DONE]` or terminal event is sent
+    (setting `streamErrorEvent`; off = the client connection is dropped instead). When a stream
     reaches its funds hold, the upstream is aborted and the stream ends with a native `insufficient_balance` error
     event (never for a free-when-empty customer).
 12. **Metering** (`metering.ts`, `pricing.ts`). Price, cost, profit and official price are computed from the usage
@@ -133,7 +135,8 @@ pool's price as a share of the official list price (0.3 = 30% of official), neve
   `streamStartHoldSec` (default 120 s, never shorter than one heartbeat). A failure in that window (an in-band error,
   a drop, an end without output) fails over to the next key or retries the same one after a short pause, up to
   `maxAttempts`; the client sees one clean stream or, if every attempt failed, a native HTTP error. After that window
-  the response is committed and heartbeats keep it alive.
+  the response is committed and heartbeats keep it alive. An API key can shorten the hold or switch it off
+  (`ApiKey.streamHoldSec`, 0 = live: the first upstream event starts the response and nothing is held back).
 - Provider `settings.streamUpstream: true` sends non-streaming chat / responses / messages requests upstream as streams
   and assembles the reply into the provider's JSON (`stream-collect.ts`); `settings.noCooldown: true` keeps transient
   failures from cooling the provider's keys down; `settings.badGatewayRetrySec` / `badGatewayRetryEverySec` override

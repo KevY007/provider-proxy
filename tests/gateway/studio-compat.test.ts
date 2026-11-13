@@ -61,6 +61,7 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     await mk("ftfails", { stripCacheHints: true }); // "ftfail" in the key: the same relay backend, hints stripped
     await mk("ceflaky", {});
     await mk("commentdrop", {});
+    await mk("commentdroplive", {}); // the same relay fault on its own credential (the fault counts requests per credential)
     await mk("tier", { serviceTiers: ["auto", "default"] });
     await mk("cap", { enforceMaxOutputTokens: true });
     // one relay key serving two models, one of them over its per-model rate limit
@@ -102,6 +103,16 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     expect(text).not.toContain("codex.rate_limits");
     expect(sseBlocks(text).at(-1)?.event).toBe("response.completed");
     expect(await calls("ceflaky1")).toBe(2);
+    // the request's own record shows both upstream attempts, in order, and nothing about who served them
+    const row = await h.logOf(res);
+    const look = (await (await h.call(`/v1/requests/${row.id}`, key)).json()) as { attempts: Array<Record<string, unknown>> };
+    expect(look.attempts).toHaveLength(2);
+    expect(look.attempts[0].http_status).toBeGreaterThanOrEqual(500);
+    expect(look.attempts[1].http_status).toBe(200);
+    for (const a of look.attempts) {
+      expect(Object.keys(a).sort()).toEqual(["http_status", "latency_ms"]);
+      expect(typeof a.latency_ms).toBe("number");
+    }
   });
 
   it("a relay stream that dies after the model's opening commentary (a request with tools) is retried invisibly", async () => {
@@ -178,6 +189,7 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     const body = (await look.json()) as Record<string, unknown>;
     expect(body).toMatchObject({ object: "request", id: row.id, pool, model: M.tier, status: "success", http_status: 200 });
     expect(body.charged_usd).toBe(Number(row.price));
+    expect(body.attempts).toEqual([{ http_status: 200, latency_ms: expect.any(Number) }]);
     expect((body.usage as Record<string, number>).output_tokens).toBe(row.outputTokens);
     // another customer's request id is not visible
     const u2 = await h.makeUser("u2", { balance: "5" });
@@ -200,6 +212,51 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     expect(unknown.status).toBe(404);
     expect(unknown.headers.get("x-request-id")).toBeTruthy();
     expect(unknown.headers.get("x-price-multiplier")).toBeNull();
+  });
+
+  describe("a key with the start hold switched off (streamHoldSec 0): standard live streaming", () => {
+    const firstBytes = async (res: Response) => {
+      const reader = res.body!.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      let rest = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rest += new TextDecoder().decode(value);
+      }
+      return { first, all: first + rest };
+    };
+    // a reasoning model: eight summary deltas before the answer, 60 ms between events
+    const thinking = (model: string) => ({ model, stream: true, input: [{ role: "user", content: [{ type: "input_text", text: "[[summary:8]] [[delay:60]] hi" }] }] });
+
+    it("the opening and reasoning events arrive while the model is still thinking", async () => {
+      const u = await h.makeUser("ulive", { balance: "5" });
+      const live = (await h.makeKey("klive", u.id, { streamHoldSec: 0 })).key;
+      const a = await h.call("/v1/responses", live, thinking(M.tier));
+      expect(a.status).toBe(200);
+      const got = await firstBytes(a);
+      expect(got.first).toContain("response.created");
+      // the answer has not started yet: this is live progress (a held response's first bytes already carry its start)
+      expect(got.first).not.toContain("response.output_text.delta");
+      expect(got.all).toContain("response.reasoning_summary_text.delta");
+      expect(sseBlocks(got.all).at(-1)?.event).toBe("response.completed");
+    });
+
+    it("a failure while the model is still thinking reaches the client as it happens: one attempt, an error event, no charge", async () => {
+      const u = await h.makeUser("ulive2", { balance: "5" });
+      const live = (await h.makeKey("klive2", u.id, { streamHoldSec: 0 })).key;
+      const res = await h.call("/v1/responses", live, { model: M.commentdroplive, stream: true, input: [{ role: "user", content: [{ type: "input_text", text: "hi" }] }] });
+      expect(res.status).toBe(200);
+      const blocks = sseBlocks(await res.text());
+      expect(blocks[0].event).toBe("response.created");
+      expect(blocks.at(-1)?.event).toBe("error");
+      expect(JSON.parse(blocks.at(-1)!.data)).toMatchObject({ type: "error", code: "upstream_error" });
+      expect(blocks.some((b) => b.event === "response.completed")).toBe(false);
+      expect(await calls("commentdroplive1")).toBe(1); // not retried behind the client's back
+      const row = await h.logOf(res);
+      expect(row.status).toBe("UPSTREAM_ERROR");
+      expect(Number(row.price)).toBe(0);
+    });
   });
 
   it("count_tokens on a relay that does not offer it falls back to the local estimate", async () => {

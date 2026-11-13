@@ -454,6 +454,8 @@ export interface AuthKey {
   userAgent: string | null;
   /** headers this key asks to strip from upstream requests (see lib/strip-headers) */
   stripHeaders: string[];
+  /** the key's own stream start hold in seconds (see stream-start.ts): null = the gateway setting, 0 = live */
+  streamHoldSec: number | null;
   rpmLimit: number | null;
   tpmLimit: number | null;
   maxConcurrency: number | null;
@@ -484,6 +486,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       ipAllowlist: true,
       userAgent: true,
       stripHeaders: true,
+      streamHoldSec: true,
       rpmLimit: true,
       tpmLimit: true,
       maxConcurrency: true,
@@ -528,6 +531,7 @@ async function loadAuth(hash: string): Promise<AuthRecord | null> {
       ipAllowlist: row.ipAllowlist,
       userAgent: row.userAgent,
       stripHeaders: row.stripHeaders,
+      streamHoldSec: row.streamHoldSec,
       rpmLimit: row.rpmLimit,
       tpmLimit: row.tpmLimit,
       maxConcurrency: row.maxConcurrency,

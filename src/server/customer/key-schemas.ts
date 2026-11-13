@@ -51,6 +51,18 @@ export const keyFormSchema = z.object({
     .nullable()
     .optional()
     .transform((v) => (isPassthrough(v) ? null : cleanUserAgent(v as string) || null)),
+  /**
+   * Stream start hold for this key's requests, in seconds: null = the gateway's own, 0 = live (every event is sent as it
+   * arrives). Never longer than the gateway's (see gateway/stream-start.ts).
+   */
+  streamHoldSec: z
+    .number()
+    .int("Must be a whole number of seconds")
+    .min(0, "Must be 0 or more")
+    .max(1800, "Must be at most 1,800")
+    .nullable()
+    .optional()
+    .transform((v) => v ?? null),
   /** Upstream request headers this key strips (none by default); see lib/strip-headers. */
   stripHeaders: z.array(z.string().max(100)).max(60).optional().transform((v) => normalizeStripList(v ?? [])),
 });

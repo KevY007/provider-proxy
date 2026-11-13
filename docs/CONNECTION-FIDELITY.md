@@ -26,8 +26,8 @@ GW_CHAOS_HEAVY=1 pnpm vitest run tests/gateway/bigbody.test.ts                  
 |---|---|---|---|
 | Complete stream | 200 SSE, `[DONE]`, `x-upstream-request-id`, no `content-encoding` | answered normally | SUCCESS 200, out=50, $0.000200 |
 | Upstream 529 on every key | HTTP 529 + `retry-after: 7` + the upstream's native error body (identity scrubbed) | 3 attempts (one per key), all 529 | UPSTREAM_ERROR 529, out=0, $0 |
-| Upstream TCP RST mid-stream | 200, 7 frames, then connection error (h1: `terminated`; h2: RST_STREAM / `ERR_HTTP2_STREAM_ERROR`); no synthetic `[DONE]` | RST after 7 frames | UPSTREAM_ERROR 502, out=6 (est), $0 to the customer (our cost recorded) |
-| Upstream clean FIN, no terminal event | same as RST: the client stream is dropped, not closed cleanly | FIN after 7 frames, no terminator | UPSTREAM_ERROR 502, out=6 (est), $0 to the customer |
+| Upstream TCP RST mid-stream | 200, 7 frames, then one native error event (`upstream_error`, request id in the message) and the end of the stream; no synthetic `[DONE]`. With `streamErrorEvent` off: connection error (h1: `terminated`; h2: RST_STREAM / `ERR_HTTP2_STREAM_ERROR`) | RST after 7 frames | UPSTREAM_ERROR 502, out=6 (est), $0 to the customer (our cost recorded) |
+| Upstream clean FIN, no terminal event | same as RST: the error event, then the end (off: the client stream is dropped, not closed cleanly) | FIN after 7 frames, no terminator | UPSTREAM_ERROR 502, out=6 (est), $0 to the customer |
 | Error event inside the stream | 200, the upstream's error event verbatim, then the normal end | error event after 2 frames | UPSTREAM_ERROR 502, out=1 (est), $0 to the customer |
 | Upstream gzips despite `identity` | 200, plain SSE, no `content-encoding` | sent `Content-Encoding: gzip` | SUCCESS 200, out=50 |
 | Client aborts mid-stream | gone after ~460-480 ms | request aborted 2-3 ms later (phase "streaming") | CANCELLED 499, out=2 (est), partial usage billed, slots and credit hold released |
@@ -75,7 +75,7 @@ provider settings and delete their fixtures.
 
 1. Upstream 401 / 403 are returned as 503 `no_available_provider`, and an upstream account out of credit (402, or a 403 about balance) as 503 `upstream_insufficient_balance`: they are OUR account problem; a mirrored 401 would make SDKs blame the customer's key. The real code stays in `RequestLog.errorCode`.
 2. Failures with no upstream answer (connect error, reset before headers, headers timeout) have no status to mirror -> native-shaped 502 / 504 (every SDK retries these like a network error).
-3. A stream is complete only when the upstream's terminal event arrived; a missing terminal (RST, FIN, idle cutoff) drops the client connection instead of faking an end. Heartbeats exist only on SSE, only after the response started or the upstream stayed silent for one interval.
+3. A stream is complete only when the upstream's terminal event arrived; a missing terminal (RST, FIN, idle cutoff) never becomes a faked end. Since 2026-11 the client is told with one native error event of ours (code `upstream_error` / `upstream_timeout`, the request id in the message; Responses, chat, Anthropic and Gemini shapes, `tests/gateway/chaos.test.ts`) and the stream then ends, which is what the model makers' own APIs do when they fail mid-answer and lets a client tell an upstream break from a network break. Setting `streamErrorEvent` off restores the earlier rule: the client connection is dropped with no event. Heartbeats exist only on SSE, only after the response started or the upstream stayed silent for one interval.
 4. JSON bodies need about 3x their size in memory (parsed once for validation, funds estimate and usage fallback). Multipart does not. Size the container memory for the largest JSON body you accept.
 5. Upstream HTTP/2 is OPT-IN (`provider.settings.http2: true`, https only, default off). Lead decision: one lost h2 connection ends every stream multiplexed on it. Live-checked against OpenAI (`--live-h2`, passes), documented in the admin provider settings help text.
 6. `VideoJob` is left as is. New sticky objects (files, uploads, Gemini upload sessions) use `UpstreamObject`.
@@ -90,6 +90,11 @@ streams, all 8-27 s in, none after output had started). The gateway does not tre
 of the response: it holds the response until real output arrives, for up to `streamStartHoldSec` (default 120 s), and
 a failure in that window is retried invisibly (`tests/gateway/integration.test.ts`, mock fault `flakystart`). The
 chaos suite pins the hold to one heartbeat interval where it times the heartbeat itself.
+
+An API key can shorten the hold or switch it off (`ApiKey.streamHoldSec`; in the key dialog: Streaming, Live). With
+0 the first upstream event starts the response and every event is sent as it arrives, reasoning included, like the
+model makers' own APIs; a failure then reaches the client as it happens instead of being retried behind a held
+response (`tests/gateway/studio-compat.test.ts`). A key never lengthens the hold beyond the setting.
 
 Reasoning counts as opening events too, and so does commentary: a Responses model that was given tools first sends a
 message item of `phase: "commentary"` (one sentence about what it is going to do) and then reasons for minutes. On

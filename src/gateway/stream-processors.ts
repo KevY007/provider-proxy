@@ -90,6 +90,9 @@ abstract class Base implements StreamProcessor {
   abortEvents(errorEvent: string): string[] {
     return [errorEvent];
   }
+  breakEvents(errorEvent: string): string[] {
+    return [errorEvent];
+  }
   completed(): boolean {
     return this.done;
   }
@@ -218,8 +221,8 @@ export class ResponsesStreamPassthrough extends Base {
     return `event: response.incomplete\ndata: ${JSON.stringify({ type: "response.incomplete", sequence_number: this.lastSeq + 1, response })}\n\n`;
   }
 
-  /** Funds exhausted: a typed Responses `error` event. */
-  override abortEvents(errorEvent: string): string[] {
+  /** The gateway's own error (OpenAI's `{"error": {...}}` document) as the fields of a Responses `error` stream event. */
+  private errorFields(errorEvent: string, fallback: { code: string; message: string }): { type: "error"; code: unknown; message: unknown; param: null } {
     const m = /^data: (.*)$/m.exec(errorEvent);
     let e: Record<string, unknown> = {};
     try {
@@ -228,7 +231,18 @@ export class ResponsesStreamPassthrough extends Base {
     } catch {
       /* fall through with defaults */
     }
-    const body = { type: "error", code: e.code ?? "insufficient_balance", message: e.message ?? "Insufficient balance.", param: null };
+    return { type: "error", code: e.code ?? fallback.code, message: e.message ?? fallback.message, param: null };
+  }
+
+  /** Funds exhausted: a typed Responses `error` event. */
+  override abortEvents(errorEvent: string): string[] {
+    const body = this.errorFields(errorEvent, { code: "insufficient_balance", message: "Insufficient balance." });
+    return [`event: error\ndata: ${JSON.stringify(body)}\n\n`];
+  }
+
+  /** The upstream broke mid-answer: the same typed `error` event, numbered after the last event the client received. */
+  override breakEvents(errorEvent: string): string[] {
+    const body = { ...this.errorFields(errorEvent, { code: "upstream_error", message: "The model returned an error." }), sequence_number: this.lastSeq + 1 };
     return [`event: error\ndata: ${JSON.stringify(body)}\n\n`];
   }
 

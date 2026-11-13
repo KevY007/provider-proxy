@@ -129,9 +129,27 @@ drops, or the upstream ends it with an error event): `GET /v1/requests/{id}` the
 the tokens counted so far and `charged_usd: 0`. A stream you cancel yourself is charged for what you received.
 
 Upstream 4xx validation errors are passed through, scrubbed. Inside a stream, upstream error events are passed
-through verbatim. If the upstream connection drops mid-stream, your connection is dropped too (no fake `[DONE]`), so
-your SDK's own retry logic applies. The one gateway-authored stream event is `insufficient_balance` when a stream
-reaches its credit hold.
+through verbatim. If the upstream connection breaks after your stream has started (it is reset, closes without its
+final event, or stops responding), you get one error event in your API's own format and the stream then ends, with
+no fake `[DONE]` or final event. Its code is `upstream_error` (or `upstream_timeout`) and its message names the
+request id:
+
+```
+event: error
+data: {"type":"error","code":"upstream_error","message":"The model's connection dropped mid-answer. Retry the request. You were not charged for this request. (request id: ...)","param":null,"sequence_number":412}
+```
+
+That is the Responses API shape. Chat completions get `data: {"error": {...}}`, Anthropic Messages an
+`event: error`, Gemini an `error` object. So a stream that ends with no final event and no error event means the
+connection between you and the gateway broke. The other gateway-authored stream event is `insufficient_balance`
+when a stream reaches its credit hold.
+
+**Streaming start.** By default a streamed response is held back until the model's answer starts (for a few minutes
+at most; reasoning does not count as the answer), so a failure before that is retried without you seeing it. While it
+is held you receive nothing, not even the response headers. An API key can switch this off (key settings,
+**Streaming: Live**): the response then starts with the first upstream event and every event, reasoning included,
+reaches you as it arrives, the way the model makers' own APIs stream. A failure then reaches your client as it
+happens. Failed requests are not charged either way.
 
 ## Rate limits and concurrency
 
@@ -197,7 +215,9 @@ rewrite history. Details: [PRICING-AND-BILLING.md](PRICING-AND-BILLING.md).
 Billable responses carry `x-pool` (the pool that served and billed the call) and `x-price-multiplier`: that pool's
 price as a share of the official price (0.3 = 30% of official). `GET /v1/requests/{x-request-id}` returns one of your
 calls as it was metered: pool, usage, `charged_usd` and `list_usd` (it can answer 404 with `retry-after` for a second
-or two right after the call). The `group.multiplier` / `groups[].multiplier` fields of `/api/pricing` are the same
+or two right after the call). Its `attempts` list has one entry per upstream attempt behind the call, in order:
+`http_status` (0 = no answer: connection failure or timeout) and `latency_ms`. The last attempt produced what you
+received; you are never charged for the earlier ones. The `group.multiplier` / `groups[].multiplier` fields of `/api/pricing` are the same
 share of the official price.
 
 **Prices from the API** (to keep your own price tables in sync; the in-app docs page `/docs/pricing-api` has examples):

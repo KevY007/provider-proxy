@@ -330,12 +330,12 @@ async function runScenarios(base: string, mockPort: number, userId: string): Pro
     row("upstream 529 on every key", `HTTP ${r.status}, retry-after ${r.headers["retry-after"]}, native error body ${r.text.slice(0, 60)}`, "3 attempts, all 529", await logOf(r.id));
 
     r = await call({ extra: mode("rst-after:7") });
-    check(!!r.error && !r.ended && !r.text.includes("[DONE]") && r.text.length > 0, `${proto} upstream RST mid-stream`);
-    row("upstream TCP reset mid-stream", `200, ${r.text.length} bytes, then network error: ${r.error?.slice(0, 70)}`, "RST after 7 frames", await logOf(r.id));
+    check(!r.error && r.ended && !r.text.includes("[DONE]") && /"code":"upstream_error"/.test(r.text) && /dropped mid-answer/.test(r.text), `${proto} upstream RST mid-stream`);
+    row("upstream TCP reset mid-stream", `200, ${r.text.length} bytes, then one error event (upstream_error) and the end of the stream`, "RST after 7 frames", await logOf(r.id));
 
     r = await call({ extra: mode("fin-after:7") });
-    check(!!r.error && !r.ended && !r.text.includes("[DONE]"), `${proto} upstream FIN without terminator`);
-    row("upstream closes early (clean FIN, no [DONE])", `200, ${r.text.length} bytes, then network error: ${r.error?.slice(0, 70)}`, "FIN after 7 frames, no terminator", await logOf(r.id));
+    check(!r.error && r.ended && !r.text.includes("[DONE]") && /"code":"upstream_error"/.test(r.text), `${proto} upstream FIN without terminator`);
+    row("upstream closes early (clean FIN, no [DONE])", `200, ${r.text.length} bytes, then one error event (upstream_error) and the end of the stream`, "FIN after 7 frames, no terminator", await logOf(r.id));
 
     r = await call({ extra: mode("error-after:2") });
     check(r.ended && !r.error && /server had an error/.test(r.text) && !r.text.includes("[DONE]"), `${proto} in-stream error event`);

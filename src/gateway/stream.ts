@@ -8,14 +8,17 @@ import { ClientAbortError, UpstreamTimeoutError } from "./upstream";
  *   - back-pressure flows to the upstream (no unbounded buffering),
  *   - client disconnect (`cancel`) is observed and aborts the upstream immediately (the upstream connection is destroyed),
  *   - `onFinish` fires exactly once,
- *   - the break of a leg is MIRRORED to the other leg and never masked:
- *       upstream failure / premature end / stall mid-stream  -> the client response is DESTROYED (the stream errors; the
- *                                                               HTTP layer drops the connection) - no synthetic [DONE],
- *                                                               end or error event;
+ *   - the break of a leg is never masked as a normal end:
+ *       upstream failure / premature end / stall mid-stream  -> with `breakEvents` (the default in the gateway): ONE
+ *                                                               native error event of ours, then the stream ends - what
+ *                                                               the model maker's own API does when it fails mid-answer;
+ *                                                               without it: the client response is DESTROYED (the stream
+ *                                                               errors; the HTTP layer drops the connection). Never a
+ *                                                               synthetic [DONE] or terminal event;
  *       in-band upstream error event                          -> forwarded verbatim by the processor, then a normal end;
  *       a bug in our own processing after commit              -> upstream aborted + client destroyed (GATEWAY_ERROR);
- *   - the only exception is our own business rule: the funds guard ends the stream with a native
- *     `insufficient_balance` error (credit hold used up);
+ *   - our own business rule: the funds guard ends the stream with a native `insufficient_balance` error (credit hold
+ *     used up);
  *   - while the upstream is silent on an SSE stream a `: keep-alive` comment line is sent every `heartbeatMs`;
  *   - the upstream's own SSE comment lines are replaced by that same line (their text can name the upstream).
  */
@@ -28,6 +31,8 @@ export interface FinishInfo {
   inband?: boolean;
   /** The client response was destroyed (the client observes a network error). */
   destroyed?: boolean;
+  /** The upstream leg broke and the client was told with an error event of ours (`breakEvents`), then the stream ended. */
+  notified?: boolean;
   /** ms from stream start to the first content byte written to the client (null if none). */
   firstOutputMs: number | null;
   bytesOut: number;
@@ -61,6 +66,12 @@ export interface StreamOptions {
    * (native error ending) is sent to the client and the stream finishes with reason "budget".
    */
   guard?: { exceeded(): boolean; events(): string[] };
+  /**
+   * The upstream leg broke after the response started (reset, closed without its terminal event, idle cutoff): the
+   * blocks to send to the client before the stream is closed - a native error event. Unset, or nothing returned: the
+   * client connection is dropped instead.
+   */
+  breakEvents?: (reason: "upstream_error" | "truncated" | "timeout") => string[];
   /**
    * Upstream events that carry no output yet (role-only chunk, `response.created`, `message_start` ...): they do not
    * count as the stream having started, so an error right after them still fails over (see stream-start.ts).
@@ -318,7 +329,7 @@ export class StreamSession {
     }
   }
 
-  private finish(reason: FinishReason, extra: { error?: unknown; inband?: boolean; destroyed?: boolean } = {}): void {
+  private finish(reason: FinishReason, extra: { error?: unknown; inband?: boolean; destroyed?: boolean; notified?: boolean } = {}): void {
     if (this.finished) return;
     this.finished = true;
     this.disarm();
@@ -355,6 +366,33 @@ export class StreamSession {
     }
   }
 
+  /**
+   * The upstream leg broke after the response started. With an error ending (`breakEvents`) the client gets it and the
+   * stream is closed; otherwise the client response is destroyed.
+   */
+  private endBroken(c: ReadableStreamDefaultController<Uint8Array>, reason: "upstream_error" | "truncated" | "timeout", err: unknown): void {
+    let blocks: string[] = [];
+    try {
+      blocks = (this.o.processor ? this.o.breakEvents?.(reason) : undefined)?.filter(Boolean) ?? [];
+    } catch {
+      blocks = [];
+    }
+    if (!blocks.length) {
+      this.finish(reason, { error: err, destroyed: true });
+      this.destroyClient(c, err);
+      return;
+    }
+    const chunk = enc.encode(blocks.join(""));
+    this.bytesOut += chunk.byteLength;
+    this.finish(reason, { error: err, notified: true });
+    try {
+      c.enqueue(chunk);
+      c.close();
+    } catch {
+      /* the client left in the meantime */
+    }
+  }
+
   toReadable(): ReadableStream<Uint8Array> {
     const start = (c: ReadableStreamDefaultController<Uint8Array>): void => {
       this.ctrl = c;
@@ -381,10 +419,8 @@ export class StreamSession {
               // the upstream's own error event was forwarded verbatim; the stream ends the way the upstream ended it
               this.finish("upstream_error", { inband: true });
             } else if (p && !p.completed()) {
-              // premature end: the upstream closed without its terminal event -> the client sees the same broken stream
-              const e = new UpstreamTruncatedError();
-              this.finish("truncated", { error: e, destroyed: true });
-              this.destroyClient(c, e);
+              // premature end: the upstream closed without its terminal event -> never a normal end for the client
+              this.endBroken(c, "truncated", new UpstreamTruncatedError());
               return;
             } else this.finish("completed");
             try {
@@ -447,9 +483,8 @@ export class StreamSession {
           }
           return;
         }
-        // the upstream leg broke (reset, drop, stall): break the client leg the same way
-        this.finish(timedOut ? "timeout" : "upstream_error", { error: err, destroyed: true });
-        this.destroyClient(c, err);
+        // the upstream leg broke (reset, drop, stall): tell the client (or break its leg the same way)
+        this.endBroken(c, timedOut ? "timeout" : "upstream_error", err);
       }
     };
     const cancel = (reason: unknown): void => {

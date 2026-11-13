@@ -39,6 +39,12 @@ export interface StreamProcessor {
    * normal ending. `errorEvent` is the serialized native error event (already in the inbound format).
    */
   abortEvents?(errorEvent: string): string[];
+  /**
+   * The upstream leg broke after the response started: the blocks that tell the client, in the stream's own format
+   * (`errorEvent` is the serialized native error event, already in the inbound format). Unlike abortEvents there is no
+   * finishing chunk and no terminator: the answer is not complete and must not read as if it were.
+   */
+  breakEvents?(errorEvent: string): string[];
   /** Files the upstream created while serving this stream (code execution outputs ...): registered for the customer as soon as they are seen. */
   generatedFiles?(): GeneratedFile[];
   /** Set by the pipeline: called with each batch of newly seen generated files. */

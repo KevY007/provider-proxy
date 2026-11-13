@@ -151,6 +151,10 @@ async function requestLookup(ctx: Ctx): Promise<Response> {
     list_usd: Number(row.officialPrice),
     latency_ms: row.latencyMs,
     ttft_ms: row.ttftMs,
+    // the upstream attempts behind this request, in order (the last one produced what the client received): the status
+    // the upstream answered (0 = no answer: connection failure or timeout) and how long the attempt took to answer.
+    // Nothing that identifies the upstream.
+    attempts: (Array.isArray(row.attempts) ? row.attempts : []).filter(isObject).map((a) => ({ http_status: typeof a.status === "number" ? a.status : 0, latency_ms: typeof a.latencyMs === "number" ? a.latencyMs : 0 })),
   };
   return withCommon(ctx, new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
 }
