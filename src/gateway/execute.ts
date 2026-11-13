@@ -36,7 +36,7 @@ import { makeDriverEnv } from "./providers/driver-env";
 import { getDriver } from "./providers/drivers";
 import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPool } from "./slots";
 import { StreamSession, type FinishInfo } from "./stream";
-import { holdCommitAfterMs, isPreambleEvent, newPreambleState } from "./stream-start";
+import { holdCommitAfterMs, isPreambleEvent, newPreambleState, streamHoldSecFor } from "./stream-start";
 import { canCollect, SseCollector } from "./stream-collect";
 import { billsDroppedStreams, providerSettings, unbilledCancels, upstreamOp } from "./providers/adapters";
 import { SseParser } from "./sse";
@@ -841,6 +841,8 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   const sse = !geminiJsonArray(ctx);
   const heartbeatMs = sse ? Math.max(0, settings.streamHeartbeatSec) * 1000 : 0;
   const preamble = newPreambleState();
+  // the start hold of this request: the setting, or the shorter one its key asks for (0 = live: no event is held back)
+  const holdSec = streamHoldSecFor(settings.streamStartHoldSec, ctx.auth?.key.streamHoldSec);
   const session = new StreamSession({
     body,
     processor,
@@ -849,7 +851,13 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
     idleTimeoutMs: idleMsFor(cand, settings),
     heartbeatMs,
     startedAt: t0,
-    isPreamble: (ev) => isPreambleEvent(prepared.upstreamFormat, ev, preamble),
+    isPreamble: holdSec > 0 ? (ev) => isPreambleEvent(prepared.upstreamFormat, ev, preamble) : undefined,
+    breakEvents: settings.streamErrorEvent
+      ? (reason) => {
+          const ev = streamBreakEvent(ctx, reason === "timeout", settings);
+          return processor.breakEvents ? processor.breakEvents(ev) : [ev];
+        }
+      : undefined,
     guard: ctx.funds?.outputTokens && ctx.funds.cutAtTokens
       ? {
           exceeded: () => streamExceedsHold(ctx, processor),
@@ -873,10 +881,11 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
 
   try {
     // Before anything is sent to the client a failure fails over (next key, or a fresh attempt on the same one). The
-    // response is held until real output arrives - opening bookkeeping events do not count - for up to
-    // streamStartHoldSec (counted from the request's arrival, across retries); after that it is committed anyway
-    // (200 + SSE headers) and heartbeats keep the client alive.
-    await session.prime({ commitAfterMs: heartbeatMs > 0 ? holdCommitAfterMs(heartbeatMs, settings.streamStartHoldSec, ctx.startedAt) : undefined });
+    // response is held until real output arrives - opening bookkeeping events do not count - for up to the start hold
+    // (streamStartHoldSec or the key's own, counted from the request's arrival, across retries); after that it is
+    // committed anyway (200 + SSE headers) and heartbeats keep the client alive. With no hold the first upstream event
+    // starts the response.
+    await session.prime({ commitAfterMs: heartbeatMs > 0 ? holdCommitAfterMs(heartbeatMs, holdSec, ctx.startedAt) : undefined });
   } catch (err) {
     // classify BEFORE aborting: h.abort() itself sets the abort reason
     const reason = h.signal.reason;
@@ -930,7 +939,23 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   return { kind: "response", response: withCommon(ctx, new Response(session.toReadable(), { status: 200, headers })) };
 }
 
-/** The ONE event we author ourselves mid-stream: the credit hold is used up (PLAN 9c). */
+/** What the customer is told about a stream whose upstream leg broke after it started (the error event and their request log). */
+function streamBreakMessage(timeout: boolean, settings: SettingValues): string {
+  const notCharged = settings.billFailedRequests ? "" : " You were not charged for this request.";
+  return `${timeout ? "The model stopped responding mid-answer." : "The model's connection dropped mid-answer. Retry the request."}${notCharged}`;
+}
+
+/**
+ * The event that ends a stream whose upstream leg broke after it started (setting streamErrorEvent): a native error
+ * with our own code (upstream_error / upstream_timeout) and the request id in the message, where the model makers' own
+ * APIs put theirs.
+ */
+function streamBreakEvent(ctx: Ctx, timeout: boolean, settings: SettingValues): string {
+  const ge = new GatewayError(timeout ? "upstream_timeout" : "upstream_error", `${streamBreakMessage(timeout, settings)} (request id: ${ctx.requestId})`);
+  return streamErrorEvent(ctx.errorFormat, ge, ctx.requestId);
+}
+
+/** An event we author ourselves mid-stream: the credit hold is used up (PLAN 9c). */
 function budgetCutEvent(ctx: Ctx): string {
   const ge = new GatewayError("insufficient_balance", "Your available balance was used up while the response was streaming. Add credit to continue.");
   return streamErrorEvent(ctx.errorFormat, ge, ctx.requestId);
@@ -1023,15 +1048,15 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
       ttftMs: info.firstOutputMs,
     });
   } else {
-    // upstream reset / dropped / ended early / stalled: the client connection was destroyed the same way
+    // upstream reset / dropped / ended early / stalled: the client was told with an error event (or its connection was dropped)
     const timeout = info.reason === "timeout";
     recordKeyFailure(cand.key, timeout ? "timeout" : "server", { status: 0, message: `stream ${info.reason}`, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: timeout ? 504 : 502,
       errorCode: timeout ? "upstream_timeout" : "upstream_error",
-      errorMessage: `${timeout ? "The model stopped responding mid-answer." : "The model's connection dropped mid-answer. Retry the request."}${notCharged}`,
-      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started (output already sent, so not retryable here); client connection dropped${info.error ? ` (${describeNetworkError(info.error)})` : ""}${info.trace ? ` | ${info.trace}` : ""}`,
+      errorMessage: streamBreakMessage(timeout, settings),
+      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started (output already sent, so not retryable here); ${info.notified ? "error event sent to the client" : "client connection dropped"}${info.error ? ` (${describeNetworkError(info.error)})` : ""}${info.trace ? ` | ${info.trace}` : ""}`,
       usage,
       ttftMs: info.firstOutputMs,
     });

@@ -219,6 +219,7 @@ model ApiKey {
   ipAllowlist    String[]  @default([]) // CIDR or exact IPs, empty = any
   stripHeaders   String[]  @default([]) // upstream request headers this key strips (lib/strip-headers); none by default
   userAgent      String? // user-agent this key presents upstream: preset id or text; null = pass the caller's through (a provider setting wins)
+  streamHoldSec  Int? // stream start hold for this key's requests, in seconds (never above the gateway setting): null = the gateway setting, 0 = no hold (every event is sent as it arrives)
   rpmLimit       Int?
   tpmLimit       Int?
   maxConcurrency Int? // §9b

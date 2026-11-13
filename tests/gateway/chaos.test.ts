@@ -120,6 +120,8 @@ const NON_STREAM: Array<Fmt & { upstreamPath: () => string }> = [
 
 /** In-process override of settings.streamHeartbeatSec (the DB is shared with parallel test files); applied to every fresh config snapshot. */
 let heartbeatOverride: number | null = null;
+/** In-process override of settings.streamErrorEvent (same reason). */
+let errorEventOverride: boolean | null = null;
 async function applyOverrides(): Promise<void> {
   __resetCacheForTests();
   if (heartbeatOverride !== null) {
@@ -128,6 +130,7 @@ async function applyOverrides(): Promise<void> {
     // these tests time the heartbeat itself: commit after one heartbeat interval instead of holding for real output
     st.streamStartHoldSec = 0;
   }
+  if (errorEventOverride !== null) (await getConfig()).settings.streamErrorEvent = errorEventOverride;
 }
 function setHeartbeatSeconds(sec: number | null): Promise<void> {
   heartbeatOverride = sec;
@@ -309,19 +312,48 @@ describe.skipIf(!dbOk)("connection fidelity (real sockets)", () => {
       await allReleased();
     });
 
-    it.each(["rst-after:7", "fin-after:7"])("upstream %s -> the client connection breaks (no synthetic end, no error event)", async (mode) => {
+    it.each(["rst-after:7", "fin-after:7"])("upstream %s -> the client gets one native error event naming the request, then the stream ends (no synthetic terminal event)", async (mode) => {
       const r = await run(fmt, { mode, words: 12 });
       expect(r.status).toBe(200);
-      expect(r.error, "the client must see a network error").toBeTruthy();
-      expect(r.ended).toBe(false);
-      expect(r.text.length).toBeGreaterThan(0);
+      expect(r.error, "a clean end after the error event").toBeNull();
+      expect(r.ended).toBe(true);
       expect(r.text).not.toMatch(fmt.terminal);
-      expect(r.text).not.toMatch(fmt.errorEvent);
+      expect(r.text).toMatch(fmt.errorEvent);
+      // the gateway's own event: its message, with the request id (the model maker's APIs name the request in theirs too)
+      expect(r.text).toMatch(/connection dropped mid-answer/);
+      expect(r.text).toContain(r.id!);
+      // exactly one error event of ours, it is the last thing in the stream, and it says nothing about the upstream
+      expect(r.text.split("connection dropped mid-answer").length - 1).toBe(1);
+      const last = r.text.trimEnd().split("\n\n").pop()!;
+      expect(last).toMatch(/dropped mid-answer/);
+      expect(last).not.toMatch(/mock|127\.0\.0\.1|ECONNRESET|terminated/i);
       const log = await logOf(r.id);
       expect(log.status).toBe("UPSTREAM_ERROR");
-      expect(log.internalError).toMatch(/client connection dropped/);
+      expect(log.errorCode).toBe("upstream_error");
+      expect(log.internalError).toMatch(/error event sent to the client/);
       expect(log.outputTokens).toBeGreaterThan(0); // what was produced is metered
       await allReleased();
+    });
+
+    it("with the error event switched off, upstream rst-after:7 breaks the client connection (no event of ours)", async () => {
+      errorEventOverride = false;
+      try {
+        await applyOverrides();
+        const r = await run(fmt, { mode: "rst-after:7", words: 12 });
+        expect(r.status).toBe(200);
+        expect(r.error, "the client must see a network error").toBeTruthy();
+        expect(r.ended).toBe(false);
+        expect(r.text.length).toBeGreaterThan(0);
+        expect(r.text).not.toMatch(fmt.terminal);
+        expect(r.text).not.toMatch(fmt.errorEvent);
+        const log = await logOf(r.id);
+        expect(log.status).toBe("UPSTREAM_ERROR");
+        expect(log.internalError).toMatch(/client connection dropped/);
+        await allReleased();
+      } finally {
+        errorEventOverride = null;
+        await applyOverrides();
+      }
     });
 
     it.each(["drop-headers", "drop-pre-content"])("upstream %s before anything was produced -> failover, then a native 502 error", async (mode) => {

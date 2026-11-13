@@ -46,6 +46,7 @@ const dataFor = (v: KeyFormValues, groupId: string | null) => ({
   ipAllowlist: [...new Set(v.ipAllowlist)],
   userAgent: v.userAgent ?? null,
   stripHeaders: v.stripHeaders,
+  streamHoldSec: v.streamHoldSec,
   rpmLimit: v.rpmLimit ?? null,
   tpmLimit: v.tpmLimit ?? null,
   maxConcurrency: v.maxConcurrency ?? null,

@@ -31,6 +31,8 @@ interface FormState {
   ips: string;
   userAgent: string;
   stripHeaders: string[];
+  /** "default" = the gateway's start hold, "live" = none (stored as 0), "custom" = the key's own number of seconds (kept as it is) */
+  streamStart: "default" | "live" | "custom";
 }
 
 function initial(k?: KeyRow | null): FormState {
@@ -45,6 +47,7 @@ function initial(k?: KeyRow | null): FormState {
     expires: k?.expiresAt ? k.expiresAt.slice(0, 10) : "",
     userAgent: k?.userAgent ?? "",
     stripHeaders: k?.stripHeaders ?? [],
+    streamStart: k?.streamHoldSec == null ? "default" : k.streamHoldSec === 0 ? "live" : "custom",
     ips: k?.ipAllowlist.join("\n") ?? "",
   };
 }
@@ -110,6 +113,7 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
       ipAllowlist: parseIpList(f.ips),
       userAgent: f.userAgent.trim() || null,
       stripHeaders: f.stripHeaders,
+      streamHoldSec: f.streamStart === "default" ? null : f.streamStart === "live" ? 0 : (editing?.streamHoldSec ?? null),
     };
     start(async () => {
       setErrors({});
@@ -200,6 +204,24 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
               What this key tells the upstream the client is. Passthrough sends your tool&apos;s own. Some upstreams only accept one client (e.g. Claude Code). If the pool&apos;s provider sets its own identity, that one is used instead.
             </FieldDescription>
             {errors.userAgent && <FieldError>{errors.userAgent}</FieldError>}
+          </Field>
+
+          <Field>
+            <FieldLabel>Streaming</FieldLabel>
+            <Select value={f.streamStart} onValueChange={(v) => set("streamStart", v as FormState["streamStart"])}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="default">Hold the response until the answer starts (default)</SelectItem>
+                <SelectItem value="live">Live: send every event as it arrives</SelectItem>
+                {f.streamStart === "custom" && <SelectItem value="custom">Hold for up to {editing?.streamHoldSec} s</SelectItem>}
+              </SelectContent>
+            </Select>
+            <FieldDescription>
+              By default a streamed response is held back until the model&apos;s answer starts (for a few minutes at most), so a failure before that is retried without you seeing it. Live streams the way the model makers&apos; own APIs do: the response starts at once and
+              reasoning arrives as progress, and a failure reaches your client as it happens. Failed requests are not charged either way.
+            </FieldDescription>
           </Field>
 
           <Field>

@@ -1,6 +1,6 @@
 /** Stream start detection (preamble events) and assembling a stream back into the provider's JSON. */
 import { describe, expect, it } from "vitest";
-import { holdCommitAfterMs, isPreambleEvent, newPreambleState } from "@/gateway/stream-start";
+import { holdCommitAfterMs, isPreambleEvent, newPreambleState, streamHoldSecFor } from "@/gateway/stream-start";
 import { SseCollector } from "@/gateway/stream-collect";
 import { SseParser } from "@/gateway/sse";
 import type { InboundFormat } from "@/gateway/types";
@@ -155,5 +155,17 @@ describe("Responses: only content commits the stream", () => {
     expect(r({ type: "response.image_generation_call.partial_image", partial_image_b64: "x" })).toBe(false);
     expect(r({ type: "response.completed", response: {} })).toBe(false);
     expect(r({ type: "response.incomplete", response: {} })).toBe(false);
+  });
+});
+
+describe("the start hold that applies to a request", () => {
+  it("is the gateway setting unless the API key sets a shorter one; 0 on the key switches it off", () => {
+    expect(streamHoldSecFor(240, null)).toBe(240);
+    expect(streamHoldSecFor(240, undefined)).toBe(240);
+    expect(streamHoldSecFor(240, 0)).toBe(0);
+    expect(streamHoldSecFor(240, 30)).toBe(30);
+    // a key never lengthens it: the setting is the operator's limit (clients give up on response headers after a while)
+    expect(streamHoldSecFor(240, 600)).toBe(240);
+    expect(streamHoldSecFor(0, 30)).toBe(0);
   });
 });

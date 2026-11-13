@@ -28,6 +28,8 @@ export interface KeyRow {
   userAgent: string | null;
   /** upstream request headers this key strips */
   stripHeaders: string[];
+  /** stream start hold of this key in seconds: null = the gateway's own, 0 = live */
+  streamHoldSec: number | null;
   rpmLimit: number | null;
   tpmLimit: number | null;
   maxConcurrency: number | null;
@@ -118,6 +120,7 @@ export async function getKeysPageData(user: SessionUser) {
     ipAllowlist: k.ipAllowlist,
     userAgent: k.userAgent,
     stripHeaders: k.stripHeaders,
+    streamHoldSec: k.streamHoldSec,
     rpmLimit: k.rpmLimit,
     tpmLimit: k.tpmLimit,
     maxConcurrency: k.maxConcurrency,

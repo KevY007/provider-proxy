@@ -103,6 +103,17 @@ function chatChunkIsPreamble(j: Record<string, unknown>): boolean {
 }
 
 /**
+ * The start hold for one request, in seconds: the gateway setting, or the shorter one its API key asks for
+ * (`ApiKey.streamHoldSec`). 0 = no hold: the response starts with the first upstream event and every event is sent as
+ * it arrives, the way the model makers' own APIs stream; a failure then reaches the client as it happens instead of
+ * being retried behind a held response.
+ */
+export function streamHoldSecFor(settingSec: number, keySec: number | null | undefined): number {
+  const setting = Math.max(0, settingSec);
+  return typeof keySec === "number" && keySec >= 0 ? Math.min(setting, keySec) : setting;
+}
+
+/**
  * How long a stream attempt may still be held before it is committed. The hold window counts from the moment the
  * request arrived, NOT per attempt: a retry late in the window must not restart it, or the client would wait
  * attempts x window for its first byte (HTTP clients give up on headers after a fixed time, e.g. Node's 300 s).

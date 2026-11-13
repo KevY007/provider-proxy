@@ -6,6 +6,7 @@ import { isPreambleEvent } from "@/gateway/stream-start";
 import { SseParser } from "@/gateway/sse";
 import type { StreamProcessor } from "@/gateway/processor";
 import { ClientAbortError, UpstreamTimeoutError } from "@/gateway/upstream";
+import { GatewayError, streamErrorEvent } from "@/gateway/errors";
 import { AnthropicToChatStream } from "@/gateway/translate";
 
 const enc = new TextEncoder();
@@ -160,6 +161,113 @@ describe("StreamSession", () => {
     expect(text).toContain("cut off");
     expect(text).not.toContain("[DONE]");
     expect(finished[0]).toMatchObject({ reason: "truncated", destroyed: true });
+  });
+
+  describe("the upstream leg breaks after the response started, and an error ending is configured", () => {
+    const ending = (reason: string) => [`data: {"error":{"code":"${reason}"}}\n\n`];
+    const withEnding = (up: ReturnType<typeof upstream>, o: { idleTimeoutMs?: number } = {}) => {
+      const finished: FinishInfo[] = [];
+      const seen: string[] = [];
+      const s = new StreamSession({
+        body: up.body,
+        processor: new OpenAIStreamPassthrough("public", true),
+        abort: (r) => up.ac.abort(r),
+        signal: up.ac.signal,
+        idleTimeoutMs: o.idleTimeoutMs,
+        breakEvents: (reason) => {
+          seen.push(reason);
+          return ending(reason);
+        },
+        onFinish: (i) => finished.push(i),
+      });
+      return { s, finished, seen };
+    };
+
+    it("closed without its terminal event -> the client gets the error ending, then a normal end", async () => {
+      const { s, finished, seen } = withEnding(upstream([chunk("cut off")]));
+      await s.prime();
+      const { text, error } = await drainUntilError(s.toReadable());
+      expect(error).toBeNull();
+      expect(text).toContain("cut off");
+      expect(text.endsWith(ending("truncated")[0])).toBe(true);
+      expect(text).not.toContain("[DONE]");
+      expect(seen).toEqual(["truncated"]);
+      expect(finished).toHaveLength(1);
+      expect(finished[0]).toMatchObject({ reason: "truncated", notified: true });
+      expect(finished[0].destroyed).toBeUndefined();
+    });
+
+    it("connection reset -> the same, with reason upstream_error", async () => {
+      const { s, finished } = withEnding(upstream([chunk("partial")], { failAfter: true }));
+      await s.prime();
+      const { text, error } = await drainUntilError(s.toReadable());
+      expect(error).toBeNull();
+      expect(text).toContain("partial");
+      expect(text.endsWith(ending("upstream_error")[0])).toBe(true);
+      expect(finished[0]).toMatchObject({ reason: "upstream_error", notified: true });
+    });
+
+    it("idle cutoff -> the same, with reason timeout", async () => {
+      const { s, finished } = withEnding(upstream([chunk("then silence")], { hang: true }), { idleTimeoutMs: 40 });
+      await s.prime();
+      const { text, error } = await drainUntilError(s.toReadable());
+      expect(error).toBeNull();
+      expect(text.endsWith(ending("timeout")[0])).toBe(true);
+      expect(finished[0]).toMatchObject({ reason: "timeout", notified: true });
+    });
+
+    it("an ending that yields nothing leaves the old behaviour: the client stream is destroyed", async () => {
+      const up = upstream([chunk("cut off")]);
+      const finished: FinishInfo[] = [];
+      const s = new StreamSession({ body: up.body, processor: new OpenAIStreamPassthrough("public", true), abort: (r) => up.ac.abort(r), signal: up.ac.signal, breakEvents: () => [], onFinish: (i) => finished.push(i) });
+      await s.prime();
+      const { error } = await drainUntilError(s.toReadable());
+      expect(error).toBeInstanceOf(Error);
+      expect(finished[0]).toMatchObject({ reason: "truncated", destroyed: true });
+      expect(finished[0].notified).toBeUndefined();
+    });
+
+    it("a stream that completes, and one the client cancels, never get it", async () => {
+      const ok = withEnding(upstream([chunk("hi", "stop"), data("[DONE]")]));
+      const text = await drain(ok.s.toReadable());
+      expect(text).not.toContain('"error"');
+      expect(ok.seen).toEqual([]);
+      const gone = withEnding(upstream([chunk("a")], { hang: true }));
+      await gone.s.prime();
+      const reader = gone.s.toReadable().getReader();
+      await reader.read();
+      await reader.cancel();
+      expect(gone.seen).toEqual([]);
+      expect(gone.finished[0].reason).toBe("cancelled");
+    });
+  });
+
+  describe("the error ending each processor builds for a broken upstream (breakEvents)", () => {
+    const generic = streamErrorEvent("openai", new GatewayError("upstream_error", "The model's connection dropped mid-answer."), "req_1");
+
+    it("Responses: one `error` event in the Responses API's own shape, numbered after the last event of the stream", () => {
+      const p = new ResponsesStreamPassthrough(null);
+      p.onEvent(new SseParser().push(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", sequence_number: 7, delta: "Hel" })}\n\n`)[0]);
+      const out = p.breakEvents(generic);
+      expect(out).toHaveLength(1);
+      expect(out[0].startsWith("event: error\ndata: ")).toBe(true);
+      expect(JSON.parse(/^data: (.*)$/m.exec(out[0])![1])).toEqual({ type: "error", code: "upstream_error", message: "The model's connection dropped mid-answer.", param: null, sequence_number: 8 });
+    });
+
+    it("chat completions: the error chunk alone - no finish_reason chunk and no [DONE], which would read as a complete answer", () => {
+      const p = new OpenAIStreamPassthrough("public", true);
+      p.onEvent(new SseParser().push(chunk("Hel"))[0]);
+      expect(p.breakEvents(generic)).toEqual([generic]);
+    });
+
+    it("Gemini JSON array: the error becomes the last element and the array is closed, so the body stays valid JSON", () => {
+      const p = new GeminiJsonArrayStream(new GeminiStreamPassthrough(null));
+      const first = p.onEvent(new SseParser().push(data({ candidates: [{ content: { parts: [{ text: "Hel" }] } }] }))[0]);
+      const tail = p.breakEvents(streamErrorEvent("gemini", new GatewayError("upstream_error", "dropped")));
+      const body = JSON.parse([...first, ...tail].join("")) as Array<Record<string, unknown>>;
+      expect(body).toHaveLength(2);
+      expect(body[1]).toMatchObject({ error: { code: 502, status: "UNAVAILABLE" } });
+    });
   });
 
   describe("trace of a stream that did not complete", () => {

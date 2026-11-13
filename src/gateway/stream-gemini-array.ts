@@ -47,6 +47,12 @@ export class GeminiJsonArrayStream implements StreamProcessor {
     tail.push(this.count === 0 ? "[]" : "]");
     return tail;
   }
+  /** The upstream broke mid-answer: the error object becomes the last array element and the array is closed (valid JSON). */
+  breakEvents(errorEvent: string): string[] {
+    const tail = this.wrap(this.inner.breakEvents ? this.inner.breakEvents(errorEvent) : [errorEvent]);
+    tail.push(this.count === 0 ? "[]" : "]");
+    return tail;
+  }
   completed(): boolean {
     return this.inner.completed();
   }

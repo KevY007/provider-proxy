@@ -47,3 +47,17 @@ describe("key form: stripHeaders", () => {
     expect(keyFormSchema.parse({ name: "k", stripHeaders: [" X-App ", "openai-beta", "authorization", "x-app"] }).stripHeaders).toEqual(["x-app", "openai-beta"]);
   });
 });
+
+describe("key form: streamHoldSec (stream start)", () => {
+  it("is unset by default: the key follows the gateway's start hold", () => {
+    expect(keyFormSchema.parse({ name: "k" }).streamHoldSec).toBeNull();
+    expect(keyFormSchema.parse({ name: "k", streamHoldSec: null }).streamHoldSec).toBeNull();
+  });
+  it("accepts 0 (live streaming) and whole seconds, and refuses anything else", () => {
+    expect(keyFormSchema.parse({ name: "k", streamHoldSec: 0 }).streamHoldSec).toBe(0);
+    expect(keyFormSchema.parse({ name: "k", streamHoldSec: 30 }).streamHoldSec).toBe(30);
+    expect(keyFormSchema.safeParse({ name: "k", streamHoldSec: -1 }).success).toBe(false);
+    expect(keyFormSchema.safeParse({ name: "k", streamHoldSec: 1.5 }).success).toBe(false);
+    expect(keyFormSchema.safeParse({ name: "k", streamHoldSec: 100_000 }).success).toBe(false);
+  });
+});
