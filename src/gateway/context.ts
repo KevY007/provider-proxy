@@ -232,6 +232,7 @@ export function logOutcome(ctx: Ctx, p: OutcomePatch): Charge | null {
     ttftMs: null,
     queueMs: ctx.queueMs,
     droppedCost: ctx.droppedCost,
+    billFailedRequests: ctx.snap?.settings.billFailedRequests ?? false,
     attempts: ctx.attempts,
     logBodies: ctx.logBodies,
     requestBody: ctx.logBodies ? (ctx.body as Json) : undefined,

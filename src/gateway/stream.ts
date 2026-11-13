@@ -30,6 +30,12 @@ export interface FinishInfo {
   /** ms from stream start to the first content byte written to the client (null if none). */
   firstOutputMs: number | null;
   bytesOut: number;
+  /**
+   * Only for a stream that did not complete: which upstream event made it count as started and the last events the
+   * upstream sent (event types only, never content) - what an admin needs to tell an upstream that died mid-answer
+   * from one that never really began.
+   */
+  trace?: string;
 }
 
 export interface StreamOptions {
@@ -101,6 +107,17 @@ export class InBandError extends Error {
   }
 }
 
+/** Event type (and, for item / block events, the item type) of an SSE event: a label for diagnostics, never content. */
+export function eventLabel(ev: SseEvent): string {
+  if (ev.comment) return "comment";
+  const head = ev.data.slice(0, 600);
+  const type = ev.event ?? /^\s*\{\s*"type":\s*"([\w.]+)"/.exec(head)?.[1] ?? (ev.data.trim() === "[DONE]" ? "[DONE]" : ev.data ? "data" : "empty");
+  const inner = /"(?:item|content_block|delta)":\s*\{[^{}]{0,300}?"type":\s*"([\w.]+)"/.exec(head)?.[1];
+  return inner ? `${type}[${inner}]` : type;
+}
+
+const TRACE_TAIL = 6;
+
 const enc = new TextEncoder();
 export const HEARTBEAT_COMMENT = ": keep-alive\n\n";
 const HEARTBEAT_BYTES = enc.encode(HEARTBEAT_COMMENT);
@@ -126,6 +143,10 @@ export class StreamSession {
   private started = false;
   /** An error event arrived before any real output (only preamble events, if anything, came first). */
   firstEventError = false;
+  /** Diagnostics (see FinishInfo.trace): the event that started the stream and the last upstream events, with arrival times. */
+  private startedBy: { ev: SseEvent; at: number } | null = null;
+  private tail: Array<{ ev: SseEvent; at: number }> = [];
+  private upstreamEvents = 0;
 
   constructor(private readonly o: StreamOptions) {
     this.reader = o.body.getReader();
@@ -186,10 +207,17 @@ export class StreamSession {
     for (const ev of events) {
       const hadError = !!p.error();
       const out = p.onEvent(ev);
+      this.upstreamEvents++;
+      this.tail.push({ ev, at: Date.now() });
+      if (this.tail.length > TRACE_TAIL) this.tail.shift();
       if (!hadError && p.error() && !this.started) this.firstEventError = true;
       if (!ev.comment && !p.error() && out.length) {
         this.anyOutput = true;
-        if (!this.o.isPreamble?.(ev)) this.started = true;
+        // (only asked until the stream has started: nothing depends on the answer afterwards)
+        if (!this.started && !this.o.isPreamble?.(ev)) {
+          this.started = true;
+          this.startedBy = { ev, at: Date.now() };
+        }
       }
       for (const s of out) if (s) this.pending.push(enc.encode(s));
       if (p.halted?.()) {
@@ -289,10 +317,20 @@ export class StreamSession {
     this.finished = true;
     this.disarm();
     try {
-      this.o.onFinish({ reason, ...extra, firstOutputMs: this.firstOutputAt === null ? null : this.firstOutputAt - this.t0, bytesOut: this.bytesOut });
+      this.o.onFinish({ reason, ...extra, firstOutputMs: this.firstOutputAt === null ? null : this.firstOutputAt - this.t0, bytesOut: this.bytesOut, ...(reason === "completed" ? {} : { trace: this.trace() }) });
     } catch {
       /* onFinish must not break the stream teardown */
     }
+  }
+
+  /** See FinishInfo.trace. */
+  private trace(): string | undefined {
+    if (!this.o.processor || !this.upstreamEvents) return undefined;
+    const now = Date.now();
+    const sec = (ms: number) => (ms / 1000).toFixed(1);
+    const started = this.startedBy ? `started by ${eventLabel(this.startedBy.ev)} at +${sec(this.startedBy.at - this.t0)}s` : "no output event yet (only opening / reasoning events)";
+    const last = this.tail.map((x) => `${eventLabel(x.ev)} -${sec(now - x.at)}s`).join(", ");
+    return `${started}; ${this.upstreamEvents} upstream events, the last: ${last}`;
   }
 
   /** Abandon a primed-but-unused session (failover happened). Does not call onFinish. */

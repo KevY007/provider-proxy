@@ -1,6 +1,6 @@
 /** Stream start detection (preamble events) and assembling a stream back into the provider's JSON. */
 import { describe, expect, it } from "vitest";
-import { holdCommitAfterMs, isPreambleEvent } from "@/gateway/stream-start";
+import { holdCommitAfterMs, isPreambleEvent, newPreambleState } from "@/gateway/stream-start";
 import { SseCollector } from "@/gateway/stream-collect";
 import { SseParser } from "@/gateway/sse";
 import type { InboundFormat } from "@/gateway/types";
@@ -37,6 +37,27 @@ describe("isPreambleEvent", () => {
     // a message item closing carries no text itself (its deltas commit; a relay's blank " " message must not)
     expect(isPreambleEvent("openai_responses", ev({ type: "response.output_item.done", item: { type: "message" } }))).toBe(true);
     expect(isPreambleEvent("anthropic_messages", ev({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hm" } }))).toBe(true);
+  });
+  it("Responses: the text of a commentary-phase message is preamble once the stream's events are tracked; the answer and tool calls are output", () => {
+    const state = newPreambleState();
+    const pre = (data: unknown) => isPreambleEvent("openai_responses", ev(data), state);
+    // a model that was given tools opens with one sentence about what it is going to do, then reasons for minutes
+    expect(pre({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_c", role: "assistant", status: "in_progress", content: [], phase: "commentary" } })).toBe(true);
+    expect(pre({ type: "response.content_part.added", item_id: "msg_c", output_index: 0, content_index: 0, part: { type: "output_text", text: "" } })).toBe(true);
+    expect(pre({ type: "response.output_text.delta", item_id: "msg_c", output_index: 0, content_index: 0, delta: "I'll match the reference proportions" })).toBe(true);
+    expect(pre({ type: "response.output_text.done", item_id: "msg_c", output_index: 0, content_index: 0, text: "I'll match the reference proportions" })).toBe(true);
+    expect(pre({ type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_c", status: "completed", phase: "commentary" } })).toBe(true);
+    expect(pre({ type: "response.output_item.added", output_index: 1, item: { type: "reasoning", id: "rs_1" } })).toBe(true);
+    // the answer itself (no phase, or final_answer) and a tool call still start the stream
+    expect(pre({ type: "response.output_item.added", output_index: 2, item: { type: "message", id: "msg_a", phase: "final_answer" } })).toBe(true);
+    expect(pre({ type: "response.output_text.delta", item_id: "msg_a", output_index: 2, delta: "<svg" })).toBe(false);
+    expect(pre({ type: "response.output_text.delta", item_id: "msg_plain", output_index: 3, delta: "Hello" })).toBe(false);
+    expect(pre({ type: "response.output_item.added", output_index: 4, item: { type: "function_call", id: "fc_1" } })).toBe(false);
+    expect(pre({ type: "response.completed", response: { id: "r" } })).toBe(false);
+    // a caller that keeps no state gets the stateless rule: any text delta is output
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_text.delta", item_id: "msg_c", delta: "I'll" }))).toBe(false);
+    // another stream's state knows nothing about this one's items
+    expect(isPreambleEvent("openai_responses", ev({ type: "response.output_text.delta", item_id: "msg_c", delta: "I'll" }), newPreambleState())).toBe(false);
   });
   it("Responses and Anthropic: opening bookkeeping events are preamble, deltas are output", () => {
     for (const t of ["response.created", "response.in_progress", "response.output_item.added", "response.content_part.added"]) expect(isPreambleEvent("openai_responses", ev({ type: t }, t))).toBe(true);

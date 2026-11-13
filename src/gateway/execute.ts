@@ -36,7 +36,7 @@ import { makeDriverEnv } from "./providers/driver-env";
 import { getDriver } from "./providers/drivers";
 import { acquireSlots, trackQueued, waitForRelease, type SlotLease, type SlotPool } from "./slots";
 import { StreamSession, type FinishInfo } from "./stream";
-import { holdCommitAfterMs, isPreambleEvent } from "./stream-start";
+import { holdCommitAfterMs, isPreambleEvent, newPreambleState } from "./stream-start";
 import { canCollect, SseCollector } from "./stream-collect";
 import { billsDroppedStreams, providerSettings, unbilledCancels, upstreamOp } from "./providers/adapters";
 import { SseParser } from "./sse";
@@ -840,6 +840,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
   processor.onGeneratedFiles = (files) => void registerGeneratedFiles(ctx, cand, files);
   const sse = !geminiJsonArray(ctx);
   const heartbeatMs = sse ? Math.max(0, settings.streamHeartbeatSec) * 1000 : 0;
+  const preamble = newPreambleState();
   const session = new StreamSession({
     body,
     processor,
@@ -848,7 +849,7 @@ async function handleStream(ctx: Ctx, cand: Candidate, prepared: Prepared, h: Up
     idleTimeoutMs: idleMsFor(cand, settings),
     heartbeatMs,
     startedAt: t0,
-    isPreamble: (ev) => isPreambleEvent(prepared.upstreamFormat, ev),
+    isPreamble: (ev) => isPreambleEvent(prepared.upstreamFormat, ev, preamble),
     guard: ctx.funds?.outputTokens && ctx.funds.cutAtTokens
       ? {
           exceeded: () => streamExceedsHold(ctx, processor),
@@ -946,7 +947,8 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
     usage = emptyUsage();
   } else if (info.reason !== "completed" && TOKEN_OPS.has(path.op)) {
     // a stream that did not reach its end has no final usage (Anthropic reports output_tokens: 1 in message_start and
-    // the real count only in message_delta): bill at least what the client received
+    // the real count only in message_delta): count at least what the client received (a cancelled stream is billed for
+    // it; one the upstream failed is not charged to the customer, but this is what the upstream bills us - see metering.ts)
     // (the processors' output text includes the thinking that was streamed: it reached the client and the upstream bills it)
     const seen = await countTokens(processor.outputText());
     if (seen > usage.outputTokens) usage = { ...usage, outputTokens: seen, estimated: true };
@@ -963,6 +965,8 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   }
 
   const err = processor.error();
+  // what the customer reads in their own log about a stream the upstream failed (see metering.ts)
+  const notCharged = settings.billFailedRequests ? "" : " You were not charged for this request.";
   if (info.reason === "completed") {
     recordKeySuccess(cand.key);
     logOutcome(ctx, { status: "SUCCESS", httpStatus: 200, usage, ttftMs: info.firstOutputMs });
@@ -1003,16 +1007,17 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
   } else if (info.inband && err) {
     // the upstream sent an error EVENT (forwarded verbatim) and ended the stream: the client saw exactly that
     recordKeyFailure(cand.key, classifyStatus(err.status, err.message), { status: err.status, message: err.message, noCooldown: providerNoCooldown(cand.route.provider) }, settings);
-    // an upstream that does not bill a stream it ends with an error: nothing is billed when the client received nothing;
-    // output that was already streamed is billed to the customer, our cost is 0
+    // The customer is not charged for a stream the upstream fails (metering.ts, unless billFailedRequests is on: then the
+    // output that was already streamed is billed). An upstream that does not bill a stream it ends with an error: our cost is 0
     const upstreamUnbilled = !!providerSettings(cand.route.provider).unbilledStreamErrors && !hasReportedUsage(reported);
     const unbilled = upstreamUnbilled && !delivered;
+    const costNote = `our cost 0: the upstream does not bill a stream it ends with an error`;
     logOutcome(ctx, {
       status: "UPSTREAM_ERROR",
       httpStatus: err.status >= 400 ? err.status : 502,
       errorCode: err.status === 429 ? "rate_limited" : err.status === 529 ? "upstream_overloaded" : "upstream_error",
-      errorMessage: "The upstream provider returned an error.",
-      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}${unbilled ? " (not billed: the upstream does not bill a stream it ends with an error)" : upstreamUnbilled ? " (the delivered output is billed; our cost 0: the upstream does not bill a stream it ends with an error)" : ""}`,
+      errorMessage: `The upstream provider returned an error.${notCharged}`,
+      internalError: `in-stream error event forwarded verbatim: ${err.type ?? ""} ${err.message}${unbilled ? " (not billed: the upstream does not bill a stream it ends with an error)" : upstreamUnbilled ? ` (${settings.billFailedRequests ? "the delivered output is billed; " : ""}${costNote})` : ""}${info.trace ? ` | ${info.trace}` : ""}`,
       usage: unbilled ? emptyUsage() : usage,
       ...(upstreamUnbilled && delivered ? { upstreamUnbilled: true } : {}),
       ttftMs: info.firstOutputMs,
@@ -1025,8 +1030,8 @@ async function finalizeStream(ctx: Ctx, cand: Candidate, processor: StreamProces
       status: "UPSTREAM_ERROR",
       httpStatus: timeout ? 504 : 502,
       errorCode: timeout ? "upstream_timeout" : "upstream_error",
-      errorMessage: timeout ? "The model stopped responding mid-answer." : "The model's connection dropped mid-answer. Retry the request.",
-      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started (output already sent, so not retryable here); client connection dropped${info.error ? ` (${describeNetworkError(info.error)})` : ""}`,
+      errorMessage: `${timeout ? "The model stopped responding mid-answer." : "The model's connection dropped mid-answer. Retry the request."}${notCharged}`,
+      internalError: `stream ${info.reason}: upstream ${timeout ? "stalled" : "connection broke"} after the response started (output already sent, so not retryable here); client connection dropped${info.error ? ` (${describeNetworkError(info.error)})` : ""}${info.trace ? ` | ${info.trace}` : ""}`,
       usage,
       ttftMs: info.firstOutputMs,
     });

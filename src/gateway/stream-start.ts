@@ -12,8 +12,23 @@ import { isObject } from "./util";
  * reasoning items / summaries every few seconds for minutes before the answer (measured on a reseller: an Astra xhigh
  * request thought for 8+ minutes and failed in that phase), and they are buffered and released with the answer (or when
  * the hold window ends), so a retry never duplicates anything the client saw.
+ *
+ * So does commentary: a Responses model that was given tools opens with a message item of `phase: "commentary"` (one
+ * sentence about what it is going to do) and only then reasons, for minutes, towards the answer or the tool call.
+ * Measured on a reseller: such a stream committed on that sentence after ~11 s and then died in the reasoning phase, so
+ * every failure reached the client (15 of 17 calls). Its text deltas do not say which item they belong to in a way a
+ * single event shows, so the caller keeps a `PreambleState` per stream; without one any text delta is output.
  */
-export function isPreambleEvent(format: InboundFormat, ev: SseEvent): boolean {
+export interface PreambleState {
+  /** ids of the Responses message items announced with `phase: "commentary"` */
+  commentary: Set<string>;
+}
+
+export function newPreambleState(): PreambleState {
+  return { commentary: new Set() };
+}
+
+export function isPreambleEvent(format: InboundFormat, ev: SseEvent, state?: PreambleState): boolean {
   if (ev.comment) return true;
   const data = ev.data?.trim() ?? "";
   if (!data || data === "[DONE]") return false;
@@ -28,8 +43,15 @@ export function isPreambleEvent(format: InboundFormat, ev: SseEvent): boolean {
   switch (format) {
     case "openai_chat":
       return chatChunkIsPreamble(j);
-    case "openai_responses":
-      return !responsesEventIsOutput(typeof j.type === "string" ? j.type : ev.event ?? "", j);
+    case "openai_responses": {
+      const type = typeof j.type === "string" ? j.type : ev.event ?? "";
+      if (state) {
+        if (type === "response.output_item.added" && isObject(j.item) && j.item.type === "message" && j.item.phase === "commentary" && typeof j.item.id === "string") state.commentary.add(j.item.id);
+        // the parts and text of a commentary message: not the answer yet
+        if (typeof j.item_id === "string" && state.commentary.has(j.item_id)) return true;
+      }
+      return !responsesEventIsOutput(type, j);
+    }
     case "anthropic_messages": {
       const type = typeof j.type === "string" ? j.type : ev.event ?? "";
       if (ANTHROPIC_PREAMBLE.has(type)) return true;

@@ -52,6 +52,7 @@ export const SETTING_DEFS = {
   minBalanceToCall: def("number", "billing", "Minimum balance to call (USD)", "Requests are rejected when balance + credit limit <= this value.", z.number().min(-1000000).max(1000000), 0),
   lowBalanceEmail: def("boolean", "billing", "Low balance emails", "Email customers when their balance runs low.", z.boolean(), true),
   autoRechargeMaxPerDay: def("number", "billing", "Auto-recharge max per day", "Maximum automatic recharges per customer per 24h.", z.number().int().min(1).max(100), 3),
+  billFailedRequests: def("boolean", "billing", "Charge for requests that fail upstream", "Off: a request the upstream fails after it started answering (a stream that drops, or that the upstream ends with its own error) is free for the customer; its tokens and what the upstream bills us for it are still recorded, as our cost. On: the customer pays the input and whatever output was delivered before the failure. Requests the customer cancels are always charged for what they received.", z.boolean(), false),
   // --- gateway ---
   logBodies: def("boolean", "gateway", "Log request/response bodies", "Store full request and response bodies in request logs (privacy + storage impact).", z.boolean(), false),
   maxAttempts: def("number", "gateway", "Max upstream attempts", "How many keys/routes to try before failing a request.", z.number().int().min(1).max(10), 3),
