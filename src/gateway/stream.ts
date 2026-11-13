@@ -16,7 +16,8 @@ import { ClientAbortError, UpstreamTimeoutError } from "./upstream";
  *       a bug in our own processing after commit              -> upstream aborted + client destroyed (GATEWAY_ERROR);
  *   - the only exception is our own business rule: the funds guard ends the stream with a native
  *     `insufficient_balance` error (credit hold used up);
- *   - while the upstream is silent on an SSE stream a `: keep-alive` comment line is sent every `heartbeatMs`.
+ *   - while the upstream is silent on an SSE stream a `: keep-alive` comment line is sent every `heartbeatMs`;
+ *   - the upstream's own SSE comment lines are replaced by that same line (their text can name the upstream).
  */
 export type FinishReason = "completed" | "cancelled" | "upstream_error" | "timeout" | "truncated" | "budget" | "gateway_error";
 
@@ -206,7 +207,12 @@ export class StreamSession {
     const events = chunk ? this.parser.push(this.decoder.decode(chunk, { stream: true })) : [...this.parser.push(this.decoder.decode()), ...this.parser.end()];
     for (const ev of events) {
       const hadError = !!p.error();
-      const out = p.onEvent(ev);
+      // An upstream's own comment lines never reach the client as written: relays put their name in them
+      // (": <relay> keep-alive", ": <ROUTER> PROCESSING"). Where the processor would pass the block on, our neutral line
+      // goes out in its place (the connection stays alive); where it drops comments - a translated stream, a response
+      // that is not SSE - nothing is sent, as before.
+      const processed = p.onEvent(ev);
+      const out = ev.comment && processed.length ? [HEARTBEAT_COMMENT] : processed;
       this.upstreamEvents++;
       this.tail.push({ ev, at: Date.now() });
       if (this.tail.length > TRACE_TAIL) this.tail.shift();

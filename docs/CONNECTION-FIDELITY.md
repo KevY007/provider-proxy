@@ -80,6 +80,7 @@ provider settings and delete their fixtures.
 5. Upstream HTTP/2 is OPT-IN (`provider.settings.http2: true`, https only, default off). Lead decision: one lost h2 connection ends every stream multiplexed on it. Live-checked against OpenAI (`--live-h2`, passes), documented in the admin provider settings help text.
 6. `VideoJob` is left as is. New sticky objects (files, uploads, Gemini upload sessions) use `UpstreamObject`.
 7. Multipart spool uses `os.tmpdir()` (memory-backed on serverless container platforms); no per-request disk quota.
+8. An upstream's own SSE comment lines are not forwarded as written: each comment block becomes the gateway's `: keep-alive` line. Relays put their name in them (`: <relay> keep-alive`, `: <ROUTER> PROCESSING`), which would tell the customer who serves the pool. Their purpose (the connection stays alive) is kept. Translated streams and responses that are not SSE (Gemini's JSON array) drop upstream comments, as before (`tests/gateway/stream.test.ts`).
 
 ## Stream start hold (relays that fail right after accepting a request)
 

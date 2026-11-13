@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "@/gateway/stream-processors";
+import { GeminiStreamPassthrough, OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "@/gateway/stream-processors";
+import { GeminiJsonArrayStream } from "@/gateway/stream-gemini-array";
 import { StreamSession, eventLabel, type FinishInfo, type StreamOptions } from "@/gateway/stream";
 import { isPreambleEvent } from "@/gateway/stream-start";
 import { SseParser } from "@/gateway/sse";
@@ -124,6 +125,31 @@ describe("StreamSession", () => {
     expect(text).toContain(err); // byte for byte
     expect(finished[0]).toMatchObject({ reason: "upstream_error", inband: true });
     expect(finished[0].destroyed).toBeUndefined();
+  });
+
+  it("an upstream's own comment lines reach the client as the neutral `: keep-alive` line: their text can name the upstream", async () => {
+    const frames = [": acme-relay keep-alive\n\n", chunk("Hel"), ": keepalive\n: OPENROUTER PROCESSING\n\n", chunk("lo", "stop"), data("[DONE]")];
+    for (const processor of [new OpenAIStreamPassthrough("public", true), new ResponsesStreamPassthrough(null)]) {
+      const { s, finished } = session(upstream([...frames]), { processor });
+      await s.prime();
+      const text = await drain(s.toReadable());
+      expect(text).not.toMatch(/acme|OPENROUTER|keepalive/);
+      // one neutral line per upstream comment block, in its place in the stream
+      expect(text.split(": keep-alive\n\n").length - 1).toBe(2);
+      expect(text.indexOf(": keep-alive")).toBeLessThan(text.indexOf("Hel"));
+      expect(text).toContain("[DONE]");
+      expect(finished[0].reason).toBe("completed");
+    }
+  });
+
+  it("a response that is not SSE (Gemini's JSON array) never gets a comment line, whatever the upstream sent", async () => {
+    const part = (text: string, finishReason?: string) => data({ candidates: [{ content: { parts: [{ text }] }, ...(finishReason ? { finishReason } : {}) }] });
+    const { s, finished } = session(upstream([": acme-relay keep-alive\n\n", part("Hel"), ": keepalive\n\n", part("lo", "STOP")]), { processor: new GeminiJsonArrayStream(new GeminiStreamPassthrough(null)) });
+    await s.prime();
+    const text = await drain(s.toReadable());
+    expect(text).not.toMatch(/keep-?alive|acme/);
+    expect(JSON.parse(text)).toHaveLength(2);
+    expect(finished[0].reason).toBe("completed");
   });
 
   it("an upstream that ends without its terminal event -> the client stream is DESTROYED, no synthetic end", async () => {
