@@ -129,6 +129,16 @@ key, invisibly to the client. Some upstreams keep generating and bill that attem
 prompt, cache reads and writes) is priced at the route cost and added to the request's **our cost**, never to the
 customer price, so margins show what the upstream really charges. Its output is never seen, so this is a floor.
 
+### Requests that fail upstream
+
+A request that ends as `UPSTREAM_ERROR` after it started answering (the upstream dropped the stream, closed it without
+its final event, or ended it with its own error event) is not charged to the customer: price 0, also when part of the
+answer was already delivered. The row keeps the tokens counted so far (estimated when the upstream reported none) and
+**our cost** for them, because many upstreams bill a failed stream anyway; profit is then negative. With provider
+option `unbilledStreamErrors` our cost is 0 too. The setting **Charge for requests that fail upstream**
+(`billFailedRequests`, off by default) restores charging the input and the delivered output. A stream the customer
+cancels is always charged for what was received, and a stream cut by the funds guard is charged as metered.
+
 ## Official price and savings snapshots
 
 For every request the gateway computes `RequestLog.officialPrice`: the same usage priced at official prices

@@ -60,6 +60,7 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     await mk("ftfail", {});
     await mk("ftfails", { stripCacheHints: true }); // "ftfail" in the key: the same relay backend, hints stripped
     await mk("ceflaky", {});
+    await mk("commentdrop", {});
     await mk("tier", { serviceTiers: ["auto", "default"] });
     await mk("cap", { enforceMaxOutputTokens: true });
     // one relay key serving two models, one of them over its per-model rate limit
@@ -101,6 +102,22 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     expect(text).not.toContain("codex.rate_limits");
     expect(sseBlocks(text).at(-1)?.event).toBe("response.completed");
     expect(await calls("ceflaky1")).toBe(2);
+  });
+
+  it("a relay stream that dies after the model's opening commentary (a request with tools) is retried invisibly", async () => {
+    const res = await responses(M.commentdrop);
+    expect(res.status).toBe(200);
+    const blocks = sseBlocks(await res.text());
+    expect(blocks.at(-1)?.event).toBe("response.completed");
+    // nothing of the attempt that died reached the client: one stream, one commentary message, then the answer
+    expect(blocks.filter((b) => b.event === "response.created")).toHaveLength(1);
+    const commentary = blocks.filter((b) => b.event === "response.output_item.added" && JSON.parse(b.data).item.phase === "commentary");
+    expect(commentary).toHaveLength(1);
+    expect(blocks.findIndex((b) => b.event === "response.output_item.added" && JSON.parse(b.data).item.phase === "commentary")).toBeLessThan(blocks.findIndex((b) => b.event === "response.completed"));
+    expect(await calls("commentdrop1")).toBe(2);
+    const row = await h.logOf(res);
+    expect(row.status).toBe("SUCCESS");
+    expect((row.attempts as unknown[]).length).toBe(2);
   });
 
   it("an unknown reasoning effort is a 400 invalid_value before anything is sent upstream", async () => {

@@ -26,9 +26,9 @@ GW_CHAOS_HEAVY=1 pnpm vitest run tests/gateway/bigbody.test.ts                  
 |---|---|---|---|
 | Complete stream | 200 SSE, `[DONE]`, `x-upstream-request-id`, no `content-encoding` | answered normally | SUCCESS 200, out=50, $0.000200 |
 | Upstream 529 on every key | HTTP 529 + `retry-after: 7` + the upstream's native error body (identity scrubbed) | 3 attempts (one per key), all 529 | UPSTREAM_ERROR 529, out=0, $0 |
-| Upstream TCP RST mid-stream | 200, 7 frames, then connection error (h1: `terminated`; h2: RST_STREAM / `ERR_HTTP2_STREAM_ERROR`); no synthetic `[DONE]` | RST after 7 frames | UPSTREAM_ERROR 502, out=6 (est), partial usage billed |
-| Upstream clean FIN, no terminal event | same as RST: the client stream is dropped, not closed cleanly | FIN after 7 frames, no terminator | UPSTREAM_ERROR 502, out=6 (est) |
-| Error event inside the stream | 200, the upstream's error event verbatim, then the normal end | error event after 2 frames | UPSTREAM_ERROR 502, out=1 (est) |
+| Upstream TCP RST mid-stream | 200, 7 frames, then connection error (h1: `terminated`; h2: RST_STREAM / `ERR_HTTP2_STREAM_ERROR`); no synthetic `[DONE]` | RST after 7 frames | UPSTREAM_ERROR 502, out=6 (est), $0 to the customer (our cost recorded) |
+| Upstream clean FIN, no terminal event | same as RST: the client stream is dropped, not closed cleanly | FIN after 7 frames, no terminator | UPSTREAM_ERROR 502, out=6 (est), $0 to the customer |
+| Error event inside the stream | 200, the upstream's error event verbatim, then the normal end | error event after 2 frames | UPSTREAM_ERROR 502, out=1 (est), $0 to the customer |
 | Upstream gzips despite `identity` | 200, plain SSE, no `content-encoding` | sent `Content-Encoding: gzip` | SUCCESS 200, out=50 |
 | Client aborts mid-stream | gone after ~460-480 ms | request aborted 2-3 ms later (phase "streaming") | CANCELLED 499, out=2 (est), partial usage billed, slots and credit hold released |
 | Client aborts a non-stream request | gone after ~400 ms | request aborted 1-3 ms later (phase "waiting") | CANCELLED (logged by the gateway) |
@@ -89,6 +89,13 @@ streams, all 8-27 s in, none after output had started). The gateway does not tre
 of the response: it holds the response until real output arrives, for up to `streamStartHoldSec` (default 120 s), and
 a failure in that window is retried invisibly (`tests/gateway/integration.test.ts`, mock fault `flakystart`). The
 chaos suite pins the hold to one heartbeat interval where it times the heartbeat itself.
+
+Reasoning counts as opening events too, and so does commentary: a Responses model that was given tools first sends a
+message item of `phase: "commentary"` (one sentence about what it is going to do) and then reasons for minutes. On
+another reseller such streams died in that reasoning phase, 15 of 17 calls, each already committed by the commentary
+sentence 10-20 s in. Commentary text is now held like reasoning (`tests/gateway/studio-compat.test.ts`, mock
+credential `commentdrop`). A stream that fails after it was committed is logged with the event that started it and
+the last events the upstream sent (types only), so the two cases can be told apart afterwards.
 
 ## Limits and not covered (stated plainly)
 

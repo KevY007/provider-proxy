@@ -17,6 +17,8 @@
  *                              support it (blank " " text, then response.failed invalid_parameter)
  *   key contains "ceflaky"  -> streamed responses: odd requests open like a relay (empty text delta, response.created,
  *                              a vendor codex.rate_limits event) and then fail with a NESTED error {error:{..}, status:503}
+ *   key contains "commentdrop" -> streamed responses open with a commentary message (phase "commentary"); odd requests
+ *                              then close the stream right there, with no terminal event (a relay dying mid-thought)
  *   key contains "flakystart" -> streamed chat: every other request opens the stream (role-only chunk) and then sends an
  *                             in-band "Service Unavailable" error before any output (the relay failure seen in production)
  * Delay knobs: header `x-mock-delay-ms`, body field `mock_delay_ms`, or marker `[[delay:N]]` in the last user
@@ -1154,6 +1156,28 @@ async function handleResponses(ctx: Ctx, b: Obj): Promise<void> {
   }
   frames.push(ev("response.created", { response: base("in_progress", [], null) }));
   frames.push(ev("response.in_progress", { response: base("in_progress", [], null) }));
+  // `[[commentary]]` (or a "commentdrop" credential): the stream opens with a commentary message (phase "commentary":
+  // one sentence about what the model is going to do), like a model that was given tools, before it reasons and answers
+  if (ctx.cred.includes("commentdrop") || /\[\[commentary\]\]/.test(JSON.stringify(b))) {
+    const cId = `msg_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+    const cText = "I'll study the reference first, then produce the result.";
+    const cItem = (status: string, text: string) => ({ id: cId, type: "message", role: "assistant", status, phase: "commentary", content: text ? [{ type: "output_text", text, annotations: [] }] : [] });
+    frames.push(ev("response.output_item.added", { output_index: 0, item: cItem("in_progress", "") }));
+    frames.push(ev("response.content_part.added", { item_id: cId, output_index: 0, content_index: 0, part: { type: "output_text", text: "", annotations: [] } }));
+    for (const d of textDeltas(cText)) frames.push(ev("response.output_text.delta", { item_id: cId, output_index: 0, content_index: 0, delta: d }));
+    frames.push(ev("response.output_text.done", { item_id: cId, output_index: 0, content_index: 0, text: cText }));
+    frames.push(ev("response.content_part.done", { item_id: cId, output_index: 0, content_index: 0, part: { type: "output_text", text: cText, annotations: [] } }));
+    frames.push(ev("response.output_item.done", { output_index: 0, item: cItem("completed", cText) }));
+    if (ctx.cred.includes("commentdrop")) {
+      const n = (flakyStarts.get(ctx.cred) ?? 0) + 1;
+      flakyStarts.set(ctx.cred, n);
+      if (n % 2 === 1) {
+        // the relay's stream dies while the model is still thinking: closed right here, no terminal event
+        frames.push(ev("response.output_item.added", { output_index: 1, item: { id: `rs_${randomUUID().replace(/-/g, "").slice(0, 24)}`, type: "reasoning", summary: [] } }));
+        return emitFrames(ctx, frames, delay, SSE);
+      }
+    }
+  }
   // `[[summary:N]]`: a reasoning item whose summary streams N words first (one delta each), like a reasoning model
   const summaryWords = Number(/\[\[summary:(\d+)\]\]/.exec(JSON.stringify(b))?.[1] ?? 0);
   if (summaryWords > 0) {

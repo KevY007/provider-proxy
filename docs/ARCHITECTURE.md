@@ -128,7 +128,8 @@ pool's price as a share of the official list price (0.3 = 30% of official), neve
   stream idle cutoff is `provider.settings.idleTimeoutSec`, else `upstreamIdleTimeoutSec` (default 0 = never).
 - Upstream HTTP/2 is opt-in per provider (`settings.http2: true`, https only).
 - A stream is held back from the client until real output arrives (`stream-start.ts`: an upstream's opening
-  bookkeeping events, such as a role-only chat chunk, `response.created` or `message_start`, do not count), for up to
+  bookkeeping events, such as a role-only chat chunk, `response.created` or `message_start`, do not count, and neither
+  do reasoning or a Responses message of `phase: "commentary"`, the sentence a model with tools opens with), for up to
   `streamStartHoldSec` (default 120 s, never shorter than one heartbeat). A failure in that window (an in-band error,
   a drop, an end without output) fails over to the next key or retries the same one after a short pause, up to
   `maxAttempts`; the client sees one clean stream or, if every attempt failed, a native HTTP error. After that window

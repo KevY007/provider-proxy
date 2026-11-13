@@ -51,6 +51,12 @@ export interface Outcome {
   billable?: boolean;
   /** The upstream does not bill this request (e.g. OpenAI after a client cancel): the customer price stands, our cost is 0. */
   upstreamUnbilled?: boolean;
+  /**
+   * Setting `billFailedRequests`. Off (default): a request that ends as UPSTREAM_ERROR (the upstream dropped the stream or
+   * ended it with its own error) costs the customer nothing - its tokens and our cost stay on the row. On: the customer
+   * pays the input and the output delivered before the failure.
+   */
+  billFailedRequests?: boolean;
   /** Upstream cost of dropped earlier attempts the upstream billed (our cost only; the customer never pays for them). */
   droppedCost?: Decimal;
   /** Batch API result: the upstream batch id. Token prices are discounted by Model.batchDiscountPct / ModelRoute.batchCostDiscountPct. */
@@ -83,11 +89,17 @@ export function recordOutcome(o: Outcome): Charge {
   const now = new Date();
   const usage = o.usage;
   let charge: Charge = { price: ZERO, cost: ZERO, profit: ZERO, official: ZERO };
+  let notCharged = false;
   if (usage && o.model && (o.billable || o.status === "SUCCESS" || o.status === "CANCELLED" || o.status === "UPSTREAM_ERROR")) {
     const batch = o.batchId ? { sellPct: o.model.batchDiscountPct ?? null, costPct: o.route?.batchCostDiscountPct ?? null } : null;
     const b = priceRequest(usage, o.model.sell, o.route?.cost ?? null, o.multiplier, o.model.longContext, o.status === "SUCCESS" || !!o.billable, o.model.official, batch, o.priceBasis);
     charge = { price: b.price, cost: b.cost, profit: b.profit, official: referenceAmount(b.price, b.official, o.referenceSavingsPct) };
     if (o.upstreamUnbilled) charge = { ...charge, cost: ZERO, profit: b.price };
+    // an upstream failure is not the customer's bill: no result, no charge (what the upstream bills us for it is our loss)
+    if (o.status === "UPSTREAM_ERROR" && !o.billable && !o.billFailedRequests && !charge.price.isZero()) {
+      charge = { price: ZERO, cost: charge.cost, profit: ZERO.minus(charge.cost), official: ZERO };
+      notCharged = true;
+    }
   }
   if (o.droppedCost && o.droppedCost.gt(0)) charge = { ...charge, cost: charge.cost.plus(o.droppedCost), profit: charge.profit.minus(o.droppedCost) };
 
@@ -111,7 +123,8 @@ export function recordOutcome(o: Outcome): Charge {
     errorMessage: o.errorMessage ? truncate(o.errorMessage, 1000) : null,
     internalError: (() => {
       const note = u?.reasoningEstimated ? "reasoning tokens estimated from the streamed thinking text (the upstream did not itemize them)" : null;
-      const all = [o.internalError, note].filter(Boolean).join(" | ");
+      const free = notCharged ? "not charged to the customer: the request failed upstream (usage and our cost are recorded)" : null;
+      const all = [o.internalError, note, free].filter(Boolean).join(" | ");
       return all ? truncate(all, 8000) : null;
     })(),
     stream: o.stream,

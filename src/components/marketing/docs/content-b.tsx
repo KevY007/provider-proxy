@@ -55,7 +55,7 @@ for chunk in stream:
       <P>
         Usage is read from the final event of the stream. If the client disconnects early, the request is cancelled and billed for the tokens received so far (estimated when the
         provider has not reported usage yet). Errors before the first byte are returned as normal JSON errors with the proper HTTP status; once streaming has started, failures are sent
-        as an error event.
+        as an error event. A request that fails on the model&apos;s side after it started (the stream drops, or ends with an error event) is not charged.
       </P>
       <Callout kind="tip">Disable proxy buffering in your own infrastructure (for example <C>proxy_buffering off</C> in nginx) so tokens reach users immediately.</Callout>
     </>
@@ -294,7 +294,7 @@ export function billing(ctx: DocCtx) {
         <li><strong>Pools</strong> set your price as a share of the official list price (for example 50% of official). Choose a pool per key when creating it.</li>
         <li><strong>Cached tokens</strong> are cheaper than normal input on models that support prompt caching.</li>
         <li><strong>Long-context</strong> requests above a model&apos;s threshold may carry a surcharge, noted on the Pricing page.</li>
-        <li>Failed requests (4xx/5xx) that produced no usage are not charged.</li>
+        <li>Failed requests are not charged: 4xx/5xx errors, and streams that the model&apos;s side drops or ends with an error before they complete.</li>
       </UL>
       <H2>Adding balance</H2>
       {ctx.customerBilling ? (

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { OpenAIStreamPassthrough } from "@/gateway/stream-processors";
-import { StreamSession, type FinishInfo } from "@/gateway/stream";
+import { OpenAIStreamPassthrough, ResponsesStreamPassthrough } from "@/gateway/stream-processors";
+import { StreamSession, eventLabel, type FinishInfo, type StreamOptions } from "@/gateway/stream";
+import { isPreambleEvent } from "@/gateway/stream-start";
+import { SseParser } from "@/gateway/sse";
 import type { StreamProcessor } from "@/gateway/processor";
 import { ClientAbortError, UpstreamTimeoutError } from "@/gateway/upstream";
 import { AnthropicToChatStream } from "@/gateway/translate";
@@ -38,7 +40,7 @@ function upstream(chunks: string[], opts: { gapMs?: number; hang?: boolean; ac?:
 const data = (o: object | string) => `data: ${typeof o === "string" ? o : JSON.stringify(o)}\n\n`;
 const chunk = (content: string, finish: string | null = null) => data({ id: "c", model: "up", choices: [{ index: 0, delta: { content }, finish_reason: finish }] });
 
-function session(up: ReturnType<typeof upstream>, o: { idleTimeoutMs?: number; heartbeatMs?: number; processor?: StreamProcessor } = {}) {
+function session(up: ReturnType<typeof upstream>, o: { idleTimeoutMs?: number; heartbeatMs?: number; processor?: StreamProcessor; isPreamble?: StreamOptions["isPreamble"] } = {}) {
   const finished: FinishInfo[] = [];
   const processor = o.processor ?? new OpenAIStreamPassthrough("public", true);
   const s = new StreamSession({
@@ -48,6 +50,7 @@ function session(up: ReturnType<typeof upstream>, o: { idleTimeoutMs?: number; h
     signal: up.ac.signal,
     idleTimeoutMs: o.idleTimeoutMs,
     heartbeatMs: o.heartbeatMs,
+    isPreamble: o.isPreamble,
     onFinish: (i) => finished.push(i),
   });
   return { s, finished, processor };
@@ -131,6 +134,51 @@ describe("StreamSession", () => {
     expect(text).toContain("cut off");
     expect(text).not.toContain("[DONE]");
     expect(finished[0]).toMatchObject({ reason: "truncated", destroyed: true });
+  });
+
+  describe("trace of a stream that did not complete", () => {
+    const rev = (type: string, extra: object = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
+    const responses = (frames: string[]) => session(upstream(frames), { processor: new ResponsesStreamPassthrough(null), isPreamble: (e) => isPreambleEvent("openai_responses", e) });
+
+    it("names the event that started the stream and the last upstream events: types only, never content", async () => {
+      const { s, finished } = responses([
+        ": keep-alive\n\n",
+        rev("response.created", { response: { id: "r1" } }),
+        rev("response.output_item.added", { item: { type: "reasoning", id: "rs1" } }),
+        rev("response.reasoning_summary_text.delta", { delta: "secret plan" }),
+        rev("response.output_text.delta", { delta: "secret answer" }),
+        rev("response.output_item.done", { item: { id: "rs1", type: "reasoning" } }),
+      ]);
+      await s.prime();
+      await drainUntilError(s.toReadable());
+      expect(finished[0].reason).toBe("truncated");
+      expect(finished[0].trace).toMatch(/^started by response\.output_text\.delta at \+\d+\.\ds; 6 upstream events, the last: comment -\d+\.\ds, response\.created -.*, response\.output_item\.done\[reasoning\] -\d+\.\ds$/);
+      expect(finished[0].trace).not.toMatch(/secret/);
+    });
+
+    it("says so when only opening / reasoning events had arrived", async () => {
+      const { s, finished } = responses([rev("response.created", { response: { id: "r1" } }), rev("response.reasoning_summary_text.delta", { delta: "x" })]);
+      await drainUntilError(s.toReadable());
+      expect(finished[0].reason).toBe("truncated");
+      expect(finished[0].trace).toMatch(/^no output event yet \(only opening \/ reasoning events\); 2 upstream events, the last: response\.created -/);
+    });
+
+    it("a completed stream carries none", async () => {
+      const { s, finished } = session(upstream([chunk("hi", "stop"), data("[DONE]")]));
+      await drain(s.toReadable());
+      expect(finished[0].reason).toBe("completed");
+      expect(finished[0].trace).toBeUndefined();
+    });
+
+    it("eventLabel reads the type from the event line or the JSON, plus the item / block type", () => {
+      const one = (raw: string) => new SseParser().push(`${raw}\n\n`)[0];
+      expect(eventLabel(one(": ping"))).toBe("comment");
+      expect(eventLabel(one(`event: response.output_item.done\ndata: {"type":"response.output_item.done","item":{"id":"rs_1","type":"reasoning","encrypted_content":"abc"}}`))).toBe("response.output_item.done[reasoning]");
+      expect(eventLabel(one(`data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}`))).toBe("content_block_start[thinking]");
+      expect(eventLabel(one(`data: {"id":"c","choices":[{"delta":{"content":"hello"}}]}`))).toBe("data");
+      expect(eventLabel(one("data: [DONE]"))).toBe("[DONE]");
+      expect(eventLabel(one("retry: 3000"))).toBe("empty");
+    });
   });
 
   it("an upstream connection reset mid-stream destroys the client stream (no [DONE], no error event)", async () => {

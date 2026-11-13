@@ -124,6 +124,10 @@ by default, honouring the upstream's `retry-after`, for up to 3 minutes after yo
 has been sent to you yet), so a slow answer can mean an upstream hiccup was ridden out. A stream that the upstream
 drops before any output is retried invisibly; you are never billed for the dropped attempt.
 
+A request that fails upstream is not charged, also when the failure comes after output has started (the stream
+drops, or the upstream ends it with an error event): `GET /v1/requests/{id}` then shows `status: "upstream_error"`,
+the tokens counted so far and `charged_usd: 0`. A stream you cancel yourself is charged for what you received.
+
 Upstream 4xx validation errors are passed through, scrubbed. Inside a stream, upstream error events are passed
 through verbatim. If the upstream connection drops mid-stream, your connection is dropped too (no fake `[DONE]`), so
 your SDK's own retry logic applies. The one gateway-authored stream event is `insufficient_balance` when a stream
