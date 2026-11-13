@@ -15,6 +15,8 @@ import { isObject, safeJsonParse } from "./util";
  *  - LiteLLM `/model/info`: `model_info.input_cost_per_token`, `output_cost_per_token`, `cache_read_input_token_cost`,
  *    `cache_creation_input_token_cost`, `output_cost_per_image`, `output_cost_per_second`, `input_cost_per_second`
  *    (also a bare map `{ "<model>": { input_cost_per_token ... } }` like LiteLLM's model_prices json)
+ *  - Flat-priced relays: `pricing: { price_usd_per_mtok, cache_read_usd_per_mtok, output_usd_per_mtok? }` - one price per 1M
+ *    tokens for input, output (unless `output_usd_per_mtok` is given) and cache writes, cache reads at their own rate
  *  - Together / DeepInfra / Fireworks-style `pricing: { input, output }` (USD per 1M tokens; per token when tiny) and
  *    `pricing: { input_tokens, output_tokens }`
  * Context window / max output are taken along when present.
@@ -70,7 +72,13 @@ export function priceOfEntry(e: JsonObject): Omit<RemotePrice, "source"> | null 
   }
   const p = isObject(e.pricing) ? e.pricing : isObject(e.metadata) && isObject(e.metadata.pricing) ? e.metadata.pricing : null;
   if (!Object.keys(prices).length && p) {
-    if (p.prompt !== undefined || p.completion !== undefined) {
+    if (p.price_usd_per_mtok !== undefined) {
+      const flat = num(p.price_usd_per_mtok);
+      setIf(prices, "input", flat);
+      setIf(prices, "output", num(p.output_usd_per_mtok) ?? flat);
+      setIf(prices, "cacheWrite", flat);
+      setIf(prices, "cachedInput", num(p.cache_read_usd_per_mtok));
+    } else if (p.prompt !== undefined || p.completion !== undefined) {
       // OpenRouter: USD per token
       setIf(prices, "input", perToken(p.prompt));
       setIf(prices, "output", perToken(p.completion));
