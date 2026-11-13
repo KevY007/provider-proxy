@@ -208,9 +208,11 @@ export class StreamSession {
     for (const ev of events) {
       const hadError = !!p.error();
       // An upstream's own comment lines never reach the client as written: relays put their name in them
-      // (": <relay> keep-alive", ": <ROUTER> PROCESSING"). Each block becomes our neutral line, which keeps its purpose
-      // (the connection stays alive; a translated stream, whose processor has no use for comments, gets it too).
-      const out = ev.comment ? [HEARTBEAT_COMMENT] : p.onEvent(ev);
+      // (": <relay> keep-alive", ": <ROUTER> PROCESSING"). Where the processor would pass the block on, our neutral line
+      // goes out in its place (the connection stays alive); where it drops comments - a translated stream, a response
+      // that is not SSE - nothing is sent, as before.
+      const processed = p.onEvent(ev);
+      const out = ev.comment && processed.length ? [HEARTBEAT_COMMENT] : processed;
       this.upstreamEvents++;
       this.tail.push({ ev, at: Date.now() });
       if (this.tail.length > TRACE_TAIL) this.tail.shift();
