@@ -814,7 +814,8 @@ function makeProcessor(ctx: Ctx, cand: Candidate): StreamProcessor {
   switch (cand.plan.upstream) {
     case "openai_responses": {
       const max = ctx.body && typeof ctx.body.max_output_tokens === "number" ? ctx.body.max_output_tokens : null;
-      return new ResponsesStreamPassthrough(mask, { maxOutputTokens: max, enforceMaxOutputTokens: providerSettings(cand.route.provider).enforceMaxOutputTokens });
+      const ps = providerSettings(cand.route.provider);
+      return new ResponsesStreamPassthrough(mask, { maxOutputTokens: max, enforceMaxOutputTokens: ps.enforceMaxOutputTokens, relabelServerErrors: ps.relabelStreamErrors });
     }
     case "anthropic_messages":
       return new AnthropicStreamPassthrough(mask);

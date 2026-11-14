@@ -187,6 +187,13 @@ export interface ResponsesStreamOptions {
   maxOutputTokens?: number | null;
   /** the upstream ignores max_output_tokens: end the stream with response.incomplete once the visible output reaches it */
   enforceMaxOutputTokens?: boolean;
+  /**
+   * Provider setting relabelStreamErrors: an error the upstream sends inside the stream for a failure on its own side
+   * (a 5xx-class code such as its own `service_unavailable`, never a request error or a rate limit) reaches the client
+   * with the gateway's code `upstream_error`, the one clients already treat as "send again". Message, reference and
+   * the other fields stay as the upstream wrote them.
+   */
+  relabelServerErrors?: boolean;
 }
 
 /** Visible output tokens, estimated from characters while streaming (the usual ~4 characters per token). */
@@ -208,6 +215,12 @@ export class ResponsesStreamPassthrough extends Base {
 
   halted(): boolean {
     return this.stopped;
+  }
+
+  /** The in-stream error just parsed is a failure on the upstream's side and the provider asks for it to be relabelled. */
+  private relabels(): boolean {
+    const s = this.err?.status ?? 0;
+    return !!this.opts.relabelServerErrors && s >= 500;
   }
 
   reasoningText(): string {
@@ -300,6 +313,10 @@ export class ResponsesStreamPassthrough extends Base {
     else if (type === "response.failed") {
       this.done = true;
       this.err = parseInbandError(isObject(d.response) ? d.response.error : null, "response failed");
+      if (this.relabels() && isObject(d.response) && isObject(d.response.error)) {
+        d.response.error = { ...d.response.error, code: "upstream_error" };
+        modified = true;
+      }
       return [errorBlock(ev, d, this.scrub, modified)];
     } else if (type === "error") {
       this.err = parseInbandError(d);
@@ -307,8 +324,12 @@ export class ResponsesStreamPassthrough extends Base {
       // clients reading the standard shape would only see "stream error", so rewrite those.
       if (isObject(d.error) || typeof d.message !== "string") {
         const e = this.err;
-        const flat = { type: "error", code: e.code ?? e.type ?? openaiErrorType(e.status), message: e.message, param: e.param ?? null, ...(typeof d.sequence_number === "number" ? { sequence_number: d.sequence_number } : {}) };
+        const flat = { type: "error", code: this.relabels() ? "upstream_error" : (e.code ?? e.type ?? openaiErrorType(e.status)), message: e.message, param: e.param ?? null, ...(typeof d.sequence_number === "number" ? { sequence_number: d.sequence_number } : {}) };
         return [errorBlock({ ...ev, event: ev.event ?? "error" }, flat, this.scrub, true)];
+      }
+      if (this.relabels()) {
+        d.code = "upstream_error";
+        modified = true;
       }
       return [errorBlock(ev, d, this.scrub, modified)];
     }

@@ -343,6 +343,9 @@ export function providerSettings(p: { settings: JsonObject }) {
     serviceTiers: Array.isArray(s.serviceTiers) ? (s.serviceTiers as unknown[]).filter((x): x is string => typeof x === "string") : null,
     // the upstream ignores max_output_tokens: the gateway enforces it on the streamed output and ends with response.incomplete
     enforceMaxOutputTokens: s.enforceMaxOutputTokens === true,
+    // Responses streams: the upstream's own server-side error codes (e.g. a relay's `service_unavailable`) reach the
+    // client as `upstream_error`, the gateway's "send it again" code (stream-processors.ts, relabelServerErrors)
+    relabelStreamErrors: s.relabelStreamErrors === true,
     // the upstream does not bill a stream it ends with its own error event (e.g. a relay with a ~900 s cap, "Upstream
     // service temporarily unavailable"): our cost is 0, and the customer is billed only for output that reached them
     unbilledStreamErrors: s.unbilledStreamErrors === true,
