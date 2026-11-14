@@ -270,6 +270,33 @@ describe("StreamSession", () => {
     });
   });
 
+  describe("Responses: a provider's server-side stream errors relabelled as upstream_error (relabelServerErrors)", () => {
+    const one = (o: object, event?: string) => new SseParser().push(`${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(o)}\n\n`)[0];
+    const body = (out: string[]) => JSON.parse(/^data: (.*)$/m.exec(out[0])![1]);
+    const unavailable = { type: "error", code: "service_unavailable", message: "The service is temporarily unavailable. Please retry shortly. Reference code: UP-1.", sequence_number: 9, reference: "UP-1" };
+
+    it("an `error` event with a server-side code gets code upstream_error; message, reference and number are kept", () => {
+      const p = new ResponsesStreamPassthrough(null, { relabelServerErrors: true });
+      const out = p.onEvent(one(unavailable, "error"));
+      expect(out[0].startsWith("event: error\n")).toBe(true);
+      expect(body(out)).toEqual({ ...unavailable, code: "upstream_error" });
+      expect(p.error()?.status).toBe(503); // the request log still sees what the upstream said
+    });
+
+    it("response.failed with a server-side code: error.code becomes upstream_error", () => {
+      const p = new ResponsesStreamPassthrough(null, { relabelServerErrors: true });
+      const out = p.onEvent(one({ type: "response.failed", sequence_number: 4, response: { id: "r", status: "failed", error: { code: "service_unavailable", message: "try again", reference: "UP-2" } } }, "response.failed"));
+      expect(body(out).response.error).toEqual({ code: "upstream_error", message: "try again", reference: "UP-2" });
+    });
+
+    it("errors that are the request's own, or a rate limit, keep their code; without the option nothing changes", () => {
+      const p = new ResponsesStreamPassthrough(null, { relabelServerErrors: true });
+      expect(body(p.onEvent(one({ type: "error", code: "context_length_exceeded", message: "too long", param: null }, "error"))).code).toBe("context_length_exceeded");
+      expect(body(new ResponsesStreamPassthrough(null, { relabelServerErrors: true }).onEvent(one({ type: "error", code: "rate_limit_exceeded", message: "slow down", param: null }, "error"))).code).toBe("rate_limit_exceeded");
+      expect(body(new ResponsesStreamPassthrough(null).onEvent(one(unavailable, "error"))).code).toBe("service_unavailable");
+    });
+  });
+
   describe("trace of a stream that did not complete", () => {
     const rev = (type: string, extra: object = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...extra })}\n\n`;
     const responses = (frames: string[]) => session(upstream(frames), { processor: new ResponsesStreamPassthrough(null), isPreamble: (e) => isPreambleEvent("openai_responses", e) });

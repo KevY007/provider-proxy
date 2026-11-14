@@ -129,7 +129,9 @@ drops, or the upstream ends it with an error event): `GET /v1/requests/{id}` the
 the tokens counted so far and `charged_usd: 0`. A stream you cancel yourself is charged for what you received.
 
 Upstream 4xx validation errors are passed through, scrubbed. Inside a stream, upstream error events are passed
-through verbatim. If the upstream connection breaks after your stream has started (it is reset, closes without its
+through verbatim. On some pools a Responses stream error that the upstream reports for a failure on its own side
+(its own `service_unavailable`, for example) arrives with code `upstream_error`, message and reference unchanged, so
+clients that send `upstream_error` again treat it the same way. If the upstream connection breaks after your stream has started (it is reset, closes without its
 final event, or stops responding), you get one error event in your API's own format and the stream then ends, with
 no fake `[DONE]` or final event. Its code is `upstream_error` (or `upstream_timeout`) and its message names the
 request id:

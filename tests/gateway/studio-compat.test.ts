@@ -64,6 +64,7 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
     await mk("commentdroplive", {}); // the same relay fault on its own credential (the fault counts requests per credential)
     await mk("tier", { serviceTiers: ["auto", "default"] });
     await mk("cap", { enforceMaxOutputTokens: true });
+    await mk("relabel", { relabelStreamErrors: true });
     // one relay key serving two models, one of them over its per-model rate limit
     const relay = await h.makeProvider("relay", { formats: ["openai_responses"], settings: { noCooldown: true }, keys: [{ s: "relay1" }] });
     M.limited = (await h.makeModel("limited", { caps: ["responses"], providerId: relay.id, upstream: "up-rpm429" })).slug;
@@ -257,6 +258,20 @@ describe.skipIf(!dbOk)("Studio compatibility through the gateway", () => {
       expect(row.status).toBe("UPSTREAM_ERROR");
       expect(Number(row.price)).toBe(0);
     });
+  });
+
+  it("relabelStreamErrors: the upstream's mid-stream server error reaches the client as upstream_error, logged and not charged as before", async () => {
+    const res = await h.call("/v1/responses", key, { model: M.relabel, stream: true, input: "[[words:10]] hi" }, { headers: { "x-mock-mode": "error-after:7" } });
+    expect(res.status).toBe(200);
+    const last = sseBlocks(await res.text()).at(-1)!;
+    expect(last.event).toBe("error");
+    expect(JSON.parse(last.data)).toMatchObject({ type: "error", code: "upstream_error", message: "The server had an error while processing your request.", sequence_number: 99 });
+    const row = await h.logOf(res);
+    expect(row.status).toBe("UPSTREAM_ERROR");
+    expect(Number(row.price)).toBe(0);
+    // a provider without the setting passes the upstream's own code on
+    const plain = await h.call("/v1/responses", key, { model: M.other, stream: true, input: "[[words:10]] hi" }, { headers: { "x-mock-mode": "error-after:7" } });
+    expect(JSON.parse(sseBlocks(await plain.text()).at(-1)!.data).code).toBe("server_error");
   });
 
   it("count_tokens on a relay that does not offer it falls back to the local estimate", async () => {
