@@ -18,7 +18,7 @@ describes the code as it stands.
 | Admin / customer server code | `src/server/admin/`, `src/server/customer/`, `src/server/analytics/` | Server actions and queries |
 | UI | `src/app/admin`, `src/app/dashboard`, `src/app/(marketing)`, `src/app/(auth)` | Route guard in `src/proxy.ts` (Next 16 name for middleware) |
 | Data | PostgreSQL 16 via Prisma 7 (`@prisma/adapter-pg`) | Money is `Decimal(24,12)` in USD; prices are USD per 1M units |
-| Shared state | Redis 7 (optional) | Slots, holds, balance cache, rate limits, sticky responses, config invalidation. Each has an in-memory fallback. |
+| Shared state | Redis 7 (optional) | Slots, holds, balance cache, rate limits, config invalidation, metering dead-letter mirror. Each has an in-memory fallback. Only needed when several instances run at once. |
 | Background jobs | `src/server/maintenance.ts`, optional `src/app/api/cron/{health,billing}` | Activity-driven by default (no timers, no pings); optional timers and scheduler routes |
 
 ```mermaid
@@ -173,7 +173,7 @@ every later call to that account. Foreign or unknown ids answer a native 404.
 
 | Object | Store | Pinned by |
 |---|---|---|
-| Responses (`resp_...`) | Redis `responses-sticky` (30 days) with in-memory LRU fallback | `GET/DELETE /v1/responses/{id}`, `/cancel`, `/input_items`, `previous_response_id` |
+| Responses (`resp_...`) | `UpstreamObject` kind `response` (30 days, pruned by upkeep) with an in-memory LRU in front (`responses-sticky.ts`) | `GET/DELETE /v1/responses/{id}`, `/cancel`, `/input_items`, `previous_response_id` |
 | Files (OpenAI, Anthropic, Gemini), uploads, Gemini upload sessions | `UpstreamObject` kind `file` / `upload` / `gemini_upload` | File endpoints, plus any `file_id` / `fileData.fileUri` in chat / responses / messages / generateContent bodies |
 | Files the upstream generated (Anthropic code execution, Responses code interpreter) | `UpstreamObject` kind `file` / `container_file` (`generated-files.ts`) | `/v1/files/{id}/content`, `/v1/containers/{id}/files/{file}[/content]` |
 | Batches (Anthropic Message Batches, OpenAI Batch) | `UpstreamObject` kind `batch`; output/error files recorded as owned files | All `/v1/messages/batches*` and `/v1/batches*` calls |
@@ -181,8 +181,8 @@ every later call to that account. Foreign or unknown ids answer a native 404.
 
 Listings (`GET /v1/files`, batch lists, video lists) are served from our own records, so a shared upstream account
 never leaks another customer's objects. A customer's new uploads prefer the account that already holds their files.
-A request whose file references span two accounts is rejected with 400. Without Redis, Responses stickiness is
-per instance and is lost on restart.
+A request whose file references span two accounts is rejected with 400. Responses ids are kept in the database, so
+they survive restarts and scaling to zero with or without Redis.
 
 **Batches** (`batches.ts`): on create, every request in the batch is validated like a normal call. One bad request
 rejects the whole batch with a native 400 naming its `custom_id`. All models must be served by one provider and the

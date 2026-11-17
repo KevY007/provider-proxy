@@ -545,7 +545,7 @@ model UpstreamObject {
   // lookup is scoped to the owning customer (foreign or unknown ids answer 404). `upstreamId` is the id the
   // customer sees (it is the upstream's own id; Gemini upload sessions use OUR opaque session id).
   id            String   @id @default(cuid())
-  kind          String // "file" | "upload" | "gemini_upload" | "batch"
+  kind          String // "file" | "upload" | "gemini_upload" | "batch" | "response" (a Responses id: GET/DELETE/previous_response_id stickiness, 30 days)
   upstreamId    String
   providerId    String
   providerKeyId String

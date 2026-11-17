@@ -13,6 +13,7 @@ import { invalidateGatewayConfig } from "@/gateway/cache";
 import { computeAmount, costTable, sellTable } from "@/gateway/pricing";
 import { slotInUse, __resetSlotsForTests } from "@/gateway/slots";
 import { emptyUsage } from "@/gateway/types";
+import { __forgetResponsesInMemoryForTests, pruneResponseLinks } from "@/gateway/responses-sticky";
 import { encrypt, sha256 } from "@/lib/crypto";
 import { db } from "@/lib/db";
 import { Decimal } from "@/lib/money";
@@ -657,6 +658,43 @@ describe.skipIf(!dbOk)("gateway end-to-end (mock upstream + database)", () => {
     const del = await call(`/v1/responses/${rb.id}`, fx.main.key, undefined, { method: "DELETE" });
     expect(del.status).toBe(200);
     expect((await del.json()).deleted).toBe(true);
+  });
+
+  it("Responses ids survive a restart: the owner link lives in the database (GET, continuation, ownership, 30-day prune)", async () => {
+    const r = await call("/v1/responses", fx.main.key, { model: M.resp, input: "remember me [[usage:in=10,out=2]]" });
+    expect(r.status).toBe(200);
+    const { id } = (await r.json()) as { id: string };
+    let row = null as Awaited<ReturnType<typeof db.upstreamObject.findFirst>>;
+    for (let i = 0; i < 50 && !row; i++) {
+      row = await db.upstreamObject.findFirst({ where: { kind: "response", upstreamId: id } });
+      if (!row) await sleep(20);
+    }
+    expect(row).toMatchObject({ providerId: P.oa.id, userId: fx.main.userId });
+    expect(row!.meta).toMatchObject({ routeId: expect.any(String), modelId: expect.any(String) });
+
+    // every step below starts from an empty memory, as after the instance scaled to zero
+    __forgetResponsesInMemoryForTests();
+    const got = await call(`/v1/responses/${id}`, fx.main.key);
+    expect(got.status).toBe(200);
+    expect(((await got.json()) as { id: string }).id).toBe(id);
+    __forgetResponsesInMemoryForTests();
+    expect((await call(`/v1/responses/${id}`, fx.resp2.key)).status).toBe(404);
+
+    __forgetResponsesInMemoryForTests();
+    const cont = await call("/v1/responses", fx.main.key, { model: M.resp, input: "and then? [[usage:in=12,out=3]]", previous_response_id: id });
+    expect(cont.status).toBe(200);
+    expect((await logOf(cont)).providerKeyId).toBe(row!.providerKeyId);
+    __forgetResponsesInMemoryForTests();
+    const foreign = await call("/v1/responses", fx.resp2.key, { model: M.resp, input: "continue theirs", previous_response_id: id });
+    expect(foreign.status).toBe(404);
+    expect(((await foreign.json()) as { error: { param: string } }).error.param).toBe("previous_response_id");
+
+    // older than 30 days: no longer resolved, and pruned by upkeep
+    await db.upstreamObject.update({ where: { id: row!.id }, data: { createdAt: new Date(Date.now() - 31 * 86_400_000) } });
+    __forgetResponsesInMemoryForTests();
+    expect((await call(`/v1/responses/${id}`, fx.main.key)).status).toBe(404);
+    expect(await pruneResponseLinks()).toBeGreaterThanOrEqual(1);
+    expect(await db.upstreamObject.findUnique({ where: { id: row!.id } })).toBeNull();
   });
 
   // ------------------------------------------------------------------ catalog
