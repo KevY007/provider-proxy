@@ -2,7 +2,7 @@
 //
 // Three jobs:
 //  - "upkeep":  provider health + uptime samples from real traffic, video/batch sweeps, metering dead-letter replay,
-//               uptime-history pruning. No provider is contacted unless a video job or batch is actually open.
+//               uptime-history and response-id pruning. No provider is contacted unless a video job or batch is actually open.
 //  - "billing": auto-recharge, postpaid settlement, stale payment reconciliation (Stripe).
 //  - "probes":  uptime pings of every upstream key (free model-list request). Only with the activeHealthChecks setting.
 //  - "balances": reads the account balance of every upstream that publishes one (the relay's /v1/usage) every
@@ -109,6 +109,7 @@ async function work(job: JobName): Promise<unknown> {
         batches: await step("batch sweep", () => sweepBatches()),
         metering: await step("dead letters", () => replayDeadLetters()),
         pruned: await step("prune health history", () => pruneHealthChecks()),
+        responseLinks: await step("prune response id links", async () => (await import("@/gateway/responses-sticky")).pruneResponseLinks()),
         sealedKeys: await step("seal plain upstream keys", async () => (await import("@/server/admin/seal-secrets")).sealPendingProviderSecrets()),
       };
     }
