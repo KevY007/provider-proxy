@@ -120,12 +120,17 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
   const claudeEnv = {
     ANTHROPIC_BASE_URL: origin,
     ANTHROPIC_AUTH_TOKEN: key,
-    ANTHROPIC_MODEL: sonnet,
     ANTHROPIC_DEFAULT_OPUS_MODEL: ex.opus ?? sonnet,
     ANTHROPIC_DEFAULT_SONNET_MODEL: sonnet,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: ex.haiku ?? sonnet,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+    DISABLE_TELEMETRY: "1",
+    DISABLE_ERROR_REPORTING: "1",
+    DISABLE_AUTOUPDATER: "1",
+    DISABLE_BUG_COMMAND: "1",
+    DISABLE_COST_WARNINGS: "1",
+    DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
   };
   guides.push({
     id: "claude-code",
@@ -142,7 +147,7 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
       },
       {
         title: "Paste this and save",
-        text: "This makes every Claude Code session (terminal and IDE extensions) use your key. The DEFAULT_*_MODEL lines map Claude Code's built-in Opus / Sonnet / Haiku choices to models your key can use.",
+        text: `This makes every Claude Code session (terminal and IDE extensions) use your key. Use /model <name> to select a model. Available models: ${listText}`,
         code: [{ title: "settings.json", filename: "~/.claude/settings.json", lang: "json", code: JSON.stringify({ env: claudeEnv }, null, 2) }],
       },
       {
@@ -152,8 +157,8 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
       },
       {
         title: "Start and check",
-        text: "Run claude in your project. /status must show the base URL above. Switch models any time with /model.",
-        code: [{ title: "Terminal", lang: "bash", code: `claude\n# inside Claude Code:\n/status\n/model ${ex.opus ?? sonnet}` }],
+        text: "Run claude in your project. /status must show the base URL above. Switch models with /model <name>.",
+        code: [{ title: "Terminal", lang: "bash", code: `claude\n# inside Claude Code:\n/status\n/model <name>  # e.g., /model ${ex.opus ?? sonnet}` }],
       },
       {
         title: "Optional: skip the settings file and use the key in one terminal only",
