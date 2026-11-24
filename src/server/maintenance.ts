@@ -109,6 +109,7 @@ async function work(job: JobName): Promise<unknown> {
         batches: await step("batch sweep", () => sweepBatches()),
         metering: await step("dead letters", () => replayDeadLetters()),
         pruned: await step("prune health history", () => pruneHealthChecks()),
+        expiredRequestDiagnostics: await step("expire request diagnostics", async () => (await import("@/server/request-log-retention")).expireRequestDiagnostics()),
         responseLinks: await step("prune response id links", async () => (await import("@/gateway/responses-sticky")).pruneResponseLinks()),
         sealedKeys: await step("seal plain upstream keys", async () => (await import("@/server/admin/seal-secrets")).sealPendingProviderSecrets()),
       };

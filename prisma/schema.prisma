@@ -492,8 +492,10 @@ model RequestLog {
   userAgent        String?
   requestBody      Json? // only if settings.logBodies
   responseBody     Json?
+  diagnosticsExpired Boolean     @default(false) // upkeep scrubbed diagnostic fields; the metered row is permanent
   createdAt        DateTime      @default(now())
 
+  @@index([diagnosticsExpired, createdAt, id])
   @@index([userId, createdAt])
   @@index([createdAt])
   @@index([providerId, createdAt])
