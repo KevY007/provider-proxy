@@ -48,8 +48,9 @@ interface LiveModel {
 
 const LIVE: LiveModel[] = [
   // ---- OpenAI --------------------------------------------------------------------------------------------------
-  { slug: "gpt-6-astra", vendor: "openai", provider: "openai", upstream: "gpt-6-astra", sort: 10 },
-  { slug: "gpt-6.1-sol", vendor: "openai", provider: "openai", upstream: "gpt-6.1-sol", sort: 20 },
+  { slug: "gpt-6.2-astra", vendor: "openai", provider: "openai", upstream: "gpt-6.2-astra", sort: 10 },
+  { slug: "gpt-6.2-sol", vendor: "openai", provider: "openai", upstream: "gpt-6.2-sol", sort: 20 },
+  { slug: "gpt-6.1-terra", vendor: "openai", provider: "openai", upstream: "gpt-6.1-terra", sort: 30 },
   { slug: "gpt-6-luna", vendor: "openai", provider: "openai", upstream: "gpt-6-luna", sort: 40 },
   { slug: "gpt-5-mini", vendor: "openai", provider: "openai", upstream: "gpt-5-mini", sort: 60 },
   { slug: "gpt-5-nano", vendor: "openai", provider: "openai", upstream: "gpt-5-nano", sort: 70 },
@@ -65,7 +66,7 @@ const LIVE: LiveModel[] = [
   { slug: "omni-moderation-latest", vendor: "openai", provider: "openai", upstream: "omni-moderation-latest", sort: 160 },
 
   // ---- Anthropic -----------------------------------------------------------------------------------------------
-  { slug: "claude-fable-5-1", vendor: "anthropic", provider: "anthropic", upstream: "claude-fable-5-1", sort: 200 },
+  { slug: "claude-fable-5-2", vendor: "anthropic", provider: "anthropic", upstream: "claude-fable-5-2", sort: 200 },
   { slug: "claude-opus-5-5", vendor: "anthropic", provider: "anthropic", upstream: "claude-opus-5-5", sort: 210 },
   { slug: "claude-sonnet-5-5", vendor: "anthropic", provider: "anthropic", upstream: "claude-sonnet-5-5", sort: 220 },
   { slug: "claude-haiku-5-5", vendor: "anthropic", provider: "anthropic", upstream: "claude-haiku-5-5", sort: 230 },

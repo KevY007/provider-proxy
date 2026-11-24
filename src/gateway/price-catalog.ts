@@ -75,6 +75,9 @@ export const KNOWN_PRICES: KnownPrice[] = [
   // ======================================================================================================== OpenAI
   // ---- GPT-6 / GPT-5.6: OpenAI pricing page (standard tier), checked 2026-10-21. 1M context; above 272K input tokens
   // input and cached input cost 2x and output 1.5x; 30-minute cache writes are 1.25x input.
+  oai6("gpt-6.2-astra", 8, 40, 0.4, "GPT-6.2 Astra", "Flagship reasoning model."),
+  oai6("gpt-6.2-sol", 2, 10, 0.1, "GPT-6.2 Sol", "Balanced GPT-6.2 model."),
+  oai6("gpt-6.1-terra", 1, 5, 0.05, "GPT-6.1 Terra", "Mid-tier GPT-6.1 model."),
   oai6("gpt-6-astra", 10, 50, 1, "GPT-6 Astra", "OpenAI flagship reasoning model."),
   oai6("gpt-6.1-sol", 2, 10, 0.1, "GPT-6.1 Sol", "Balanced GPT-6.1 model for everyday workloads."),
   oai6("gpt-6-sol", 2, 10, 0.2, "GPT-6 Sol", "Balanced GPT-6 model."),
@@ -131,6 +134,7 @@ export const KNOWN_PRICES: KnownPrice[] = [
   // ======================================================================================================== Anthropic
   // ---- current models: verified against the Anthropic pricing page (cache hits are 0.05x input on Opus 5.5 / Sonnet 5.5 and
   //      0.025x on Fable 5.1; Haiku 5.5 costs 5x for prompts over 100K tokens) and the models overview (1M context, 128K output)
+  claude("claude-fable-5-2", 8, 40, { displayName: "Claude Fable 5.2", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.2, cw: 10, cw1h: 16, source: "Anthropic pricing page" }),
   claude("claude-fable-5-1", 10, 50, { displayName: "Claude Fable 5.1", description: "Anthropic's most capable model.", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.25, cw: 12.5, cw1h: 20, source: ANTHROPIC_PRICING }),
   claude("claude-fable-5", 10, 50, { displayName: "Claude Fable 5", description: "Anthropic's most capable model (previous release).", contextWindow: 1_000_000, maxOutput: 128_000, cached: 1, cw: 12.5, cw1h: 20, source: ANTHROPIC_PRICING }),
   claude("claude-opus-5-5", 4, 20, { displayName: "Claude Opus 5.5", description: "Frontier reasoning and coding.", contextWindow: 1_000_000, maxOutput: 128_000, cached: 0.2, cw: 5, cw1h: 8, source: ANTHROPIC_PRICING }),

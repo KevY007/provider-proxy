@@ -12,7 +12,7 @@
  *    use Claude models too.
  */
 import type { SnippetBlock } from "./snippets";
-import { KEY_PLACEHOLDER, normalizeOrigin } from "./snippets";
+import { claudeCodeEnv, KEY_PLACEHOLDER, normalizeOrigin } from "./snippets";
 
 export interface GuideModel {
   slug: string;
@@ -117,18 +117,7 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
       .join("\n");
 
   // ------------------------------------------------------------------------------------------------ coding agents
-  const claudeEnv = {
-    ANTHROPIC_BASE_URL: origin,
-    ANTHROPIC_AUTH_TOKEN: key,
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-    CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
-    DISABLE_TELEMETRY: "1",
-    DISABLE_ERROR_REPORTING: "1",
-    DISABLE_AUTOUPDATER: "1",
-    DISABLE_BUG_COMMAND: "1",
-    DISABLE_COST_WARNINGS: "1",
-    DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
-  };
+  const claudeEnv = claudeCodeEnv(origin, key);
   guides.push({
     id: "claude-code",
     label: "Claude Code",

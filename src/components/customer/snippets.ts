@@ -32,6 +32,21 @@ export interface SnippetOptions {
 
 export const KEY_PLACEHOLDER = "sk-pp-YOUR_API_KEY";
 
+export function claudeCodeEnv(origin: string, key: string) {
+  return {
+    ANTHROPIC_BASE_URL: origin,
+    ANTHROPIC_AUTH_TOKEN: key,
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+    DISABLE_TELEMETRY: "1",
+    DISABLE_ERROR_REPORTING: "1",
+    DISABLE_AUTOUPDATER: "1",
+    DISABLE_BUG_COMMAND: "1",
+    DISABLE_COST_WARNINGS: "1",
+    DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
+  };
+}
+
 export function normalizeOrigin(url: string): string {
   return url.replace(/\/+$/, "");
 }
@@ -45,7 +60,7 @@ export function buildSnippets(opts: SnippetOptions): SnippetTab[] {
   const origin = normalizeOrigin(opts.appUrl);
   const base = `${origin}/v1`;
   const key = opts.apiKey || KEY_PLACEHOLDER;
-  const model = opts.model || "gpt-6-sol";
+  const model = opts.model || "MODEL_ID";
   const claude = opts.claudeModel || "claude-sonnet-5-5";
   const gemini = opts.geminiModel || "gemini-3.1-pro";
   const name = opts.siteName || "ProviderProxy";
@@ -195,23 +210,13 @@ requires_openai_auth = true`,
           title: "Environment variables",
           filename: "~/.bashrc or ~/.zshrc",
           lang: "bash",
-          code: `export ANTHROPIC_BASE_URL="${origin}"
-export ANTHROPIC_AUTH_TOKEN="${key}"
-export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-export CLAUDE_CODE_ATTRIBUTION_HEADER=0`,
+          code: Object.entries(claudeCodeEnv(origin, key)).map(([k, v]) => `export ${k}="${v}"`).join("\n"),
         },
         {
           title: "Or in settings (all sessions and the IDE extensions)",
           filename: "~/.claude/settings.json",
           lang: "json",
-          code: `{
-  "env": {
-    "ANTHROPIC_BASE_URL": "${origin}",
-    "ANTHROPIC_AUTH_TOKEN": "${key}",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
-  }
-}`,
+          code: JSON.stringify({ env: claudeCodeEnv(origin, key) }, null, 2),
         },
       ],
     },

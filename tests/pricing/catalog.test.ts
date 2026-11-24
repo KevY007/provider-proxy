@@ -76,6 +76,9 @@ describe("known price catalog", () => {
   it("GPT-6 / GPT-5.6 entries match the OpenAI pricing page (standard tier, checked 2026-10-21)", () => {
     const rows: Array<[string, number, number, number, number]> = [
       // input, cached, output, 30m cache write
+      ["gpt-6.2-astra", 8, 0.4, 40, 10],
+      ["gpt-6.2-sol", 2, 0.1, 10, 2.5],
+      ["gpt-6.1-terra", 1, 0.05, 5, 1.25],
       ["gpt-6-astra", 10, 1, 50, 12.5],
       ["gpt-6.1-sol", 2, 0.1, 10, 2.5],
       ["gpt-6-sol", 2, 0.2, 10, 2.5],
@@ -104,6 +107,7 @@ describe("known price catalog", () => {
     expect(row("claude-opus-5-5")).toEqual([4, 20, 0.2, 5, 8]);
     expect(row("claude-sonnet-5-5")).toEqual([2, 10, 0.1, 2.5, 4]); // cache reads are 0.05x input on Opus 5.5 / Sonnet 5.5
     expect(row("claude-haiku-5-5")).toEqual([0.1, 0.5, 0.01, 0.125, 0.2]);
+    expect(row("claude-fable-5-2")).toEqual([8, 40, 0.2, 10, 16]);
     expect(row("claude-fable-5-1")).toEqual([10, 50, 0.25, 12.5, 20]);
     for (const m of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1"]) {
       expect(get(m).contextWindow, m).toBe(1_000_000);
