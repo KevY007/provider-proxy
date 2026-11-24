@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { pricingTargetsSchema } from "@/server/pricing/price-sync/targets";
 import { db } from "./db";
 import { logger } from "./logger";
 import { CONFIG_INVALIDATE_CHANNEL, getRedisSubscriber, publishConfigInvalidate } from "./redis";
@@ -19,7 +20,7 @@ export interface SettingDef<T = unknown> {
   label: string;
   description: string;
   group: "access" | "billing" | "gateway" | "monitoring" | "general";
-  type: "boolean" | "number" | "string";
+  type: "boolean" | "number" | "string" | "pricingTargets";
 }
 
 function def<T>(
@@ -73,6 +74,7 @@ export const SETTING_DEFS = {
   autoPriceSyncCalls: def("number", "gateway", "Auto-updated prices: refresh every N calls", "...or after this many calls on the route since the last refresh, whichever comes first.", z.number().int().min(1).max(10_000_000), 100),
   priceSyncPool: def("string", "gateway", "Price sync AI: pool", "Pool (group slug) whose providers run the AI that reads pricing pages (provider page > Price sync). Billed at our own cost: the runs are logged under the customer \"Pricing fetch AI\" at price 0, so their upstream cost shows in the analytics.", z.string().min(1).max(64), "coding"),
   priceSyncModel: def("string", "gateway", "Price sync AI: model", "Model (slug) that reads the pricing pages. A capable, inexpensive model is enough: every number it returns is checked against the page text before it is used.", z.string().min(1).max(128), "claude-sonnet-5"),
+  priceSyncTargets: def("pricingTargets", "gateway", "Price sync AI routes", "Try these pool and model pairs in order until a call returns text. Calls are logged under Pricing fetch AI at our own cost.", pricingTargetsSchema.nullable(), null),
   // --- monitoring (everything off by default: an idle server makes no request and runs no timer) ---
   activeHealthChecks: def("boolean", "monitoring", "Uptime monitoring (timed pings)", "Every interval, check every upstream key with a free request (its model list) and record uptime + ping history, even when nobody calls. Off = health, uptime and latency come only from real customer calls and no provider is ever contacted on a timer. Needs a running instance (Cloud Run min-instances 1) or the Cloud Scheduler health job to fire while idle.", z.boolean(), false),
   healthCheckIntervalMin: def("number", "monitoring", "Uptime ping interval (minutes)", "How often the timed pings run when uptime monitoring is on.", z.number().int().min(1).max(1440), 5),

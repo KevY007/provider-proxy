@@ -8,7 +8,7 @@ import { htmlToText, nameOnPage, numbersIn } from "@/server/pricing/price-sync/t
 import { applyPriceSyncRun, buildProposals, parseAiJson, poolNameFromProvider, runPriceSync, type AiResult } from "@/server/pricing/price-sync/engine";
 import { PRICING_BOT_EMAIL, askPricingAi } from "@/server/pricing/price-sync/ai";
 import { flushMeter } from "@/gateway/meter-writer";
-import { getSettings, setSettings } from "@/lib/settings";
+import { getSetting, invalidateSettingsCache, setSetting, type SettingValues } from "@/lib/settings";
 import { db } from "@/lib/db";
 
 const page = (url: string, text: string) => ({ url, ok: true, text, chars: text.length });
@@ -168,7 +168,7 @@ describe.skipIf(!dbOk)("runPriceSync / applyPriceSyncRun (database)", () => {
   let providerId = "";
   let modelId = "";
   let routeId = "";
-  const before = { pool: "", model: "" };
+  let before: SettingValues["priceSyncTargets"];
 
   beforeAll(async () => {
     await h.start();
@@ -184,13 +184,15 @@ describe.skipIf(!dbOk)("runPriceSync / applyPriceSyncRun (database)", () => {
     });
     modelId = mm.id;
     routeId = (await db.modelRoute.findFirstOrThrow({ where: { modelId } })).id;
-    const s = await getSettings();
-    before.pool = s.priceSyncPool;
-    before.model = s.priceSyncModel;
+    before = await getSetting("priceSyncTargets");
   });
   afterAll(async () => {
     await db.priceSyncRun.deleteMany({ where: { providerId } }).catch(() => undefined);
-    await setSettings({ priceSyncPool: before.pool, priceSyncModel: before.model });
+    if (before) await setSetting("priceSyncTargets", before);
+    else if (before === null) {
+      await db.setting.deleteMany({ where: { key: "priceSyncTargets" } });
+      invalidateSettingsCache();
+    }
     const bot = await db.user.findUnique({ where: { email: PRICING_BOT_EMAIL } });
     if (bot) {
       await flushMeter().catch(() => undefined);
@@ -238,7 +240,7 @@ describe.skipIf(!dbOk)("runPriceSync / applyPriceSyncRun (database)", () => {
   it("the AI call goes through our gateway as the internal customer: logged with our cost, price 0", async () => {
     const aiModel = await h.makeModel("ai", { caps: ["chat"], providerId });
     const g = await db.group.findUniqueOrThrow({ where: { id: h.groupId } });
-    await setSettings({ priceSyncPool: g.slug, priceSyncModel: aiModel.slug });
+    await setSetting("priceSyncTargets", [{ pool: g.slug, model: aiModel.slug }]);
     const answer = await askPricingAi("system", "say hi");
     expect(answer.text.length).toBeGreaterThan(0);
     expect(answer.requestId).toBeTruthy();

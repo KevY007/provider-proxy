@@ -418,11 +418,13 @@ export async function runPriceSync(providerId: string, opts: RunOptions): Promis
       try {
         answer = await ask(system, user);
       } catch (err) {
-        const rid = (err as { requestId?: string | null }).requestId;
-        if (rid) requestIds.push(rid);
+        const failure = err as { requestIds?: string[]; requestId?: string | null } | null;
+        if (failure?.requestIds) requestIds.push(...failure.requestIds);
+        else if (failure?.requestId) requestIds.push(failure.requestId);
         throw err;
       }
-      if (answer.requestId) requestIds.push(answer.requestId);
+      if (answer.requestIds) requestIds.push(...answer.requestIds);
+      else if (answer.requestId) requestIds.push(answer.requestId);
       ai = parseAiJson(answer.text);
     }
     let official1h: Map<string, number> | undefined;

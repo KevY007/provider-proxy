@@ -1,7 +1,20 @@
 import "server-only";
 import { db } from "@/lib/db";
 import { getSettings } from "@/lib/settings";
+import { getConfig } from "@/gateway/cache";
+import { eligibleRoutes } from "@/gateway/select";
+import { pricingTargets, type PricingPoolOption, type PricingTarget } from "@/server/pricing/price-sync/targets";
 import { getPriceSyncConfig, type PoolFinding, type PriceSyncConfig, type Proposal } from "@/server/pricing/price-sync/engine";
+
+/** Configured chat routes, independent of transient key cooldowns. No upstream calls. */
+export async function getPricingPoolOptions(): Promise<PricingPoolOption[]> {
+  const snap = await getConfig();
+  const chat = [...snap.modelsById.values()].filter((m) => m.status !== "DISABLED" && m.capabilities.has("chat"));
+  return [...snap.groupsBySlug.values()].map((g) => ({
+    pool: g.slug,
+    models: chat.filter((m) => (!g.allowedModels || g.allowedModels.has(m.slug)) && eligibleRoutes(snap, m, g, "openai_chat").length > 0).map((m) => m.slug).sort(),
+  })).filter((g) => g.models.length).sort((a, b) => a.pool.localeCompare(b.pool));
+}
 
 export interface PriceSyncRunView {
   id: string;
@@ -20,7 +33,7 @@ export interface PriceSyncRunView {
 
 export interface PriceSyncPanel {
   config: PriceSyncConfig;
-  ai: { pool: string; model: string };
+  ai: PricingTarget[];
   /** global automatic-update schedule (Settings > Monitoring) */
   schedule: { enabled: boolean; minutes: number };
   routes: Array<{ id: string; modelSlug: string; upstreamModel: string; enabled: boolean }>;
@@ -65,7 +78,7 @@ export async function getPriceSyncPanel(providerId: string): Promise<PriceSyncPa
     : null;
   return {
     config,
-    ai: { pool: s.priceSyncPool, model: s.priceSyncModel },
+    ai: pricingTargets(s),
     schedule: { enabled: s.priceSyncAuto, minutes: s.priceSyncIntervalMin },
     routes: routes.map((r) => ({ id: r.id, modelSlug: r.model.slug, upstreamModel: r.upstreamModel, enabled: r.enabled })),
     run,

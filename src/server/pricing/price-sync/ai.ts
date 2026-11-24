@@ -1,5 +1,5 @@
 // The AI that reads pricing pages runs through our own gateway, like any customer call: the pool and model come from
-// the settings (priceSyncPool / priceSyncModel), the call is logged and its upstream cost recorded, but it is made by
+// the ordered pricing targets in settings. Each attempt is logged and its upstream cost recorded, but it is made by
 // the internal customer "Pricing fetch AI" whose price multiplier is 0 - so it is billed at our own cost, never to a
 // customer, and it is grouped under that customer in the logs and analytics.
 import { Prisma } from "@/generated/prisma/client";
@@ -7,6 +7,7 @@ import { db } from "@/lib/db";
 import { generateApiKey } from "@/lib/crypto";
 import { getSettings } from "@/lib/settings";
 import { invalidateGatewayConfig } from "@/gateway/cache";
+import { pricingTargets, tryPricingTargets, type PricingTarget } from "./targets";
 
 export const PRICING_BOT_EMAIL = "pricing-fetch@system.internal";
 export const PRICING_BOT_NAME = "Pricing fetch AI";
@@ -18,7 +19,7 @@ const KEY_NAME = "Pricing fetch AI run";
  */
 export async function createPricingBotKey(poolSlug: string): Promise<{ key: string; userId: string; apiKeyId: string }> {
   const group = await db.group.findUnique({ where: { slug: poolSlug }, select: { id: true } });
-  if (!group) throw new Error(`Price sync pool "${poolSlug}" does not exist (Settings > Price sync AI: pool)`);
+  if (!group) throw new Error(`Price sync pool "${poolSlug}" does not exist (Settings > Price sync AI routes)`);
   let user = await db.user.findUnique({ where: { email: PRICING_BOT_EMAIL }, select: { id: true, groupId: true, extraGroupIds: true } });
   if (!user) {
     user = await db.user.create({
@@ -50,41 +51,38 @@ async function dropPricingBotKey(apiKeyId: string, userId: string): Promise<void
 export interface AiAnswer {
   text: string;
   requestId: string | null;
+  requestIds?: string[]; // includes failed attempts for run cost attribution
   model: string;
 }
 
 export type AskAi = (system: string, user: string) => Promise<AiAnswer>;
 
 /** One chat completion through the gateway (in-process: no network hop to ourselves). */
-export const askPricingAi: AskAi = async (system, user) => {
-  const s = await getSettings();
-  const { key, userId, apiKeyId } = await createPricingBotKey(s.priceSyncPool);
-  // keys left behind by an interrupted call
-  await db.apiKey.deleteMany({ where: { userId, name: KEY_NAME, id: { not: apiKeyId }, createdAt: { lt: new Date(Date.now() - 3_600_000) } } }).catch(() => undefined);
+async function askTarget({ pool, model }: PricingTarget, system: string, user: string): Promise<AiAnswer> {
   const { handle } = await import("@/gateway/handle");
-  const req = new Request("http://price-sync.internal/v1/chat/completions", {
-    method: "POST",
-    headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "user-agent": "ProviderProxy-PriceSync/1.0" },
-    body: JSON.stringify({ model: s.priceSyncModel, stream: false, temperature: 0, max_tokens: 16000, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
-  });
-  let res: Response;
-  let raw: string;
+  const { key, userId, apiKeyId } = await createPricingBotKey(pool);
+  let requestId: string | null = null;
   try {
-    res = await handle(req);
-    raw = await res.text();
+    // Keys left behind by an interrupted call (only this internal user's run keys).
+    await db.apiKey.deleteMany({ where: { userId, name: KEY_NAME, id: { not: apiKeyId }, createdAt: { lt: new Date(Date.now() - 3_600_000) } } }).catch(() => undefined);
+    const res = await handle(new Request("http://price-sync.internal/v1/chat/completions", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}`, "content-type": "application/json", "user-agent": "ProviderProxy-PriceSync/1.0" },
+      body: JSON.stringify({ model, stream: false, temperature: 0, max_tokens: 16000, messages: [{ role: "system", content: system }, { role: "user", content: user }] }),
+    }));
+    requestId = res.headers.get("x-request-id");
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const j = await res.json() as { choices?: Array<{ message?: { content?: unknown } }> };
+    const c = j.choices?.[0]?.message?.content;
+    const text = typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => typeof p?.text === "string" ? p.text : "").join("") : "";
+    if (!text.trim()) throw new Error("price sync AI returned no text");
+    return { text, requestId, model };
+  } catch (err) {
+    throw Object.assign(err instanceof Error ? err : new Error(String(err)), { requestId });
   } finally {
     await dropPricingBotKey(apiKeyId, userId);
   }
-  const requestId = res.headers.get("x-request-id");
-  if (!res.ok) throw Object.assign(new Error(`price sync AI call failed (${res.status}): ${raw.slice(0, 300)}`), { requestId });
-  let text = "";
-  try {
-    const j = JSON.parse(raw) as { choices?: Array<{ message?: { content?: unknown } }> };
-    const c = j.choices?.[0]?.message?.content;
-    text = typeof c === "string" ? c : Array.isArray(c) ? c.map((p) => (typeof p === "object" && p && "text" in p ? String((p as { text: unknown }).text) : "")).join("") : "";
-  } catch {
-    text = "";
-  }
-  if (!text) throw Object.assign(new Error("price sync AI returned no text"), { requestId });
-  return { text, requestId, model: s.priceSyncModel };
-};
+}
+
+export const askPricingAi: AskAi = async (system, user) =>
+  tryPricingTargets(pricingTargets(await getSettings()), (target) => askTarget(target, system, user));

@@ -6,6 +6,8 @@ import { audit } from "@/lib/audit";
 import { getSettings, setSettings, SETTING_DEFS, type SettingKey, type SettingValues } from "@/lib/settings";
 import { invalidateGatewayConfig } from "@/gateway/cache";
 import { armTimers } from "@/server/maintenance";
+import { pricingTargetsSchema, unavailablePricingTarget } from "@/server/pricing/price-sync/targets";
+import { getPricingPoolOptions } from "./price-sync-queries";
 import { ActionFail, adminAction, parseInput } from "./action";
 import { friendlySettingIssue, type IssueLike } from "./settings-calc";
 
@@ -19,6 +21,20 @@ export async function saveSettings(values: Record<string, unknown>) {
     const fieldErrors: Record<string, string> = {};
     const next: Record<string, unknown> = {};
     for (const [key, raw] of Object.entries(values ?? {})) {
+      if (key === "priceSyncPool" || key === "priceSyncModel") {
+        fieldErrors[key] = "Choose pool and model pairs in Price sync AI routes.";
+        continue;
+      }
+      if (key === "priceSyncTargets") {
+        const parsed = pricingTargetsSchema.safeParse(raw);
+        if (!parsed.success) fieldErrors[key] = parsed.error.issues[0].message;
+        else {
+          const invalid = unavailablePricingTarget(parsed.data, await getPricingPoolOptions());
+          if (invalid) fieldErrors[key] = `No configured chat route for ${invalid.model} in pool ${invalid.pool}.`;
+          else if (JSON.stringify(parsed.data) !== JSON.stringify(current.priceSyncTargets)) next[key] = parsed.data;
+        }
+        continue;
+      }
       if (!(key in SETTING_DEFS)) {
         fieldErrors[key] = "Unknown setting";
         continue;

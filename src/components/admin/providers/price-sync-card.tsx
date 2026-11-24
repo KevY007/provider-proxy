@@ -71,9 +71,8 @@ export function PriceSyncCard({ providerId, providerName, initial, canEdit }: { 
           <Bot className="size-4" /> Price sync
         </CardTitle>
         <CardDescription>
-          Keeps this provider&apos;s prices in line with its pricing pages. {providerName} publishes no pricing API, so the pages are read by an AI ({panel.ai.model} through the{" "}
-          <span className="font-medium">{panel.ai.pool}</span> pool, billed at our own cost as the customer &quot;Pricing fetch AI&quot;;{" "}
-          <Link href="/admin/settings" className="underline underline-offset-2">
+          Keeps this provider&apos;s prices in line with its pricing pages. {providerName} publishes no pricing API, so an AI reads the pages (in order: {panel.ai.map(({ pool, model }) => `${pool} / ${model}`).join(" → ")}; billed at our own cost as the customer &quot;Pricing fetch AI&quot;;{" "}
+          <Link href="/admin/settings#pricing-routes" className="underline underline-offset-2">
             change in Settings
           </Link>
           ). Every price it reports must be written on the page, promotions are ignored, and nothing changes until you apply it.
