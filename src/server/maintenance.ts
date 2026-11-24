@@ -2,7 +2,8 @@
 //
 // Three jobs:
 //  - "upkeep":  provider health + uptime samples from real traffic, video/batch sweeps, metering dead-letter replay,
-//               uptime-history and response-id pruning. No provider is contacted unless a video job or batch is actually open.
+//               uptime-history and response-id pruning, and expiry of RequestLog diagnostics (not metering rows).
+//               No provider is contacted unless a video job or batch is actually open.
 //  - "billing": auto-recharge, postpaid settlement, stale payment reconciliation (Stripe).
 //  - "probes":  uptime pings of every upstream key (free model-list request). Only with the activeHealthChecks setting.
 //  - "balances": reads the account balance of every upstream that publishes one (the relay's /v1/usage) every
