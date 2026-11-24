@@ -197,7 +197,6 @@ requires_openai_auth = true`,
           lang: "bash",
           code: `export ANTHROPIC_BASE_URL="${origin}"
 export ANTHROPIC_AUTH_TOKEN="${key}"
-export ANTHROPIC_MODEL="${claude}"
 export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 export CLAUDE_CODE_ATTRIBUTION_HEADER=0`,
         },
@@ -209,7 +208,6 @@ export CLAUDE_CODE_ATTRIBUTION_HEADER=0`,
   "env": {
     "ANTHROPIC_BASE_URL": "${origin}",
     "ANTHROPIC_AUTH_TOKEN": "${key}",
-    "ANTHROPIC_MODEL": "${claude}",
     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
     "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
   }

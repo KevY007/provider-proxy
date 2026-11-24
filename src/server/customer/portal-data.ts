@@ -2,8 +2,9 @@ import "server-only";
 import { db } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth/types";
 import { getCatalogModels, getDefaultGroup, getPublicGroups, type CatalogGroup, type CatalogModel } from "./catalog";
-import { effectiveMultiplier, effectivePrices, groupAllowsModel, type EffectivePrices } from "./pricing";
+import { effectiveMultiplier, effectivePrices, type EffectivePrices } from "./pricing";
 import { Decimal } from "@/lib/money";
+import { hasCatalogRoute } from "@/gateway/catalog";
 import { getConfig } from "@/gateway/cache";
 import { poolPriceTable } from "@/gateway/pool-prices";
 import type { PriceTable } from "@/gateway/pricing";
@@ -98,10 +99,9 @@ export async function getSelectablePoolsWithSavings(user: SessionUser): Promise<
 }
 
 export async function getKeysPageData(user: SessionUser) {
-  const [rows, { pools, current }, models, list] = await Promise.all([
+  const [rows, { pools, currentPool: current, models }, list] = await Promise.all([
     db.apiKey.findMany({ where: { userId: user.id, isPlayground: false }, include: { group: { select: { name: true, priceMultiplier: true } } }, orderBy: { createdAt: "desc" } }),
-    getSelectablePoolsWithSavings(user),
-    getCatalogModels(),
+    getModelsForUser(user),
     db.requestLog.groupBy({ by: ["apiKeyId"], where: { userId: user.id, apiKeyId: { not: null }, officialPrice: { gt: 0 } }, _sum: { officialPrice: true, price: true } }),
   ]);
   const listByKey = new Map(list.map((r) => [r.apiKeyId, r._sum]));
@@ -136,7 +136,7 @@ export async function getKeysPageData(user: SessionUser) {
     keys,
     pools,
     currentPool: current,
-    models: models.map((m) => ({ slug: m.slug, displayName: m.displayName, vendor: m.vendor, capabilities: m.capabilities })),
+    models: models.map((m) => ({ slug: m.slug, displayName: m.displayName, vendor: m.vendor, capabilities: m.capabilities, poolSlugs: Object.keys(m.prices) })),
   };
 }
 
@@ -150,8 +150,6 @@ export interface UserModel extends CatalogModel {
 /** Models the customer can use, priced for every pool they could pick (exactly what the gateway charges). */
 export async function getModelsForUser(user: SessionUser) {
   const [models, { pools, current }, snap] = await Promise.all([getCatalogModels(), getSelectablePools(user), getConfig()]);
-  const groups = await db.group.findMany({ where: { id: { in: pools.map((p) => p.id) } }, select: { id: true, allowedModels: true } });
-  const allowed = new Map(groups.map((g) => [g.id, g.allowedModels]));
   const out: UserModel[] = [];
   const blends = new Map<string, { off: Decimal; ours: Decimal }>();
   for (const m of models) {
@@ -159,9 +157,9 @@ export async function getModelsForUser(user: SessionUser) {
     const reference: Record<string, UnitPriceMap> = {};
     const rec = snap.modelsById.get(m.id);
     for (const p of pools) {
-      if (!groupAllowsModel({ allowedModels: allowed.get(p.id) ?? [] }, m.slug, m.aliases)) continue;
       const group = snap.groupsById.get(p.id) ?? null;
-      const ep = rec && group?.priceBasis === "cost" ? fromTable(poolPriceTable(snap, rec, group, new Decimal(p.multiplier))) : effectivePrices(m, p.multiplier);
+      if (!rec || !group || !hasCatalogRoute(snap, rec, group)) continue;
+      const ep = group?.priceBasis === "cost" ? fromTable(poolPriceTable(snap, rec, group, new Decimal(p.multiplier))) : effectivePrices(m, p.multiplier);
       prices[p.slug] = ep;
       const pct = group?.referenceSavingsPct ?? null;
       if (pct) reference[p.slug] = scaleMap(ep, 1 / (1 - pct / 100));

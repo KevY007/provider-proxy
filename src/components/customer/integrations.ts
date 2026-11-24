@@ -73,7 +73,7 @@ export function exampleModels(models: GuideModel[]) {
   const opus = pick(claude.filter((m) => /opus/.test(m.slug)), ["claude-opus-5-5", "claude-opus-5", "claude-opus-4-8"]) ?? sonnet;
   const haiku = pick(claude.filter((m) => /haiku/.test(m.slug)), ["claude-haiku-5-5", "claude-haiku-4-5"]) ?? sonnet;
   return {
-    gpt: pick(gpt, ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol"]),
+    gpt: pick(gpt, ["gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol"]),
     gptModels: gpt,
     claudeModels: claude,
     geminiModels: gemini,
@@ -120,12 +120,14 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
   const claudeEnv = {
     ANTHROPIC_BASE_URL: origin,
     ANTHROPIC_AUTH_TOKEN: key,
-    ANTHROPIC_MODEL: sonnet,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: ex.opus ?? sonnet,
-    ANTHROPIC_DEFAULT_SONNET_MODEL: sonnet,
-    ANTHROPIC_DEFAULT_HAIKU_MODEL: ex.haiku ?? sonnet,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     CLAUDE_CODE_ATTRIBUTION_HEADER: "0",
+    DISABLE_TELEMETRY: "1",
+    DISABLE_ERROR_REPORTING: "1",
+    DISABLE_AUTOUPDATER: "1",
+    DISABLE_BUG_COMMAND: "1",
+    DISABLE_COST_WARNINGS: "1",
+    DISABLE_NON_ESSENTIAL_MODEL_CALLS: "1",
   };
   guides.push({
     id: "claude-code",
@@ -142,7 +144,7 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
       },
       {
         title: "Paste this and save",
-        text: "This makes every Claude Code session (terminal and IDE extensions) use your key. The DEFAULT_*_MODEL lines map Claude Code's built-in Opus / Sonnet / Haiku choices to models your key can use.",
+        text: `This makes every Claude Code session (terminal and IDE extensions) use your key. Use /model followed by an exact model ID from the list below. Remove any model overrides left by an older setup.`,
         code: [{ title: "settings.json", filename: "~/.claude/settings.json", lang: "json", code: JSON.stringify({ env: claudeEnv }, null, 2) }],
       },
       {
@@ -152,8 +154,8 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
       },
       {
         title: "Start and check",
-        text: "Run claude in your project. /status must show the base URL above. Switch models any time with /model.",
-        code: [{ title: "Terminal", lang: "bash", code: `claude\n# inside Claude Code:\n/status\n/model ${ex.opus ?? sonnet}` }],
+        text: "Run claude in your project. /status must show the base URL above. Switch models with /model <name>.",
+        code: [{ title: "Terminal", lang: "bash", code: `claude\n# inside Claude Code:\n/status\n/model` }],
       },
       {
         title: "Optional: skip the settings file and use the key in one terminal only",
@@ -167,7 +169,7 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
         },
       },
     ],
-    notes: [`Models this key can use: ${listText}.`],
+    notes: modelList.length ? modelList.map((slug) => `/model ${slug}`) : [listText],
   });
 
   const codexToml = `# Put these lines at the very TOP of the file, before any [section]

@@ -11,6 +11,11 @@ import { eligibleRoutes } from "./select";
 import { ENDPOINT_FORMATS } from "./providers/presets";
 import type { Json } from "./types";
 
+/** Pool-level visibility shared by /models and the customer setup guides. */
+export function hasCatalogRoute(snap: ConfigSnapshot, m: ModelRec, group: GroupRec | null): boolean {
+  return (!group?.allowedModels || group.allowedModels.has(m.slug)) && ENDPOINT_FORMATS.some((f) => eligibleRoutes(snap, m, group, f).length > 0);
+}
+
 /** Models this key may see: group/key allow-lists applied, ACTIVE only, and at least one usable route. */
 export function visibleModels(snap: ConfigSnapshot, ctx: Ctx, includeHidden = false): ModelRec[] {
   const auth = ctx.auth!;
@@ -20,9 +25,7 @@ export function visibleModels(snap: ConfigSnapshot, ctx: Ctx, includeHidden = fa
     if (m.status === "DISABLED") continue;
     if (m.status === "HIDDEN" && !includeHidden) continue;
     if (auth.key.allowedModels && !auth.key.allowedModels.has(m.slug)) continue;
-    if (group?.allowedModels && !group.allowedModels.has(m.slug)) continue;
-    const routable = ENDPOINT_FORMATS.some((f) => eligibleRoutes(snap, m, group, f).length > 0);
-    if (!routable) continue;
+    if (!hasCatalogRoute(snap, m, group)) continue;
     out.push(m);
   }
   return out.sort((a, b) => a.sortOrder - b.sortOrder || a.slug.localeCompare(b.slug));

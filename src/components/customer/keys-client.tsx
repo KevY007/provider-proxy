@@ -31,7 +31,7 @@ export interface KeysClientProps {
   keys: KeyRow[];
   pools: PoolOption[];
   currentPool: PoolOption | null;
-  models: ModelOption[];
+  models: Array<ModelOption & { poolSlugs: string[] }>;
   appUrl: string;
   siteName: string;
   emailVerified: boolean;
@@ -404,9 +404,9 @@ interface UseKeyTarget {
 }
 
 /** The models a key can call: its pool's models (empty list = all), narrowed by the key's own model list. */
-function keyModels(k: UseKeyTarget, pools: PoolOption[], currentPool: PoolOption | null, models: ModelOption[]): ModelOption[] {
+function keyModels(k: UseKeyTarget, pools: PoolOption[], currentPool: PoolOption | null, models: KeysClientProps["models"]): ModelOption[] {
   const pool = pools.find((p) => p.id === k.groupId) ?? currentPool;
-  return models.filter((m) => (!pool?.allowedModels.length || pool.allowedModels.includes(m.slug)) && (!k.allowedModels.length || k.allowedModels.includes(m.slug)));
+  return models.filter((m) => (pool && m.poolSlugs.includes(pool.slug)) && (!k.allowedModels.length || k.allowedModels.includes(m.slug)));
 }
 
 function RevealKeyDialog({ created, onClose, onUse }: { created: RevealedKey | null; onClose: () => void; onUse: (k: RevealedKey) => void }) {

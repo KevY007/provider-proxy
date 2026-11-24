@@ -16,17 +16,17 @@ describe("integration guides", () => {
     expect(exampleModels(STUDIO).gpt).toBe("gpt-6.1-sol");
   });
 
-  it("Claude Code: origin base URL, the key as auth token, and the built-in model choices mapped to pool models", () => {
+  it("Claude Code: origin base URL, the key as auth token, without overriding model selection", () => {
     const gs = buildGuides({ appUrl: "https://p.example.com/", apiKey: "sk-pp-SECRET", siteName: "Acme Proxy", poolName: "Coding", models: CODING });
     const cc = guide(gs, "claude-code");
     const settings = JSON.parse(cc.steps.find((s) => s.title.startsWith("Paste"))!.code![0].code) as { env: Record<string, string> };
     expect(settings.env).toMatchObject({
       ANTHROPIC_BASE_URL: "https://p.example.com",
       ANTHROPIC_AUTH_TOKEN: "sk-pp-SECRET",
-      ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-haiku-4-5",
-      ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-5-5",
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     });
+    expect(all(cc)).not.toMatch(/ANTHROPIC_(?:DEFAULT_w+_)?MODEL/);
+    expect(cc.notes).toEqual(CODING.map((m) => `/model ${m.slug}`));
     // optional "this terminal only" alternative: the same variables per shell
     const temp = cc.steps.find((s) => s.title.startsWith("Optional"))!.os!;
     expect(temp.unix[0].code).toContain('export ANTHROPIC_AUTH_TOKEN="sk-pp-SECRET"');
