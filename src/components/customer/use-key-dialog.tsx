@@ -184,7 +184,7 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
                       </li>;
                     })}
                   </ul>
-                </> : <p className="mt-1 text-xs text-muted-foreground">No models match this key’s pool and allowed-model settings.</p>}
+                </> : <p className="mt-1 text-xs text-muted-foreground">No models match the pool and restrictions for this key.</p>}
               </section>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
