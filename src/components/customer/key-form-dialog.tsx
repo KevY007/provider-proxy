@@ -15,7 +15,7 @@ import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { StripHeadersSelect } from "@/components/common/strip-headers-select";
 import { UserAgentSelect } from "@/components/common/user-agent-select";
 import { ModelMultiSelect } from "./model-multi-select";
-import type { ModelOption } from "./snippet-tabs";
+import { modelsForKey, type PoolModel } from "./key-models";
 
 const DEFAULT_POOL = "__default";
 
@@ -68,7 +68,7 @@ export interface KeyFormDialogProps {
   editing: KeyRow | null;
   pools: PoolOption[];
   currentPool: PoolOption | null;
-  models: ModelOption[];
+  models: PoolModel[];
   onCreated: (key: CreatedKey, meta: { name: string; allowedModels: string[]; groupId: string | null }) => void;
 }
 
@@ -87,9 +87,14 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
   const [pending, start] = useTransition();
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }));
 
+  const pool = f.groupId === DEFAULT_POOL ? currentPool : pools.find((p) => p.id === f.groupId);
+  const poolModels = modelsForKey(models, pool?.slug);
+  const unavailable = f.allowedModels.filter((slug) => !poolModels.some((m) => m.slug === slug));
+
   function submit(e: React.FormEvent) {
     e.preventDefault();
     const errs: Record<string, string> = {};
+    if (unavailable.length) errs.allowedModels = "Remove unavailable models or choose their pool.";
     const rpm = numOrNull(f.rpm);
     const tpm = numOrNull(f.tpm);
     const conc = numOrNull(f.conc);
@@ -169,14 +174,22 @@ function KeyFormBody({ editing, pools, currentPool, models, onClose, onCreated }
               </SelectContent>
             </Select>
             <FieldDescription>The pool decides which models this key can use and what it pays for them (see Models &amp; Pricing).</FieldDescription>
+            <div className="rounded-md bg-muted/40 p-2.5 text-xs">
+              <p className="font-medium" aria-live="polite">Models in {pool?.name ?? "this pool"} ({poolModels.length})</p>
+              {poolModels.length ? (
+                <ul className="mt-1.5 flex max-h-28 flex-wrap gap-1.5 overflow-y-auto" aria-label="Models in selected pool">
+                  {poolModels.map((m) => <li key={m.slug} className="rounded border bg-background px-1.5 py-0.5"><code>{m.slug}</code></li>)}
+                </ul>
+              ) : <p className="mt-1 text-muted-foreground">No models are configured for this pool.</p>}
+            </div>
             {errors.groupId && <FieldError>{errors.groupId}</FieldError>}
           </Field>
 
           <Field data-invalid={!!errors.allowedModels}>
             <FieldLabel>Allowed models</FieldLabel>
-            <ModelMultiSelect models={models} value={f.allowedModels} onChange={(v) => set("allowedModels", v)} />
+            <ModelMultiSelect models={poolModels} value={f.allowedModels} onChange={(v) => set("allowedModels", v)} />
             <FieldDescription>Restrict this key to specific models. Leave empty to allow everything your pool offers.</FieldDescription>
-            {errors.allowedModels && <FieldError>{errors.allowedModels}</FieldError>}
+            {unavailable.length > 0 ? <FieldError>Not in this pool: {unavailable.join(", ")}. Remove these selections or choose their pool.</FieldError> : errors.allowedModels && <FieldError>{errors.allowedModels}</FieldError>}
           </Field>
 
           <div className="grid gap-4 sm:grid-cols-3">

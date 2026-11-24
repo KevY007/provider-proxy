@@ -23,7 +23,7 @@ import { poolSavingsLabel } from "@/server/customer/pricing";
 import type { KeyRow, PoolOption } from "@/server/customer/portal-data";
 import { KeyFormDialog } from "./key-form-dialog";
 import { LocalTime } from "./local-time";
-import type { ModelOption } from "./snippet-tabs";
+import { modelsForKey, type PoolModel } from "./key-models";
 import { UseKeyDialog } from "./use-key-dialog";
 import { VerifyBanner } from "./verify-banner";
 
@@ -31,7 +31,7 @@ export interface KeysClientProps {
   keys: KeyRow[];
   pools: PoolOption[];
   currentPool: PoolOption | null;
-  models: Array<ModelOption & { poolSlugs: string[] }>;
+  models: PoolModel[];
   appUrl: string;
   siteName: string;
   emailVerified: boolean;
@@ -43,6 +43,7 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
   const [editing, setEditing] = useState<KeyRow | null>(null);
   const [created, setCreated] = useState<RevealedKey | null>(null);
   const [useKey, setUseKey] = useState<UseKeyTarget | null>(null);
+  const usePool = useKey?.groupId ? pools.find((p) => p.id === useKey.groupId) : currentPool;
   const [revoking, setRevoking] = useState<KeyRow | null>(null);
   const [deleting, setDeleting] = useState<KeyRow | null>(null);
   const [emptying, setEmptying] = useState(false);
@@ -334,7 +335,7 @@ export function KeysClient({ keys, pools, currentPool, models, appUrl, siteName,
 
       <RevealKeyDialog created={created} onClose={() => setCreated(null)} onUse={(k) => { setCreated(null); setUseKey({ id: k.id, name: k.name, apiKey: k.key, allowedModels: k.allowedModels, groupId: k.groupId }); }} />
 
-      <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={useKey ? keyModels(useKey, pools, currentPool, models) : []} poolName={useKey ? (pools.find((p) => p.id === useKey.groupId) ?? currentPool)?.name : null} keyId={useKey?.id} keyName={useKey?.name} apiKey={useKey?.apiKey} />
+      <UseKeyDialog open={!!useKey} onOpenChange={(o) => !o && setUseKey(null)} appUrl={appUrl} siteName={siteName} models={useKey ? modelsForKey(models, usePool?.slug, useKey.allowedModels) : []} poolName={usePool?.name} keyId={useKey?.id} keyName={useKey?.name} apiKey={useKey?.apiKey} />
 
       <ConfirmDialog
         open={!!deleting}
@@ -401,12 +402,6 @@ interface UseKeyTarget {
   apiKey: string | null;
   allowedModels: string[];
   groupId: string | null;
-}
-
-/** The models a key can call: its pool's models (empty list = all), narrowed by the key's own model list. */
-function keyModels(k: UseKeyTarget, pools: PoolOption[], currentPool: PoolOption | null, models: KeysClientProps["models"]): ModelOption[] {
-  const pool = pools.find((p) => p.id === k.groupId) ?? currentPool;
-  return models.filter((m) => (pool && m.poolSlugs.includes(pool.slug)) && (!k.allowedModels.length || k.allowedModels.includes(m.slug)));
 }
 
 function RevealKeyDialog({ created, onClose, onUse }: { created: RevealedKey | null; onClose: () => void; onUse: (k: RevealedKey) => void }) {

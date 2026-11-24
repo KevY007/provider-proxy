@@ -10,6 +10,8 @@ export interface ModelOption {
   displayName: string;
   vendor: string;
   capabilities: string[];
+  /** Explicit, public compatibility alias for Claude Code, when the gateway has one. */
+  claudeCodeAlias?: string;
 }
 
 /** Picks sensible example models per API family from a model list. */

@@ -26,7 +26,6 @@ describe("integration guides", () => {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     });
     expect(all(cc)).not.toMatch(/ANTHROPIC_(?:DEFAULT_w+_)?MODEL/);
-    expect(cc.notes).toEqual(CODING.map((m) => `/model ${m.slug}`));
     // optional "this terminal only" alternative: the same variables per shell
     const temp = cc.steps.find((s) => s.title.startsWith("Optional"))!.os!;
     expect(temp.unix[0].code).toContain('export ANTHROPIC_AUTH_TOKEN="sk-pp-SECRET"');

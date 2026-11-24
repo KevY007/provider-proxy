@@ -136,7 +136,7 @@ export async function getKeysPageData(user: SessionUser) {
     keys,
     pools,
     currentPool: current,
-    models: models.map((m) => ({ slug: m.slug, displayName: m.displayName, vendor: m.vendor, capabilities: m.capabilities, poolSlugs: Object.keys(m.prices) })),
+    models: models.map((m) => ({ slug: m.slug, displayName: m.displayName, vendor: m.vendor, capabilities: m.capabilities, claudeCodeAlias: m.aliases.includes(`claude-${m.slug}`) ? `claude-${m.slug}` : undefined, poolSlugs: Object.keys(m.prices) })),
   };
 }
 

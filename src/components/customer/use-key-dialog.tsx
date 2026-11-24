@@ -11,6 +11,7 @@ import { revealOwnKeyAction } from "@/server/customer/keys";
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
 import { buildGuides, type GuideCategory, type GuideModel } from "./integrations";
+import { modelCopyValue } from "./key-models";
 import type { ModelOption } from "./snippet-tabs";
 
 export interface UseKeyDialogProps {
@@ -168,6 +169,23 @@ function UseKeyBody({ appUrl, siteName, models, keyName, keyId, poolName, apiKey
 
           <div className="max-h-[64vh] min-w-0 overflow-y-auto overflow-x-hidden pr-3">
             <div className="space-y-4">
+              <section className="rounded-lg border p-3" aria-label="Models available to this key">
+                <h3 className="text-sm font-semibold">Models on this key ({models.length})</h3>
+                {models.length ? <>
+                  <p className="mt-1 text-xs text-muted-foreground">{guide.id === "claude-code" ? "Copy a /model command and paste it inside Claude Code. Non-chat models are listed by API ID only." : "Copy an exact model ID to use in your app."}</p>
+                  <ul className="mt-2 grid max-h-44 gap-1 overflow-y-auto sm:grid-cols-2">
+                    {models.map((m) => {
+                      const value = modelCopyValue(m, guide.id === "claude-code");
+                      return <li key={m.slug} className="flex min-w-0 items-center justify-between gap-1 rounded bg-muted/40 pl-2">
+                        <div className="min-w-0 break-all text-xs"><code>{value}</code>
+                          {guide.id === "claude-code" && m.claudeCodeAlias && <p className="text-muted-foreground">API ID: {m.slug}</p>}
+                        </div>
+                        <CopyButton value={value} className="size-8 shrink-0" accessibleLabel={`Copy ${value}`} />
+                      </li>;
+                    })}
+                  </ul>
+                </> : <p className="mt-1 text-xs text-muted-foreground">No models match this key’s pool and allowed-model settings.</p>}
+              </section>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <h3 className="font-semibold">{guide.label}</h3>

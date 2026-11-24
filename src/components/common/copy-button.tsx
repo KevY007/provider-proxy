@@ -11,6 +11,7 @@ export interface CopyButtonProps {
   value: string;
   /** Optional visible label next to the icon. */
   label?: string;
+  accessibleLabel?: string;
   variant?: React.ComponentProps<typeof Button>["variant"];
   size?: React.ComponentProps<typeof Button>["size"];
   className?: string;
@@ -22,6 +23,7 @@ export interface CopyButtonProps {
 export function CopyButton({
   value,
   label,
+  accessibleLabel,
   variant = "ghost",
   size = label ? "sm" : "icon",
   className,
@@ -39,7 +41,7 @@ export function CopyButton({
     }
   }
   return (
-    <Button type="button" variant={variant} size={size} className={cn(className)} onClick={copy} aria-label={label ?? "Copy"}>
+    <Button type="button" variant={variant} size={size} className={cn(className)} onClick={copy} aria-label={accessibleLabel ?? label ?? "Copy"}>
       {copied ? <Check className="size-4 text-emerald-500" /> : <Copy className="size-4" />}
       {label}
     </Button>

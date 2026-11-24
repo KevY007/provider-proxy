@@ -133,7 +133,7 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
       },
       {
         title: "Paste this and save",
-        text: `This makes every Claude Code session (terminal and IDE extensions) use your key. Use /model followed by an exact model ID from the list below. Remove any model overrides left by an older setup.`,
+        text: `This makes every Claude Code session (terminal and IDE extensions) use your key. Use /model followed by an exact model ID from Models on this key above. Remove any model overrides left by an older setup.`,
         code: [{ title: "settings.json", filename: "~/.claude/settings.json", lang: "json", code: JSON.stringify({ env: claudeEnv }, null, 2) }],
       },
       {
@@ -158,7 +158,6 @@ export function buildGuides(o: GuideOptions): IntegrationGuide[] {
         },
       },
     ],
-    notes: modelList.length ? modelList.map((slug) => `/model ${slug}`) : [listText],
   });
 
   const codexToml = `# Put these lines at the very TOP of the file, before any [section]
